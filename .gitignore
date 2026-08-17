@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+server/.pgdata/
+server/.pgdata-test/
+server/.pgdata-scale/
+client/dist/
+client/e2e/.auth/
+client/test-results/
+client/playwright-report/
