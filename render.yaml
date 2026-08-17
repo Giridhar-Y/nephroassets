@@ -4,7 +4,10 @@ services:
     runtime: node
     plan: free
     rootDir: .
-    buildCommand: "cd client && npm install && npm run build && cd ../server && npm install && npm run build"
+    # `--include=dev`: Render sets NODE_ENV=production during the build too, which makes
+    # plain `npm install` skip devDependencies (typescript, vite, @types/react, ...) —
+    # both client and server need those present to build even though they run in prod.
+    buildCommand: "cd client && npm install --include=dev && npm run build && cd ../server && npm install --include=dev && npm run build"
     startCommand: "cd server && npm start"
     envVars:
       - key: DATABASE_URL
@@ -13,6 +16,8 @@ services:
           property: connectionString
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 22.11.0
       - key: SEED_ON_BOOT
         value: "true"
 
