@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createTransfer, fetchCenters } from "../api/client.js";
+import { ErrorIcon, TransferIcon } from "../lib/icons.js";
 
 export function TransferModal({
   farIds,
@@ -42,7 +43,10 @@ export function TransferModal({
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/30">
       <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-        <h2 className="text-base font-semibold text-ink">Transfer {farIds.length} asset(s)</h2>
+        <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
+          <TransferIcon fontSize={18} />
+          Transfer {farIds.length} asset(s)
+        </h2>
         <p className="mt-1 text-sm text-gray-500">Move the selected assets to a different center.</p>
 
         <div className="mt-4 flex flex-col gap-1">
@@ -77,7 +81,12 @@ export function TransferModal({
           />
         </div>
 
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && (
+          <p className="mt-3 flex items-center gap-1.5 text-sm text-red-600">
+            <ErrorIcon fontSize={15} />
+            {error}
+          </p>
+        )}
 
         <div className="mt-6 flex justify-end gap-2">
           <button

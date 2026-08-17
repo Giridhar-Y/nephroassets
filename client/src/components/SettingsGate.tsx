@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useSettings } from "../lib/SettingsContext.js";
 import type { ReactNode } from "react";
+import { CalendarIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 
 /** Wraps a page that needs FY settings to do anything useful. Shows a designed prompt
  *  instead of a stuck skeleton when settings haven't been configured yet (first run),
@@ -19,9 +20,15 @@ export function SettingsGate({ children }: { children: ReactNode }) {
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-white text-center">
+        <ErrorIcon fontSize={24} className="text-red-400" />
         <p className="text-sm font-medium text-gray-600">Couldn't load settings.</p>
         <p className="text-xs text-gray-400">{error}</p>
-        <button type="button" className="mt-2 text-xs font-semibold text-accent hover:underline" onClick={reload}>
+        <button
+          type="button"
+          className="mt-2 flex items-center gap-1 text-xs font-semibold text-accent hover:underline"
+          onClick={reload}
+        >
+          <RetryIcon fontSize={13} />
           Retry
         </button>
       </div>
@@ -31,6 +38,7 @@ export function SettingsGate({ children }: { children: ReactNode }) {
   if (notConfigured) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-white text-center">
+        <CalendarIcon fontSize={24} className="text-gray-300" />
         <p className="text-sm font-medium text-gray-600">Your financial year hasn't been set up yet.</p>
         <p className="max-w-sm text-xs text-gray-400">
           Set the cut-off date and financial year in Settings before working with the register.

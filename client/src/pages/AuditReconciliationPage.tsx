@@ -5,16 +5,20 @@ import { formatCurrency } from "../lib/format.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
+import { EmptyIcon, ErrorIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
 
+// Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
+// must stay visually distinct from ordinary UI chrome at a glance.
 function CheckBadge({ pass, message }: { pass: boolean; message: string }) {
   return (
     <div className="flex flex-col gap-0.5">
       <span
         className={`inline-flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold ${
-          pass ? "bg-accent-light text-accent-hover" : "bg-red-50 text-red-700"
+          pass ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
         }`}
       >
-        {pass ? "✓ Pass" : "✗ Fail"}
+        {pass ? <PassIcon fontSize={13} /> : <FailIcon fontSize={13} />}
+        {pass ? "Pass" : "Fail"}
       </span>
       {!pass && <span className="max-w-xs text-xs text-red-600">{message}</span>}
     </div>
@@ -59,9 +63,11 @@ export function AuditReconciliationPage() {
       </div>
 
       {error && (
-        <div className="border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
+        <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
+          <ErrorIcon fontSize={15} />
           {error}{" "}
-          <button className="font-semibold underline" onClick={load}>
+          <button className="flex items-center gap-1 font-semibold underline" onClick={load}>
+            <RetryIcon fontSize={13} />
             Retry
           </button>
         </div>
@@ -75,7 +81,8 @@ export function AuditReconciliationPage() {
             ))}
           </div>
         ) : !items || items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-1 py-24 text-center">
+          <div className="flex flex-col items-center justify-center gap-2 py-24 text-center">
+            <EmptyIcon fontSize={28} className="text-gray-300" />
             <p className="text-sm font-medium text-gray-600">No assets to reconcile yet.</p>
             <p className="text-xs text-gray-400">Once assets are in the register, this report checks their totals.</p>
           </div>

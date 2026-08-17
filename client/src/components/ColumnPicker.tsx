@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { useColumnPrefs } from "../lib/useColumnPrefs.js";
+import { ChevronDownIcon, ChevronUpIcon, ColumnsIcon } from "../lib/icons.js";
 
 export function ColumnPicker({ prefs }: { prefs: ReturnType<typeof useColumnPrefs> }) {
   const [open, setOpen] = useState(false);
@@ -9,9 +10,10 @@ export function ColumnPicker({ prefs }: { prefs: ReturnType<typeof useColumnPref
     <div className="relative">
       <button
         type="button"
-        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:border-accent hover:text-accent"
+        className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:border-accent hover:text-accent"
         onClick={() => setOpen((o) => !o)}
       >
+        <ColumnsIcon fontSize={14} />
         Columns
       </button>
       {open && (
@@ -38,18 +40,18 @@ export function ColumnPicker({ prefs }: { prefs: ReturnType<typeof useColumnPref
                       <button
                         type="button"
                         aria-label={`Move ${col.label} up`}
-                        className="text-gray-400 hover:text-ink"
+                        className="grid place-items-center text-gray-400 hover:text-ink"
                         onClick={() => moveColumn(id, -1)}
                       >
-                        ↑
+                        <ChevronUpIcon fontSize={14} />
                       </button>
                       <button
                         type="button"
                         aria-label={`Move ${col.label} down`}
-                        className="text-gray-400 hover:text-ink"
+                        className="grid place-items-center text-gray-400 hover:text-ink"
                         onClick={() => moveColumn(id, 1)}
                       >
-                        ↓
+                        <ChevronDownIcon fontSize={14} />
                       </button>
                     </span>
                   </li>

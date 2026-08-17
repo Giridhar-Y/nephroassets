@@ -4,11 +4,11 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#1C1D1F",
+        ink: "#18181B",
         accent: {
-          DEFAULT: "#3ABDAF",
-          hover: "#2FA79A",
-          light: "#E6F6F4"
+          DEFAULT: "#18181B",
+          hover: "#000000",
+          light: "#F0F0F1"
         }
       },
       fontFamily: {

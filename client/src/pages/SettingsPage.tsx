@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { Tooltip } from "../components/Tooltip.js";
 import type { FySettings } from "../lib/types.js";
+import { ErrorIcon, PassIcon, SettingsIcon } from "../lib/icons.js";
 
 function daysBetweenInclusive(start: string, end: string): number | null {
   if (!start || !end) return null;
@@ -76,7 +77,10 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="text-base font-semibold text-ink">Settings</h1>
+      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+        <SettingsIcon fontSize={20} />
+        Settings
+      </h1>
       <p className="mt-1 max-w-xl text-sm text-gray-500">
         These control every figure in NephroAssets: the cut-off date used for depreciation, and the financial year
         it falls within.
@@ -159,8 +163,18 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-        {saved && !error && <p className="mt-4 text-sm text-accent-hover">Settings saved.</p>}
+        {error && (
+          <p className="mt-4 flex items-center gap-1.5 text-sm text-red-600">
+            <ErrorIcon fontSize={15} />
+            {error}
+          </p>
+        )}
+        {saved && !error && (
+          <p className="mt-4 flex items-center gap-1.5 text-sm text-green-700">
+            <PassIcon fontSize={15} />
+            Settings saved.
+          </p>
+        )}
 
         <button
           type="button"

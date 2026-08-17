@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnDef } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
+import { EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 
 const ROW_HEIGHT = 40;
 
@@ -60,9 +61,11 @@ export function AssetGrid({
   return (
     <>
       {error && (
-        <div className="border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
+        <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
+          <ErrorIcon fontSize={15} />
           {error}{" "}
-          <button className="font-semibold underline" onClick={onRetry}>
+          <button className="flex items-center gap-1 font-semibold underline" onClick={onRetry}>
+            <RetryIcon fontSize={13} />
             Retry
           </button>
         </div>
@@ -107,7 +110,8 @@ export function AssetGrid({
               ))}
             </div>
           ) : items.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-1 py-24 text-center">
+            <div className="flex flex-col items-center justify-center gap-2 py-24 text-center">
+              <EmptyIcon fontSize={28} className="text-gray-300" />
               <p className="text-sm font-medium text-gray-600">{emptyTitle}</p>
               <p className="text-xs text-gray-400">{emptyHint}</p>
             </div>

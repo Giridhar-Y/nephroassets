@@ -1,14 +1,24 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
+import {
+  RegisterIcon,
+  LocationIcon,
+  ReconciliationIcon,
+  DepreciationIcon,
+  SettingsIcon,
+  SignOutIcon,
+  CalendarIcon
+} from "../lib/icons.js";
+import type { FluentIconsProps } from "@fluentui/react-icons";
 
-const NAV_ITEMS = [
-  { to: "/register", label: "Register" },
-  { to: "/location-summary", label: "Location Summary" },
-  { to: "/audit-reconciliation", label: "Audit Reconciliation" },
-  { to: "/depreciation-posting", label: "Depreciation" },
-  { to: "/settings", label: "Settings" }
+const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIconsProps> }> = [
+  { to: "/register", label: "Register", icon: RegisterIcon },
+  { to: "/location-summary", label: "Location Summary", icon: LocationIcon },
+  { to: "/audit-reconciliation", label: "Audit Reconciliation", icon: ReconciliationIcon },
+  { to: "/depreciation-posting", label: "Depreciation", icon: DepreciationIcon },
+  { to: "/settings", label: "Settings", icon: SettingsIcon }
 ];
 
 function AsAtControl() {
@@ -33,7 +43,10 @@ function AsAtControl() {
 
   return (
     <label className="flex items-center gap-2 text-sm">
-      <span className="font-medium text-gray-600">Figures as of:</span>
+      <span className="flex items-center gap-1.5 font-medium text-gray-600">
+        <CalendarIcon fontSize={16} />
+        Figures as of:
+      </span>
       <input
         type="date"
         data-testid="asat-input"
@@ -74,11 +87,12 @@ export function Layout() {
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `block rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                `flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                   isActive ? "bg-accent-light text-accent-hover" : "text-gray-600 hover:bg-gray-50"
                 }`
               }
             >
+              <item.icon fontSize={18} />
               {item.label}
             </NavLink>
           ))}
@@ -86,12 +100,13 @@ export function Layout() {
         <div className="border-t border-gray-100 px-3 py-3">
           <button
             type="button"
-            className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700"
+            className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700"
             onClick={() => {
               logout();
               navigate("/login", { replace: true });
             }}
           >
+            <SignOutIcon fontSize={18} />
             Sign Out
           </button>
         </div>

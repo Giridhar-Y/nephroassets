@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchCenters, fetchStatuses, fetchSubClassifications } from "../api/client.js";
 import { useFilters } from "../lib/FiltersContext.js";
 import { formatDate } from "../lib/format.js";
+import { CalendarIcon, DismissIcon, SearchIcon } from "../lib/icons.js";
 
 const FILTER_LABELS: Record<string, string> = {
   center: "Center",
@@ -128,19 +129,23 @@ export function FilterBar({ asAt }: { asAt: string | null }) {
           <label htmlFor="filter-search" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
             Search FAR ID
           </label>
-          <input
-            id="filter-search"
-            type="text"
-            placeholder="e.g. FAR-000123"
-            className="min-w-[180px] rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-            value={filters.search ?? ""}
-            onChange={(e) => (e.target.value ? setFilter("search", e.target.value) : clearFilter("search"))}
-          />
+          <div className="relative min-w-[180px]">
+            <SearchIcon fontSize={15} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              id="filter-search"
+              type="text"
+              placeholder="e.g. FAR-000123"
+              className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-2 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+              value={filters.search ?? ""}
+              onChange={(e) => (e.target.value ? setFilter("search", e.target.value) : clearFilter("search"))}
+            />
+          </div>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-accent-light px-3 py-1 text-xs font-semibold text-accent-hover">
+        <span className="flex items-center gap-1.5 rounded-full bg-accent-light px-3 py-1 text-xs font-semibold text-accent-hover">
+          <CalendarIcon fontSize={13} />
           Figures as of: {asAt ? formatDate(asAt) : "…"}
         </span>
         {activeChips.map(([key, value]) => (
@@ -155,7 +160,7 @@ export function FilterBar({ asAt }: { asAt: string | null }) {
               onClick={() => clearFilter(key as keyof typeof filters)}
               aria-label={`Remove ${FILTER_LABELS[key] ?? key} filter`}
             >
-              ×
+              <DismissIcon fontSize={12} />
             </button>
           </span>
         ))}

@@ -10,22 +10,23 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fluentui/react-icons": "^2.0.337",
+    "@tanstack/react-table": "^8.20.5",
+    "@tanstack/react-virtual": "^3.10.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
-    "@tanstack/react-table": "^8.20.5",
-    "@tanstack/react-virtual": "^3.10.9"
+    "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
-    "typescript": "^5.6.3",
-    "vite": "^5.4.10",
-    "tailwindcss": "^3.4.14",
-    "postcss": "^8.4.47",
     "autoprefixer": "^10.4.20",
-    "@playwright/test": "^1.48.2"
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
   },
   "allowScripts": {
     "esbuild@0.21.5": true

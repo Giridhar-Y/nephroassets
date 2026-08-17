@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { DEMO_PASSWORD, DEMO_USERNAME, useAuth } from "../lib/AuthContext.js";
+import { ErrorIcon, InfoIcon, LockIcon } from "../lib/icons.js";
 
 export function LoginPage() {
   const { isAuthenticated, login } = useAuth();
@@ -22,9 +23,12 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-[#F7F7F5]">
+    <div className="flex h-full items-center justify-center bg-[#FAFAFA]">
       <div className="w-full max-w-sm rounded-xl bg-white p-8 shadow-sm">
-        <h1 className="text-lg font-bold tracking-tight text-ink">NephroAssets</h1>
+        <div className="flex items-center gap-2">
+          <LockIcon fontSize={22} className="text-ink" />
+          <h1 className="text-lg font-bold tracking-tight text-ink">NephroAssets</h1>
+        </div>
         <p className="mt-1 text-sm text-gray-500">Sign in to preview the register.</p>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
@@ -55,7 +59,12 @@ export function LoginPage() {
             />
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <p className="flex items-center gap-1.5 text-sm text-red-600">
+              <ErrorIcon fontSize={15} />
+              {error}
+            </p>
+          )}
 
           <button
             type="submit"
@@ -65,9 +74,11 @@ export function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-6 rounded-md bg-accent-light px-3 py-2 text-xs text-accent-hover">
-          Demo credentials — username <strong>{DEMO_USERNAME}</strong>, password{" "}
-          <strong>{DEMO_PASSWORD}</strong>
+        <p className="mt-6 flex items-start gap-1.5 rounded-md bg-accent-light px-3 py-2 text-xs text-accent-hover">
+          <InfoIcon fontSize={14} className="mt-0.5 shrink-0" />
+          <span>
+            Demo credentials — username <strong>{DEMO_USERNAME}</strong>, password <strong>{DEMO_PASSWORD}</strong>
+          </span>
         </p>
       </div>
     </div>

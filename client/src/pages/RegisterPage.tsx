@@ -7,6 +7,7 @@ import { FilterBar } from "../components/FilterBar.js";
 import { ColumnPicker } from "../components/ColumnPicker.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
+import { TransferIcon } from "../lib/icons.js";
 
 export function RegisterPage() {
   const { settings } = useSettings();
@@ -43,10 +44,11 @@ export function RegisterPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             disabled={selected.size === 0}
             onClick={() => setTransferOpen(true)}
           >
+            <TransferIcon fontSize={14} />
             Transfer Selected ({selected.size})
           </button>
           <ColumnPicker prefs={columnPrefs} />

@@ -5,6 +5,7 @@ import { formatCurrency, formatDate } from "../lib/format.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
+import { DepreciationIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 
 export function DepreciationPostingPage() {
   const { settings } = useSettings();
@@ -48,16 +49,19 @@ export function DepreciationPostingPage() {
 
       <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
         {error && (
-          <p className="mb-4 text-sm text-red-600">
+          <p className="mb-4 flex items-center gap-1.5 text-sm text-red-600">
+            <ErrorIcon fontSize={15} />
             {error}{" "}
-            <button className="font-semibold underline" onClick={load}>
+            <button className="flex items-center gap-1 font-semibold underline" onClick={load}>
+              <RetryIcon fontSize={13} />
               Retry
             </button>
           </p>
         )}
 
         <div className="max-w-md rounded-xl bg-white px-6 py-5 shadow-sm">
-          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+          <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+            <DepreciationIcon fontSize={14} />
             Journal Entry — as of {asAt ? formatDate(asAt) : "…"}
           </div>
           <div className="mt-2 text-3xl font-semibold text-ink">

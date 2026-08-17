@@ -9,6 +9,7 @@ import { ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS } from "../lib/columns.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
+import { ErrorIcon, LocationIcon } from "../lib/icons.js";
 
 const COLUMNS = ALL_COLUMNS.filter((c) => DEFAULT_VISIBLE_COLUMNS.includes(c.id));
 
@@ -91,11 +92,17 @@ export function LocationSummaryPage() {
             </div>
           </div>
         )}
-        {summaryError && <p className="mt-2 text-sm text-red-600">{summaryError}</p>}
+        {summaryError && (
+          <p className="mt-2 flex items-center gap-1.5 text-sm text-red-600">
+            <ErrorIcon fontSize={15} />
+            {summaryError}
+          </p>
+        )}
       </div>
 
       {!location ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+          <LocationIcon fontSize={28} className="text-gray-300" />
           <p className="text-sm font-medium text-gray-600">Choose a location to see its assets.</p>
           <p className="text-xs text-gray-400">You'll get a count and total Gross Block, plus the full list below.</p>
         </div>

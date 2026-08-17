@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { InfoIcon } from "../lib/icons.js";
 
 export function Tooltip({ text, children }: { text: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -14,10 +15,10 @@ export function Tooltip({ text, children }: { text: string; children: ReactNode 
       <button
         type="button"
         aria-label="What does this mean?"
-        className="grid h-3.5 w-3.5 place-items-center rounded-full border border-gray-400 text-[9px] leading-none text-gray-500 hover:border-accent hover:text-accent"
+        className="grid place-items-center rounded-full text-gray-400 hover:text-accent"
         tabIndex={0}
       >
-        i
+        <InfoIcon fontSize={13} />
       </button>
       {open && (
         <span
