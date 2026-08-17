@@ -8,6 +8,7 @@ server/.pgdata/
 server/.pgdata-test/
 server/.pgdata-scale/
 client/dist/
+*.tsbuildinfo
 client/e2e/.auth/
 client/test-results/
 client/playwright-report/
