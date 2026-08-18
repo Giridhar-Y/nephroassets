@@ -12,6 +12,8 @@ import settingsRoutes from "./routes/settings.js";
 import transfersRoutes from "./routes/transfers.js";
 import reportsRoutes from "./routes/reports.js";
 import bulkUploadRoutes from "./routes/bulkUpload.js";
+import bulkDisposalsRoutes from "./routes/bulkDisposals.js";
+import bulkTransfersRoutes from "./routes/bulkTransfers.js";
 import assetsExportRoutes from "./routes/assetsExport.js";
 
 const app = Fastify({ logger: true });
@@ -24,6 +26,8 @@ await app.register(settingsRoutes);
 await app.register(transfersRoutes);
 await app.register(reportsRoutes);
 await app.register(bulkUploadRoutes);
+await app.register(bulkDisposalsRoutes);
+await app.register(bulkTransfersRoutes);
 await app.register(assetsExportRoutes);
 
 app.get("/api/health", async () => ({ ok: true }));

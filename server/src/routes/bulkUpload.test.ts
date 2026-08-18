@@ -3,21 +3,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkUploadRoutes from "./bulkUpload.js";
 import { getPool } from "../db/pool.js";
-
-const BOUNDARY = "----bulkUploadTestBoundary";
-
-function csvPayload(csv: string, filename = "assets.csv") {
-  const body =
-    `--${BOUNDARY}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-    `Content-Type: text/csv\r\n\r\n` +
-    `${csv}\r\n` +
-    `--${BOUNDARY}--\r\n`;
-  return {
-    payload: body,
-    headers: { "content-type": `multipart/form-data; boundary=${BOUNDARY}` }
-  };
-}
+import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 const HEADER =
   "farId,subClassification,assetDescription,status,dateAcquired,location,usefulLifeC1Years,usefulLifeC2Years,c1OpeningCost,c2OpeningCost";
@@ -52,7 +38,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.upserted).toBe(1);
+    expect(body.processed).toBe(1);
     expect(body.errors).toHaveLength(1);
     expect(body.errors[0].farId).toBe("BULK-2");
 
@@ -69,7 +55,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       "\n"
     );
     const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
-    expect(res.json().upserted).toBe(1);
+    expect(res.json().processed).toBe(1);
 
     const db = await getPool();
     const { rows } = await db.query(`SELECT asset_description, c1_opening_cost FROM assets WHERE far_id = 'BULK-3'`);
@@ -79,12 +65,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
   });
 
   it("400s when no file is uploaded", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/assets/bulk-upload",
-      payload: `--${BOUNDARY}--\r\n`,
-      headers: { "content-type": `multipart/form-data; boundary=${BOUNDARY}` }
-    });
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...emptyMultipartPayload() });
     expect(res.statusCode).toBe(400);
   });
 });

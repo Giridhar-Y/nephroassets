@@ -143,21 +143,35 @@ export interface BulkUploadError {
 
 export interface BulkUploadResult {
   totalRows: number;
-  upserted: number;
+  processed: number;
   errors: BulkUploadError[];
 }
 
 // Bypasses the `request` helper: it always sets Content-Type: application/json, but a
 // multipart upload needs the browser to set its own Content-Type with the form boundary.
-export async function uploadBulkAssets(file: File): Promise<BulkUploadResult> {
+async function uploadFile(path: string, file: File): Promise<BulkUploadResult> {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch("/api/assets/bulk-upload", { method: "POST", body: formData });
+  const res = await fetch(path, { method: "POST", body: formData });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(body.error ?? `Request to /api/assets/bulk-upload failed with ${res.status}`, res.status);
+    throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
   }
   return res.json() as Promise<BulkUploadResult>;
+}
+
+// Bulk Upload's three modes: create/update assets (capitalization included — a new FAR
+// ID capitalizes, an existing one updates), full disposals, and center transfers.
+export function uploadBulkAssets(file: File): Promise<BulkUploadResult> {
+  return uploadFile("/api/assets/bulk-upload", file);
+}
+
+export function uploadBulkDisposals(file: File): Promise<BulkUploadResult> {
+  return uploadFile("/api/assets/bulk-dispose", file);
+}
+
+export function uploadBulkTransfers(file: File): Promise<BulkUploadResult> {
+  return uploadFile("/api/transfers/bulk-upload", file);
 }
 
 export interface LocationSummary {
