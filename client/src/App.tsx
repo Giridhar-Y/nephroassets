@@ -6,6 +6,11 @@ import { AuditReconciliationPage } from "./pages/AuditReconciliationPage.js";
 import { DepreciationPostingPage } from "./pages/DepreciationPostingPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
+import { TransfersPage } from "./pages/TransfersPage.js";
+import { CapitalizationPage } from "./pages/CapitalizationPage.js";
+import { DisposalPage } from "./pages/DisposalPage.js";
+import { ReportsPage } from "./pages/ReportsPage.js";
+import { BulkUploadPage } from "./pages/BulkUploadPage.js";
 import { SettingsProvider } from "./lib/SettingsContext.js";
 import { FiltersProvider } from "./lib/FiltersContext.js";
 import { AuthProvider } from "./lib/AuthContext.js";
@@ -57,6 +62,46 @@ export default function App() {
                   element={
                     <SettingsGate>
                       <DepreciationPostingPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/reports"
+                  element={
+                    <SettingsGate>
+                      <ReportsPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/transfers"
+                  element={
+                    <SettingsGate>
+                      <TransfersPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/capitalization"
+                  element={
+                    <SettingsGate>
+                      <CapitalizationPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/disposals"
+                  element={
+                    <SettingsGate>
+                      <DisposalPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/bulk-upload"
+                  element={
+                    <SettingsGate>
+                      <BulkUploadPage />
                     </SettingsGate>
                   }
                 />

@@ -4,6 +4,12 @@ import { getPool } from "../db/pool.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
+import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
+
+const disposalSchema = z.object({
+  dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  saleValue: z.coerce.number().min(0)
+});
 
 const SORTABLE_COLUMNS: Record<string, string> = {
   farId: "far_id",
@@ -21,6 +27,7 @@ const querySchema = z.object({
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
+  descriptionSearch: z.string().optional(),
   sortBy: z.enum(["farId", "dateAcquired", "subClassification", "status", "location"]).default("farId"),
   sortDir: z.enum(["asc", "desc"]).default("asc"),
   cursor: z.string().optional(),
@@ -98,6 +105,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
       params.push(`${q.search.toUpperCase()}%`);
       conditions.push(`far_id LIKE $${params.length}`);
     }
+    if (q.descriptionSearch) {
+      params.push(`%${q.descriptionSearch}%`);
+      conditions.push(`asset_description ILIKE $${params.length}`);
+    }
 
     const cursor = decodeCursor(q.cursor);
     if (cursor) {
@@ -151,5 +162,62 @@ export default async function assetsRoutes(app: FastifyInstance) {
         : null;
 
     return { items, nextCursor, asAt };
+  });
+
+  // Capitalization: register a brand-new asset. Disposal fields are left at their
+  // column defaults (null / 0) — an asset is never created pre-disposed.
+  app.post("/api/assets", async (req, reply) => {
+    const parsed = assetCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid asset payload.", details: parsed.error.flatten() };
+    }
+    const input = parsed.data;
+    const db = await getPool();
+    const { rows: existing } = await db.query(`SELECT 1 FROM assets WHERE far_id = $1`, [input.farId]);
+    if (existing.length > 0) {
+      reply.code(409);
+      return { error: `An asset with FAR ID "${input.farId}" already exists.` };
+    }
+    await db.query(
+      `INSERT INTO assets (${ASSET_INSERT_COLUMNS.join(", ")})
+       VALUES (${ASSET_INSERT_COLUMNS.map((_, i) => `$${i + 1}`).join(", ")})`,
+      assetCreateValues(input)
+    );
+    return { farId: input.farId, created: true };
+  });
+
+  // Disposal: full disposal only, so Deletions is always the asset's entire capitalized
+  // cost (opening + additions) rather than a user-entered partial amount.
+  app.patch("/api/assets/:farId/disposal", async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = disposalSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "Invalid disposal payload.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const { dateOfDisposal, saleValue } = bodyParsed.data;
+    const db = await getPool();
+    const { rows } = await db.query(
+      `UPDATE assets
+       SET date_of_disposal = $1,
+           deletions_c1 = c1_opening_cost + additions_c1,
+           deletions_c2 = c2_opening_cost + additions_c2,
+           sale_value = $2
+       WHERE far_id = $3 AND date_of_disposal IS NULL
+       RETURNING far_id`,
+      [dateOfDisposal, saleValue, farId]
+    );
+    if (rows.length === 0) {
+      const { rows: check } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [farId]);
+      if (check.length === 0) {
+        reply.code(404);
+        return { error: `No asset found with FAR ID "${farId}".` };
+      }
+      reply.code(409);
+      return { error: `Asset "${farId}" has already been disposed.` };
+    }
+    return { farId, disposed: true };
   });
 }

@@ -16,6 +16,8 @@ test("center-first transfer: pick a center, select an asset, move it to another 
   await page.goto("/#/register");
 
   // Center-first: narrow the list to one center before picking assets to transfer.
+  // Filtering lives in an inline header popover now, so open it before the select is reachable.
+  await page.getByRole("button", { name: "Filter Current Location" }).click();
   await page.getByLabel("Center").selectOption("Center-010");
   const row = page.locator(`[data-testid="register-row"][data-far-id="${FAR_ID}"]`);
   await expect(row).toBeVisible();

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnDef } from "../lib/columns.js";
@@ -21,6 +21,7 @@ export interface AssetGridProps {
   selected?: Set<string>;
   onToggleRow?: (farId: string) => void;
   onToggleAll?: () => void;
+  headerFilters?: Partial<Record<string, ReactNode>>;
 }
 
 export function AssetGrid({
@@ -36,7 +37,8 @@ export function AssetGrid({
   selectable = false,
   selected,
   onToggleRow,
-  onToggleAll
+  onToggleAll,
+  headerFilters
 }: AssetGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -83,17 +85,23 @@ export function AssetGrid({
                 />
               </div>
             )}
-            {columns.map((col) => (
-              <div
-                key={col.id}
-                className={`flex h-9 shrink-0 items-center px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${
-                  col.align === "right" ? "justify-end" : ""
-                }`}
-                style={{ width: col.width }}
-              >
-                {col.tooltip ? <Tooltip text={col.tooltip}>{col.label}</Tooltip> : col.label}
-              </div>
-            ))}
+            {columns.map((col) => {
+              const filter = headerFilters?.[col.id];
+              return (
+                <div
+                  key={col.id}
+                  className={`flex h-9 shrink-0 items-center gap-1 px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${
+                    col.align === "right" ? "justify-end" : filter ? "justify-between" : ""
+                  }`}
+                  style={{ width: col.width }}
+                >
+                  <span className="truncate">
+                    {col.tooltip ? <Tooltip text={col.tooltip}>{col.label}</Tooltip> : col.label}
+                  </span>
+                  {filter}
+                </div>
+              );
+            })}
           </div>
 
           {loading ? (

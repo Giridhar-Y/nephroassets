@@ -69,6 +69,26 @@ export interface AssetListResponse {
   asAt: string;
 }
 
+export interface AssetCreateInput {
+  farId: string;
+  subClassification: string;
+  assetDescription: string;
+  serialNo?: string;
+  qty?: number;
+  status: string;
+  dateAcquired: string;
+  location: string;
+  usefulLifeC1Years: number;
+  usefulLifeC2Years: number;
+  c1OpeningCost?: number;
+  c2OpeningCost?: number;
+  additionsC1?: number;
+  additionsC2?: number;
+  dateOfAddition?: string | null;
+  accDepC1Opening?: number;
+  accDepC2Opening?: number;
+}
+
 export interface AssetFilters {
   center?: string;
   subClassification?: string;
@@ -76,4 +96,5 @@ export interface AssetFilters {
   dateAcquiredFrom?: string;
   dateAcquiredTo?: string;
   search?: string;
+  descriptionSearch?: string;
 }

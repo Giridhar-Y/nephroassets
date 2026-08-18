@@ -3,6 +3,7 @@ import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import multipart from "@fastify/multipart";
 import { applySchema } from "./db/pool.js";
 import { seed } from "./db/seed.js";
 import assetsRoutes from "./routes/assets.js";
@@ -10,15 +11,20 @@ import metaRoutes from "./routes/meta.js";
 import settingsRoutes from "./routes/settings.js";
 import transfersRoutes from "./routes/transfers.js";
 import reportsRoutes from "./routes/reports.js";
+import bulkUploadRoutes from "./routes/bulkUpload.js";
+import assetsExportRoutes from "./routes/assetsExport.js";
 
 const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true });
+await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
 await app.register(assetsRoutes);
 await app.register(metaRoutes);
 await app.register(settingsRoutes);
 await app.register(transfersRoutes);
 await app.register(reportsRoutes);
+await app.register(bulkUploadRoutes);
+await app.register(assetsExportRoutes);
 
 app.get("/api/health", async () => ({ ok: true }));
 

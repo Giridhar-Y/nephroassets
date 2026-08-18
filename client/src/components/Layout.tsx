@@ -4,20 +4,24 @@ import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import {
   RegisterIcon,
-  LocationIcon,
-  ReconciliationIcon,
-  DepreciationIcon,
   SettingsIcon,
   SignOutIcon,
-  CalendarIcon
+  CalendarIcon,
+  HistoryIcon,
+  AddCircleIcon,
+  DeleteIcon,
+  ReportsIcon,
+  UploadIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
 const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIconsProps> }> = [
   { to: "/register", label: "Register", icon: RegisterIcon },
-  { to: "/location-summary", label: "Location Summary", icon: LocationIcon },
-  { to: "/audit-reconciliation", label: "Audit Reconciliation", icon: ReconciliationIcon },
-  { to: "/depreciation-posting", label: "Depreciation", icon: DepreciationIcon },
+  { to: "/transfers", label: "Transfers", icon: HistoryIcon },
+  { to: "/capitalization", label: "Capitalization", icon: AddCircleIcon },
+  { to: "/disposals", label: "Disposals", icon: DeleteIcon },
+  { to: "/bulk-upload", label: "Bulk Upload", icon: UploadIcon },
+  { to: "/reports", label: "Reports", icon: ReportsIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon }
 ];
 

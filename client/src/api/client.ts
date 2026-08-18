@@ -1,4 +1,4 @@
-import type { AssetFilters, AssetListResponse, FySettings } from "../lib/types.js";
+import type { AssetCreateInput, AssetFilters, AssetListResponse, FySettings } from "../lib/types.js";
 
 export class ApiError extends Error {
   status: number;
@@ -71,6 +71,93 @@ export function createTransfer(payload: {
   transactionDate: string;
 }): Promise<{ transferred: number }> {
   return request("/api/transfers", { method: "POST", body: JSON.stringify(payload) });
+}
+
+// Register's "Export to Excel": builds the download URL for the current filters (no
+// filters applied exports the entire register). Not a fetch — the browser downloads it
+// directly via the Content-Disposition header, same as any other file download link.
+export function getExportUrl(params: { asAt: string } & AssetFilters): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  return `/api/assets/export?${search.toString()}`;
+}
+
+// Capitalization: register a brand-new asset.
+export function createAsset(payload: AssetCreateInput): Promise<{ farId: string; created: boolean }> {
+  return request("/api/assets", { method: "POST", body: JSON.stringify(payload) });
+}
+
+// Disposal: full disposal only — the server writes off the asset's entire capitalized cost.
+export function disposeAsset(
+  farId: string,
+  payload: { dateOfDisposal: string; saleValue: number }
+): Promise<{ farId: string; disposed: boolean }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}/disposal`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export interface TransferHistoryItem {
+  id: number;
+  farId: string;
+  assetDescription: string;
+  transactionDate: string;
+  location: string;
+}
+
+export interface TransferHistoryResponse {
+  items: TransferHistoryItem[];
+  nextCursor: number | null;
+}
+
+export interface TransferHistoryFilters {
+  search?: string;
+  descriptionSearch?: string;
+  location?: string;
+  transactionDateFrom?: string;
+  transactionDateTo?: string;
+}
+
+export function fetchTransferHistory(
+  params: TransferHistoryFilters & { cursor?: number | null; limit?: number }
+): Promise<TransferHistoryResponse> {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  return request(`/api/transfers?${search.toString()}`);
+}
+
+export interface BulkUploadError {
+  row: number;
+  farId: string | null;
+  message: string;
+}
+
+export interface BulkUploadResult {
+  totalRows: number;
+  upserted: number;
+  errors: BulkUploadError[];
+}
+
+// Bypasses the `request` helper: it always sets Content-Type: application/json, but a
+// multipart upload needs the browser to set its own Content-Type with the form boundary.
+export async function uploadBulkAssets(file: File): Promise<BulkUploadResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch("/api/assets/bulk-upload", { method: "POST", body: formData });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(body.error ?? `Request to /api/assets/bulk-upload failed with ${res.status}`, res.status);
+  }
+  return res.json() as Promise<BulkUploadResult>;
 }
 
 export interface LocationSummary {

@@ -20,5 +20,12 @@ export {
   LockClosedRegular as LockIcon,
   DocumentSearchRegular as EmptyIcon,
   ErrorCircleRegular as ErrorIcon,
-  ArrowClockwiseRegular as RetryIcon
+  ArrowClockwiseRegular as RetryIcon,
+  HistoryRegular as HistoryIcon,
+  AddCircleRegular as AddCircleIcon,
+  DeleteRegular as DeleteIcon,
+  DocumentBulletListRegular as ReportsIcon,
+  ArrowUploadRegular as UploadIcon,
+  ArrowDownloadRegular as ExportIcon,
+  FilterRegular as FilterIcon
 } from "@fluentui/react-icons";
