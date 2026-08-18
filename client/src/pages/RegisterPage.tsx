@@ -140,9 +140,14 @@ export function RegisterPage() {
         <div className="flex items-center gap-3 text-xs text-gray-500">
           {loading ? "Loading…" : `${items.length}${nextCursor ? "+" : ""} asset${items.length === 1 ? "" : "s"} loaded`}
           {hasActiveFilters && (
-            <button type="button" className="font-medium text-accent hover:underline" onClick={clearAll}>
-              Clear all filters
-            </button>
+            <>
+              <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
+                {Object.keys(filters).length} filter{Object.keys(filters).length === 1 ? "" : "s"} applied
+              </span>
+              <button type="button" className="font-medium text-accent hover:underline" onClick={clearAll}>
+                Clear all filters
+              </button>
+            </>
           )}
         </div>
         <div className="flex items-center gap-2">

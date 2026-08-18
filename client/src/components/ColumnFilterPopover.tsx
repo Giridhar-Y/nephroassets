@@ -31,9 +31,10 @@ export function ColumnFilterPopover({
     <div className="relative shrink-0" ref={ref}>
       <button
         type="button"
-        aria-label={`Filter ${label}`}
-        className={`flex items-center rounded p-0.5 normal-case ${
-          active ? "text-accent" : "text-gray-400 hover:text-gray-600"
+        aria-label={active ? `Filter ${label} (filter applied)` : `Filter ${label}`}
+        title={active ? "Filter applied — click to change or clear" : "Filter"}
+        className={`flex items-center rounded-full p-1 normal-case ${
+          active ? "bg-ink text-white" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
         }`}
         onClick={() => setOpen((o) => !o)}
       >

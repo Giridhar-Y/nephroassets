@@ -73,13 +73,18 @@ export function TransfersPage() {
         </h1>
         <p className="mt-1 text-sm text-gray-500">A history of every transfer between centers, newest first.</p>
         {hasActiveFilters && (
-          <button
-            type="button"
-            className="mt-2 text-xs font-medium text-accent hover:underline"
-            onClick={() => setFilters({})}
-          >
-            Clear all filters
-          </button>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
+              {Object.keys(filters).length} filter{Object.keys(filters).length === 1 ? "" : "s"} applied
+            </span>
+            <button
+              type="button"
+              className="text-xs font-medium text-accent hover:underline"
+              onClick={() => setFilters({})}
+            >
+              Clear all filters
+            </button>
+          </div>
         )}
       </div>
 
