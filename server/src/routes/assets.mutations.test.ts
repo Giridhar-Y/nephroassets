@@ -95,11 +95,12 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
 
     const db = await getPool();
     const { rows } = await db.query(
-      `SELECT date_of_disposal, deletions_c1, deletions_c2, sale_value FROM assets WHERE far_id = 'DISP-TEST-1'`
+      `SELECT date_of_disposal, deletions_c1, deletions_c2, sale_value, status FROM assets WHERE far_id = 'DISP-TEST-1'`
     );
     expect(rows[0].deletions_c1).toBe("10000");
     expect(rows[0].deletions_c2).toBe("10000");
     expect(Number(rows[0].sale_value)).toBe(500);
+    expect(rows[0].status).toBe("Disposed");
   });
 
   it("rejects disposing the same asset twice", async () => {

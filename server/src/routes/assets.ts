@@ -204,7 +204,8 @@ export default async function assetsRoutes(app: FastifyInstance) {
        SET date_of_disposal = $1,
            deletions_c1 = c1_opening_cost + additions_c1,
            deletions_c2 = c2_opening_cost + additions_c2,
-           sale_value = $2
+           sale_value = $2,
+           status = 'Disposed'
        WHERE far_id = $3 AND date_of_disposal IS NULL
        RETURNING far_id`,
       [dateOfDisposal, saleValue, farId]
