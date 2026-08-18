@@ -99,6 +99,27 @@ export const ALL_COLUMNS: ColumnDef[] = [
     render: (i) => formatCurrency(i.result.c2.nbv)
   },
   {
+    id: "dateOfDisposal",
+    label: "Disposal Date",
+    width: 130,
+    render: (i) => formatDate(i.asset.dateOfDisposal)
+  },
+  {
+    id: "saleValue",
+    label: "Sale Value",
+    width: 130,
+    align: "right",
+    render: (i) => formatCurrency(i.asset.saleValue)
+  },
+  {
+    id: "c1Wdv",
+    label: `C1 ${FIELD_INFO.wdv.label}`,
+    tooltip: FIELD_INFO.wdv.tooltip,
+    width: 170,
+    align: "right",
+    render: (i) => (i.result.c1.wdvAtDisposal === null ? "—" : formatCurrency(i.result.c1.wdvAtDisposal))
+  },
+  {
     id: "profitLoss",
     label: FIELD_INFO.profitLoss.label,
     tooltip: FIELD_INFO.profitLoss.tooltip,

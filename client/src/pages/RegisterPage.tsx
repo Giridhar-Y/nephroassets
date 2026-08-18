@@ -5,9 +5,10 @@ import { useColumnPrefs } from "../lib/useColumnPrefs.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { ColumnPicker } from "../components/ColumnPicker.js";
 import { TransferModal } from "../components/TransferModal.js";
+import { DisposalModal } from "../components/DisposalModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
-import { TransferIcon, ExportIcon } from "../lib/icons.js";
+import { TransferIcon, ExportIcon, DeleteIcon } from "../lib/icons.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
 
 export function RegisterPage() {
@@ -30,6 +31,7 @@ export function RegisterPage() {
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [transferOpen, setTransferOpen] = useState(false);
+  const [disposeOpen, setDisposeOpen] = useState(false);
 
   const toggleRow = (farId: string) => {
     setSelected((prev) => {
@@ -153,6 +155,15 @@ export function RegisterPage() {
             <TransferIcon fontSize={14} />
             Transfer Selected ({selected.size})
           </button>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={selected.size === 0}
+            onClick={() => setDisposeOpen(true)}
+          >
+            <DeleteIcon fontSize={14} />
+            Dispose Selected ({selected.size})
+          </button>
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
             aria-disabled={!asAt}
@@ -189,6 +200,19 @@ export function RegisterPage() {
           onClose={() => setTransferOpen(false)}
           onDone={() => {
             setTransferOpen(false);
+            setSelected(new Set());
+            reload();
+          }}
+        />
+      )}
+
+      {disposeOpen && asAt && (
+        <DisposalModal
+          farIds={[...selected]}
+          defaultDate={asAt}
+          onClose={() => setDisposeOpen(false)}
+          onDone={() => {
+            setDisposeOpen(false);
             setSelected(new Set());
             reload();
           }}

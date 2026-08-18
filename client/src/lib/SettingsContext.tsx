@@ -2,6 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { fetchSettingsOrNull, updateSettings as updateSettingsApi } from "../api/client.js";
 import type { FySettings } from "./types.js";
 
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 interface SettingsContextValue {
   settings: FySettings | null;
   loading: boolean;
@@ -27,7 +32,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const result = await fetchSettingsOrNull();
-      setSettings(result);
+      if (result) {
+        // "Figures as of" defaults to today on every fresh load, not whatever was last
+        // left set — clamped to the configured financial year. An explicit change via
+        // the AsAtControl still persists for that look, but a new visit starts at today.
+        const today = todayIso();
+        const asAt = today < result.fyStart ? result.fyStart : today > result.fyEnd ? result.fyEnd : today;
+        setSettings(asAt === result.asAt ? result : await updateSettingsApi({ ...result, asAt }));
+      } else {
+        setSettings(null);
+      }
       setNotConfigured(result === null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load settings.");

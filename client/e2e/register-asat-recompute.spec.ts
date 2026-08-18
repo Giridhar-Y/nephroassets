@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 
 const API_BASE = "http://localhost:4000";
 const FAR_ID = "FAR-000001";
-const BASELINE_AS_AT = "2026-08-17";
 const NEW_AS_AT = "2026-06-01";
 
 const currencyFormatter = new Intl.NumberFormat("en-IN", {
@@ -19,13 +18,6 @@ async function fetchExpectedC1Nbv(request: import("@playwright/test").APIRequest
   return currencyFormatter.format(item.result.c1.nbv);
 }
 
-test.beforeEach(async ({ request }) => {
-  const current = await (await request.get(`${API_BASE}/api/settings`)).json();
-  await request.put(`${API_BASE}/api/settings`, {
-    data: { ...current, asAt: BASELINE_AS_AT }
-  });
-});
-
 test("changing AS_AT recomputes the register with no stale data", async ({ page, request }) => {
   await page.goto("/#/register");
 
@@ -35,7 +27,10 @@ test("changing AS_AT recomputes the register with no stale data", async ({ page,
   const nbvCell = row.locator('[data-testid="cell-c1Nbv"]');
   const initialText = await nbvCell.textContent();
 
-  const expectedInitial = await fetchExpectedC1Nbv(request, BASELINE_AS_AT);
+  // "Figures as of" defaults to today on load — read whatever that resolved to rather
+  // than assuming a fixed date, then confirm the displayed NBV matches the API for it.
+  const initialAsAt = await page.getByTestId("asat-input").inputValue();
+  const expectedInitial = await fetchExpectedC1Nbv(request, initialAsAt);
   expect(initialText?.trim()).toBe(expectedInitial);
 
   const responsePromise = page.waitForResponse(

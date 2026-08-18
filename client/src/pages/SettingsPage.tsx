@@ -12,7 +12,13 @@ function daysBetweenInclusive(start: string, end: string): number | null {
   return days > 0 ? days : null;
 }
 
-const BLANK_FORM: FySettings = { asAt: "", fyStart: "", fyEnd: "", daysInFy: 365 };
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// First-run default: "Figures as of" starts on today rather than blank.
+const BLANK_FORM: FySettings = { asAt: todayIso(), fyStart: "", fyEnd: "", daysInFy: 365 };
 
 export function SettingsPage() {
   const { settings, loading, notConfigured, saveSettings } = useSettings();
