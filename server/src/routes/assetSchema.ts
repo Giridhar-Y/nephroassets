@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bulkDate } from "./bulkParse.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -70,8 +71,13 @@ export function assetCreateValues(input: AssetCreateInput): unknown[] {
 
 // Bulk upload rows may additionally carry a disposal already on record (real spreadsheets
 // commonly include historical disposed assets), which the Capitalization form never sends.
+// Its date columns are DD-MM-YYYY (see bulkDate in bulkParse.ts) rather than the ISO
+// `isoDate` above, which stays tied to the Capitalization form's native <input
+// type="date"> — the two paths intentionally use different date schemas.
 export const bulkAssetRowSchema = assetCreateSchema.extend({
-  dateOfDisposal: isoDate.optional().nullable().default(null),
+  dateAcquired: bulkDate,
+  dateOfAddition: bulkDate.optional().nullable().default(null),
+  dateOfDisposal: bulkDate.optional().nullable().default(null),
   deletionsC1: z.coerce.number().min(0).default(0),
   deletionsC2: z.coerce.number().min(0).default(0),
   saleValue: z.coerce.number().min(0).default(0)

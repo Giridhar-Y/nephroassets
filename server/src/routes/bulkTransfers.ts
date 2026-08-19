@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { loadWorksheet, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 
 const transferRowSchema = z.object({
   farId: z.string().min(1),
   toLocation: z.string().min(1),
-  transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+  transactionDate: bulkDate
 });
 
 export default async function bulkTransfersRoutes(app: FastifyInstance) {
@@ -35,6 +35,28 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     } catch (err) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
+    }
+
+    // Preview mode: same FAR-ID-exists check the commit loop below does, read-only.
+    if ((req.query as Record<string, string>).preview === "true") {
+      const db = await getPool();
+      const farIds = validRows.map(({ data }) => data.farId);
+      const existing = new Set(
+        farIds.length > 0
+          ? (await db.query<{ far_id: string }>(`SELECT far_id FROM assets WHERE far_id = ANY($1)`, [farIds])).rows.map(
+              (r) => r.far_id
+            )
+          : []
+      );
+      const classified: Array<{ row: number; farId: string; status: "update" }> = [];
+      for (const { row, data } of validRows) {
+        if (!existing.has(data.farId)) {
+          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+        } else {
+          classified.push({ row, farId: data.farId, status: "update" });
+        }
+      }
+      return mergePreviewRows(classified, errors);
     }
 
     const totalRows = validRows.length + errors.length;

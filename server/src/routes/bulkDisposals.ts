@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { loadWorksheet, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
-  dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  dateOfDisposal: bulkDate,
   saleValue: z.coerce.number().min(0).default(0)
 });
 
@@ -35,6 +35,32 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
     } catch (err) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
+    }
+
+    // Preview mode: same not-found / already-disposed checks the commit loop below does,
+    // against the same schema-valid rows, but read-only — no UPDATE, no transaction.
+    if ((req.query as Record<string, string>).preview === "true") {
+      const db = await getPool();
+      const farIds = validRows.map(({ data }) => data.farId);
+      const existing = new Map<string, string | null>();
+      if (farIds.length > 0) {
+        const { rows } = await db.query<{ far_id: string; date_of_disposal: string | null }>(
+          `SELECT far_id, date_of_disposal FROM assets WHERE far_id = ANY($1)`,
+          [farIds]
+        );
+        for (const r of rows) existing.set(r.far_id, r.date_of_disposal);
+      }
+      const classified: Array<{ row: number; farId: string; status: "update" }> = [];
+      for (const { row, data } of validRows) {
+        if (!existing.has(data.farId)) {
+          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+        } else if (existing.get(data.farId) != null) {
+          errors.push({ row, farId: data.farId, message: `Asset "${data.farId}" has already been disposed.` });
+        } else {
+          classified.push({ row, farId: data.farId, status: "update" });
+        }
+      }
+      return mergePreviewRows(classified, errors);
     }
 
     const totalRows = validRows.length + errors.length;

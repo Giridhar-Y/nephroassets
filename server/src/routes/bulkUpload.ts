@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getPool } from "../db/pool.js";
 import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues } from "./assetSchema.js";
-import { loadWorksheet, parseWorksheetRows } from "./bulkParse.js";
+import { loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 
 export default async function bulkUploadRoutes(app: FastifyInstance) {
   // Bulk Uploads: parse a CSV/XLSX of assets (columns named after the shared AssetInput
@@ -30,6 +30,27 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     } catch (err) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
+    }
+
+    // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID
+    // already exists), without writing anything — Confirm Upload re-submits the same file
+    // to this same route without ?preview, so the two are guaranteed to agree.
+    if ((req.query as Record<string, string>).preview === "true") {
+      const db = await getPool();
+      const farIds = validRows.map(({ data }) => data.farId);
+      const existing = new Set(
+        farIds.length > 0
+          ? (await db.query<{ far_id: string }>(`SELECT far_id FROM assets WHERE far_id = ANY($1)`, [farIds])).rows.map(
+              (r) => r.far_id
+            )
+          : []
+      );
+      const classified = validRows.map(({ row, data }) => ({
+        row,
+        farId: data.farId,
+        status: existing.has(data.farId) ? ("update" as const) : ("new" as const)
+      }));
+      return mergePreviewRows(classified, errors);
     }
 
     let processed = 0;

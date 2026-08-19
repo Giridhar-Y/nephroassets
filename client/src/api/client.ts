@@ -174,9 +174,22 @@ export interface BulkUploadResult {
   errors: BulkUploadError[];
 }
 
+export interface BulkPreviewRow {
+  row: number;
+  farId: string | null;
+  status: "new" | "update" | "error";
+  message?: string;
+}
+
+export interface BulkPreviewResult {
+  totalRows: number;
+  summary: { new: number; update: number; error: number };
+  rows: BulkPreviewRow[];
+}
+
 // Bypasses the `request` helper: it always sets Content-Type: application/json, but a
 // multipart upload needs the browser to set its own Content-Type with the form boundary.
-async function uploadFile(path: string, file: File): Promise<BulkUploadResult> {
+async function postFile<T>(path: string, file: File): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
   const res = await fetch(path, { method: "POST", body: formData });
@@ -184,21 +197,26 @@ async function uploadFile(path: string, file: File): Promise<BulkUploadResult> {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
   }
-  return res.json() as Promise<BulkUploadResult>;
+  return res.json() as Promise<T>;
 }
 
 // Bulk Upload's three modes: create/update assets (capitalization included — a new FAR
-// ID capitalizes, an existing one updates), full disposals, and center transfers.
-export function uploadBulkAssets(file: File): Promise<BulkUploadResult> {
-  return uploadFile("/api/assets/bulk-upload", file);
+// ID capitalizes, an existing one updates), full disposals, and center transfers. Each
+// has a matching `?preview=true` mode on the same route that classifies rows without
+// writing anything, so Confirm Upload (the plain call below) is guaranteed to match what
+// the preview showed — it's the same server-side validation, just re-run.
+export const BULK_UPLOAD_PATHS = {
+  assets: "/api/assets/bulk-upload",
+  disposals: "/api/assets/bulk-dispose",
+  transfers: "/api/transfers/bulk-upload"
+} as const;
+
+export function previewBulkUpload(path: string, file: File): Promise<BulkPreviewResult> {
+  return postFile(`${path}?preview=true`, file);
 }
 
-export function uploadBulkDisposals(file: File): Promise<BulkUploadResult> {
-  return uploadFile("/api/assets/bulk-dispose", file);
-}
-
-export function uploadBulkTransfers(file: File): Promise<BulkUploadResult> {
-  return uploadFile("/api/transfers/bulk-upload", file);
+export function commitBulkUpload(path: string, file: File): Promise<BulkUploadResult> {
+  return postFile(path, file);
 }
 
 export interface LocationSummary {
