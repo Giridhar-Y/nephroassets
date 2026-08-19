@@ -46,7 +46,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c1GrossBlock",
     label: `C1 ${FIELD_INFO.grossBlock.label}`,
     tooltip: FIELD_INFO.grossBlock.tooltip,
-    width: 140,
+    width: 165,
     align: "right",
     render: (i) => formatCurrency(i.result.c1.grossBlock)
   },
@@ -54,7 +54,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c1AccDep",
     label: `C1 ${FIELD_INFO.accumulatedDepreciation.label}`,
     tooltip: FIELD_INFO.accumulatedDepreciation.tooltip,
-    width: 150,
+    width: 175,
     align: "right",
     render: (i) => formatCurrency(i.result.c1.closingAccDep)
   },
@@ -62,7 +62,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c1PeriodDep",
     label: `C1 ${FIELD_INFO.periodDepreciation.label}`,
     tooltip: FIELD_INFO.periodDepreciation.tooltip,
-    width: 150,
+    width: 175,
     align: "right",
     render: (i) => formatCurrency(i.result.c1.periodDepreciation)
   },
@@ -70,7 +70,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c1Nbv",
     label: `C1 ${FIELD_INFO.nbv.label}`,
     tooltip: FIELD_INFO.nbv.tooltip,
-    width: 140,
+    width: 165,
     align: "right",
     render: (i) => formatCurrency(i.result.c1.nbv)
   },
@@ -78,7 +78,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c2GrossBlock",
     label: `C2 ${FIELD_INFO.grossBlock.label}`,
     tooltip: FIELD_INFO.grossBlock.tooltip,
-    width: 140,
+    width: 165,
     align: "right",
     render: (i) => formatCurrency(i.result.c2.grossBlock)
   },
@@ -86,7 +86,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c2AccDep",
     label: `C2 ${FIELD_INFO.accumulatedDepreciation.label}`,
     tooltip: FIELD_INFO.accumulatedDepreciation.tooltip,
-    width: 150,
+    width: 175,
     align: "right",
     render: (i) => formatCurrency(i.result.c2.closingAccDep)
   },
@@ -94,7 +94,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c2Nbv",
     label: `C2 ${FIELD_INFO.nbv.label}`,
     tooltip: FIELD_INFO.nbv.tooltip,
-    width: 140,
+    width: 165,
     align: "right",
     render: (i) => formatCurrency(i.result.c2.nbv)
   },
@@ -107,7 +107,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
   {
     id: "saleValue",
     label: "Sale Value",
-    width: 130,
+    width: 150,
     align: "right",
     render: (i) => formatCurrency(i.asset.saleValue)
   },
@@ -115,7 +115,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "c1Wdv",
     label: `C1 ${FIELD_INFO.wdv.label}`,
     tooltip: FIELD_INFO.wdv.tooltip,
-    width: 170,
+    width: 190,
     align: "right",
     render: (i) => (i.result.c1.wdvAtDisposal === null ? "—" : formatCurrency(i.result.c1.wdvAtDisposal))
   },
@@ -123,7 +123,7 @@ export const ALL_COLUMNS: ColumnDef[] = [
     id: "profitLoss",
     label: FIELD_INFO.profitLoss.label,
     tooltip: FIELD_INFO.profitLoss.tooltip,
-    width: 150,
+    width: 170,
     align: "right",
     render: (i) =>
       i.result.c1.profitLossOnDisposal === null

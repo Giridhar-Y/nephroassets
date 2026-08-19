@@ -11,6 +11,8 @@ import { CapitalizationPage } from "./pages/CapitalizationPage.js";
 import { DisposalPage } from "./pages/DisposalPage.js";
 import { ReportsPage } from "./pages/ReportsPage.js";
 import { BulkUploadPage } from "./pages/BulkUploadPage.js";
+import { AssetSearchPage } from "./pages/AssetSearchPage.js";
+import { AssetLifecyclePage } from "./pages/AssetLifecyclePage.js";
 import { SettingsProvider } from "./lib/SettingsContext.js";
 import { FiltersProvider } from "./lib/FiltersContext.js";
 import { AuthProvider } from "./lib/AuthContext.js";
@@ -70,6 +72,22 @@ export default function App() {
                   element={
                     <SettingsGate>
                       <ReportsPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/assets"
+                  element={
+                    <SettingsGate>
+                      <AssetSearchPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/assets/:farId"
+                  element={
+                    <SettingsGate>
+                      <AssetLifecyclePage />
                     </SettingsGate>
                   }
                 />

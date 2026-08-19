@@ -97,4 +97,5 @@ export interface AssetFilters {
   dateAcquiredTo?: string;
   search?: string;
   descriptionSearch?: string;
+  globalSearch?: string;
 }

@@ -22,7 +22,8 @@ const exportQuerySchema = z.object({
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
-  descriptionSearch: z.string().optional()
+  descriptionSearch: z.string().optional(),
+  globalSearch: z.string().optional()
 });
 
 const EXPORT_COLUMNS = [
@@ -120,6 +121,25 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     if (q.descriptionSearch) {
       params.push(`%${q.descriptionSearch}%`);
       conditions.push(`asset_description ILIKE $${params.length}`);
+    }
+    if (q.globalSearch) {
+      params.push(`${q.globalSearch.toUpperCase()}%`);
+      const farIdParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const descParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const subClassParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const statusParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const locationParam = params.length;
+      conditions.push(
+        `(far_id LIKE $${farIdParam}
+          OR asset_description ILIKE $${descParam}
+          OR sub_classification ILIKE $${subClassParam}
+          OR status ILIKE $${statusParam}
+          OR COALESCE(revised_location, location) ILIKE $${locationParam})`
+      );
     }
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

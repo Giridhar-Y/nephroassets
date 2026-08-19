@@ -28,6 +28,7 @@ const querySchema = z.object({
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
   descriptionSearch: z.string().optional(),
+  globalSearch: z.string().optional(),
   sortBy: z.enum(["farId", "dateAcquired", "subClassification", "status", "location"]).default("farId"),
   sortDir: z.enum(["asc", "desc"]).default("asc"),
   cursor: z.string().optional(),
@@ -109,6 +110,29 @@ export default async function assetsRoutes(app: FastifyInstance) {
       params.push(`%${q.descriptionSearch}%`);
       conditions.push(`asset_description ILIKE $${params.length}`);
     }
+    if (q.globalSearch) {
+      // The Register toolbar's single search box: matches any of these fields, unlike
+      // the column-header filters above which are independent AND conditions. Fully
+      // server-side against the whole table (not the client's lazy-loaded page), so a
+      // match further down the list is found the same as one on the first page.
+      params.push(`${q.globalSearch.toUpperCase()}%`);
+      const farIdParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const descParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const subClassParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const statusParam = params.length;
+      params.push(`%${q.globalSearch}%`);
+      const locationParam = params.length;
+      conditions.push(
+        `(far_id LIKE $${farIdParam}
+          OR asset_description ILIKE $${descParam}
+          OR sub_classification ILIKE $${subClassParam}
+          OR status ILIKE $${statusParam}
+          OR COALESCE(revised_location, location) ILIKE $${locationParam})`
+      );
+    }
 
     const cursor = decodeCursor(q.cursor);
     if (cursor) {
@@ -162,6 +186,55 @@ export default async function assetsRoutes(app: FastifyInstance) {
         : null;
 
     return { items, nextCursor, asAt };
+  });
+
+  // Asset 360: one asset's full record plus its complete transfer history (not just
+  // transfers up to AS_AT — the lifecycle timeline shows everything that ever happened).
+  app.get("/api/assets/:farId", async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const queryParsed = z.object({ asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }).safeParse(req.query);
+    if (!paramsParsed.success || !queryParsed.success) {
+      reply.code(400);
+      return { error: "Invalid request." };
+    }
+    const { farId } = paramsParsed.data;
+    const db = await getPool();
+
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1`, [farId]);
+    const row = rows[0];
+    if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+
+    const { rows: settingsRows } = await db.query<SettingsRow>(
+      `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
+    );
+    const fySettings = settingsRows[0];
+    if (!fySettings) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    const asAt = queryParsed.data.asAt ?? fySettings.as_at;
+
+    const { rows: transferRows } = await db.query<TransferRow & { id: string | number }>(
+      `SELECT id, far_id, transaction_date, location FROM transfers WHERE far_id = $1 ORDER BY transaction_date ASC, id ASC`,
+      [farId]
+    );
+
+    const asset = mapAssetRow(row);
+    const fy = mapSettingsRow(fySettings);
+    fy.asAt = asAt;
+    const relevantTransfers = transferRows.filter((t) => t.transaction_date <= asAt).map(mapTransferRow);
+    const result = computeAsset(asset, fy, relevantTransfers);
+
+    const transfers = transferRows.map((t) => ({
+      id: Number(t.id),
+      transactionDate: t.transaction_date,
+      location: t.location
+    }));
+
+    return { asset, result, transfers, asAt };
   });
 
   // Capitalization: register a brand-new asset. Disposal fields are left at their

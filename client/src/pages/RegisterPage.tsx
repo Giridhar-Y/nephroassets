@@ -7,8 +7,9 @@ import { ColumnPicker } from "../components/ColumnPicker.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { DisposalModal } from "../components/DisposalModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
+import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
-import { TransferIcon, ExportIcon, DeleteIcon } from "../lib/icons.js";
+import { ExportIcon, SearchIcon } from "../lib/icons.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
 
 export function RegisterPage() {
@@ -28,7 +29,7 @@ export function RegisterPage() {
     fetchStatuses().then(setStatuses).catch(() => {});
   }, []);
 
-  const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
+  const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [transferOpen, setTransferOpen] = useState(false);
   const [disposeOpen, setDisposeOpen] = useState(false);
@@ -136,9 +137,34 @@ export function RegisterPage() {
 
   return (
     <div className="flex h-full flex-col">
+      <div className="border-b border-gray-200 bg-white px-6 py-3">
+        <div className="relative max-w-sm">
+          <SearchIcon fontSize={15} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search FAR ID, Description, Sub Classification, Status, or Location…"
+            className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-2 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+            value={filters.globalSearch ?? ""}
+            onChange={(e) => (e.target.value ? setFilter("globalSearch", e.target.value) : clearFilter("globalSearch"))}
+          />
+        </div>
+      </div>
+
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-2">
         <div className="flex items-center gap-3 text-xs text-gray-500">
-          {loading ? "Loading…" : `${items.length}${nextCursor ? "+" : ""} asset${items.length === 1 ? "" : "s"} loaded`}
+          {loading
+            ? "Loading…"
+            : `${items.length} asset${items.length === 1 ? "" : "s"} loaded${nextCursor ? " (more available)" : ""}`}
+          {!loading && nextCursor && (
+            <button
+              type="button"
+              className="font-medium text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={loadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          )}
           {hasActiveFilters && (
             <>
               <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
@@ -151,24 +177,11 @@ export function RegisterPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={selected.size === 0}
-            onClick={() => setTransferOpen(true)}
-          >
-            <TransferIcon fontSize={14} />
-            Transfer Selected ({selected.size})
-          </button>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={selected.size === 0}
-            onClick={() => setDisposeOpen(true)}
-          >
-            <DeleteIcon fontSize={14} />
-            Dispose Selected ({selected.size})
-          </button>
+          <RecordMovementControl
+            selectedCount={selected.size}
+            onTransfer={() => setTransferOpen(true)}
+            onDispose={() => setDisposeOpen(true)}
+          />
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
             aria-disabled={!asAt}
@@ -196,11 +209,12 @@ export function RegisterPage() {
         onToggleRow={toggleRow}
         onToggleAll={toggleAllLoaded}
         headerFilters={headerFilters}
+        getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
       />
 
       {transferOpen && asAt && (
         <TransferModal
-          farIds={[...selected]}
+          assets={items.filter((i) => selected.has(i.asset.farId))}
           defaultDate={asAt}
           onClose={() => setTransferOpen(false)}
           onDone={() => {
@@ -213,7 +227,7 @@ export function RegisterPage() {
 
       {disposeOpen && asAt && (
         <DisposalModal
-          farIds={[...selected]}
+          assets={items.filter((i) => selected.has(i.asset.farId))}
           defaultDate={asAt}
           onClose={() => setDisposeOpen(false)}
           onDone={() => {

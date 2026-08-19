@@ -23,12 +23,21 @@ test("center-first transfer: pick a center, select an asset, move it to another 
   await expect(row).toBeVisible();
 
   await row.locator('input[type="checkbox"]').check();
-  await page.getByRole("button", { name: /Transfer Selected \(1\)/ }).click();
+  // Transfer and Dispose now live behind one combined "Record Movement" dropdown.
+  await page.getByRole("button", { name: /Record Movement \(1\)/ }).click();
+  await page.getByRole("button", { name: "Transfer", exact: true }).click(); // dropdown item
 
   await page.getByLabel("Destination Center").selectOption("Center-020");
-  await page.getByRole("button", { name: "Transfer", exact: true }).click();
+  await page.getByRole("button", { name: "Transfer", exact: true }).click(); // form submit -> confirm step
 
-  // Modal closes and the grid reloads.
+  // Confirm step: summarizes the change before anything is actually written.
+  await expect(page.getByRole("heading", { name: "Confirm Transfer" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: FAR_ID })).toBeVisible();
+  await page.getByRole("button", { name: "Confirm & Transfer" }).click();
+
+  // Success step, then dismiss it — the modal only closes once the user acknowledges it.
+  await expect(page.getByText(/asset.*transferred to Center-020/)).toBeVisible();
+  await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByLabel("Destination Center")).toBeHidden();
 
   const res = await request.get(`${API_BASE}/api/assets?search=${FAR_ID}&limit=1`);

@@ -11,12 +11,14 @@ import {
   AddCircleIcon,
   DeleteIcon,
   ReportsIcon,
-  UploadIcon
+  UploadIcon,
+  LifecycleIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
 const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIconsProps> }> = [
   { to: "/register", label: "Register", icon: RegisterIcon },
+  { to: "/assets", label: "Asset History", icon: LifecycleIcon },
   { to: "/transfers", label: "Transfers", icon: HistoryIcon },
   { to: "/capitalization", label: "Capitalization", icon: AddCircleIcon },
   { to: "/disposals", label: "Disposals", icon: DeleteIcon },
@@ -81,7 +83,7 @@ export function Layout() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-gray-200 bg-white">
+      <aside className="flex w-60 shrink-0 flex-col border-r border-gray-200 bg-white print:hidden">
         <div className="px-5 py-5">
           <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>
         </div>
@@ -116,7 +118,7 @@ export function Layout() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex shrink-0 items-center justify-end border-b border-gray-200 bg-white px-6 py-3">
+        <header className="flex shrink-0 items-center justify-end border-b border-gray-200 bg-white px-6 py-3 print:hidden">
           <AsAtControl />
         </header>
         <main className="min-h-0 flex-1 overflow-hidden">

@@ -27,5 +27,8 @@ export {
   DocumentBulletListRegular as ReportsIcon,
   ArrowUploadRegular as UploadIcon,
   ArrowDownloadRegular as ExportIcon,
-  FilterRegular as FilterIcon
+  FilterRegular as FilterIcon,
+  PulseRegular as LifecycleIcon,
+  EyeRegular as ViewIcon,
+  PrintRegular as PrintIcon
 } from "@fluentui/react-icons";

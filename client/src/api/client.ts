@@ -1,4 +1,11 @@
-import type { AssetCreateInput, AssetFilters, AssetListResponse, FySettings } from "../lib/types.js";
+import type {
+  AssetCalculationResult,
+  AssetCreateInput,
+  AssetFilters,
+  AssetInput,
+  AssetListResponse,
+  FySettings
+} from "../lib/types.js";
 
 export class ApiError extends Error {
   status: number;
@@ -63,6 +70,26 @@ export function fetchAssets(params: FetchAssetsParams): Promise<AssetListRespons
     }
   }
   return request<AssetListResponse>(`/api/assets?${search.toString()}`);
+}
+
+export interface AssetDetailTransfer {
+  id: number;
+  transactionDate: string;
+  location: string;
+}
+
+export interface AssetDetailResponse {
+  asset: AssetInput;
+  result: AssetCalculationResult;
+  transfers: AssetDetailTransfer[];
+  asAt: string;
+}
+
+// Asset 360: one asset's full record, its computed result, and complete transfer
+// history (not just transfers up to AS_AT). Throws ApiError with status 404 if the FAR
+// ID doesn't exist — callers show a "not found" state for that case.
+export function fetchAssetDetail(farId: string, asAt: string): Promise<AssetDetailResponse> {
+  return request(`/api/assets/${encodeURIComponent(farId)}?${new URLSearchParams({ asAt })}`);
 }
 
 export function createTransfer(payload: {
