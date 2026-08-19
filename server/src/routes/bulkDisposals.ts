@@ -71,7 +71,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       try {
         await client.query("BEGIN");
         for (const { row, data } of validRows) {
-          const { rows: updated } = await client.query(
+          const { rows: updatedRows } = await client.query(
             `UPDATE assets
              SET date_of_disposal = $1,
                  deletions_c1 = c1_opening_cost + additions_c1,
@@ -82,7 +82,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
              RETURNING far_id`,
             [data.dateOfDisposal, data.saleValue, data.farId]
           );
-          if (updated.length === 0) {
+          if (updatedRows.length === 0) {
             const { rows: check } = await client.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [
               data.farId
             ]);
@@ -107,6 +107,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       }
     }
 
-    return { totalRows, processed, errors };
+    // Disposals never create a new asset — every processed row is an update.
+    return { totalRows, processed, added: 0, updated: processed, errors };
   });
 }

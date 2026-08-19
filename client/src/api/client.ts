@@ -171,6 +171,8 @@ export interface BulkUploadError {
 export interface BulkUploadResult {
   totalRows: number;
   processed: number;
+  added: number;
+  updated: number;
   errors: BulkUploadError[];
 }
 

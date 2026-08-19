@@ -93,6 +93,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       }
     }
 
-    return { totalRows, processed, errors };
+    // Transfers never create a new asset — every processed row is an update.
+    return { totalRows, processed, added: 0, updated: processed, errors };
   });
 }

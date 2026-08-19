@@ -54,6 +54,8 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     }
 
     let processed = 0;
+    let added = 0;
+    let updated = 0;
     if (validRows.length > 0) {
       const db = await getPool();
       const client = await db.connect();
@@ -63,12 +65,18 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       try {
         await client.query("BEGIN");
         for (const { data } of validRows) {
-          await client.query(
+          // `xmax = 0` on the returned row is Postgres's own way of telling an INSERT
+          // from an ON CONFLICT UPDATE — reused here (rather than a pre-check SELECT) so
+          // two rows in the same file with the same FAR ID are still each counted right.
+          const { rows: written } = await client.query<{ inserted: boolean }>(
             `INSERT INTO assets (${ASSET_UPSERT_COLUMNS.join(", ")})
              VALUES (${ASSET_UPSERT_COLUMNS.map((_, i) => `$${i + 1}`).join(", ")})
-             ON CONFLICT (far_id) DO UPDATE SET ${updateAssignments}`,
+             ON CONFLICT (far_id) DO UPDATE SET ${updateAssignments}
+             RETURNING (xmax = 0) AS inserted`,
             bulkAssetRowValues(data)
           );
+          if (written[0]?.inserted) added++;
+          else updated++;
           processed++;
         }
         await client.query("COMMIT");
@@ -80,6 +88,6 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       }
     }
 
-    return { totalRows: validRows.length + errors.length, processed, errors };
+    return { totalRows: validRows.length + errors.length, processed, added, updated, errors };
   });
 }

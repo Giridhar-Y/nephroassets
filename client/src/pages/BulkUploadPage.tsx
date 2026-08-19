@@ -397,6 +397,21 @@ export function BulkUploadPage() {
               <PassIcon fontSize={15} />
               {result.processed} of {result.totalRows} row{result.totalRows === 1 ? "" : "s"} processed successfully.
             </p>
+            <p className="mt-1 text-sm text-gray-700">
+              <span className="font-semibold text-blue-700">{result.added} added</span>,{" "}
+              <span className="font-semibold text-amber-700">
+                {result.updated} updated
+              </span>
+              {result.errors.length > 0 && (
+                <>
+                  ,{" "}
+                  <span className="font-semibold text-red-700">
+                    {result.errors.length} skipped
+                  </span>
+                </>
+              )}
+              .
+            </p>
             {result.errors.length > 0 && (
               <div className="mt-3">
                 <p className="text-sm font-medium text-red-700">

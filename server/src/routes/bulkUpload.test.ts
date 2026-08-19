@@ -47,6 +47,22 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("reports how many rows were added vs. updated", async () => {
+    const first = [HEADER, "BULK-ADD,Test-Sub,First Asset,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+    await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
+
+    const second = [
+      HEADER,
+      "BULK-ADD,Test-Sub,First Asset Updated,Active,2020-01-01,Center-A,5,5,1000,1000",
+      "BULK-NEW,Test-Sub,Second Asset,Active,2020-01-01,Center-A,5,5,1000,1000"
+    ].join("\n");
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
+    const body = res.json();
+    expect(body.processed).toBe(2);
+    expect(body.added).toBe(1);
+    expect(body.updated).toBe(1);
+  });
+
   it("re-uploading the same FAR ID updates the existing asset instead of erroring", async () => {
     const first = [HEADER, "BULK-3,Test-Sub,Original,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
     await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
