@@ -2,6 +2,7 @@
   "installCommand": "cd client && npm install --include=dev && cd ../server && npm install",
   "buildCommand": "cd client && npm run build",
   "outputDirectory": "client/dist",
+  "regions": ["sin1"],
   "functions": {
     "api/index.ts": {
       "includeFiles": "server/src/db/schema.sql"
