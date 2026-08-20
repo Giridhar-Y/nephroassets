@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import {
@@ -12,9 +12,13 @@ import {
   DeleteIcon,
   ReportsIcon,
   UploadIcon,
-  LifecycleIcon
+  LifecycleIcon,
+  PanelCollapseIcon,
+  PanelExpandIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
+
+const SIDEBAR_COLLAPSED_KEY = "nephroassets.sidebarCollapsed";
 
 const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIconsProps> }> = [
   { to: "/register", label: "Register", icon: RegisterIcon },
@@ -80,40 +84,62 @@ function AsAtControl() {
 export function Layout() {
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  }, [collapsed]);
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-gray-200 bg-white print:hidden">
-        <div className="px-5 py-5">
-          <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>
+      <aside
+        className={`flex shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] print:hidden ${
+          collapsed ? "w-14" : "w-60"
+        }`}
+      >
+        <div className={`flex items-center py-5 ${collapsed ? "justify-center px-2" : "justify-between px-5"}`}>
+          {!collapsed && <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>}
+          <button
+            type="button"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed((c) => !c)}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-ink"
+          >
+            {collapsed ? <PanelExpandIcon fontSize={18} /> : <PanelCollapseIcon fontSize={18} />}
+          </button>
         </div>
         <nav className="flex-1 space-y-1 px-3">
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
+              title={collapsed ? item.label : undefined}
               className={({ isActive }) =>
                 `flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive ? "bg-accent-light text-accent-hover" : "text-gray-600 hover:bg-gray-50"
-                }`
+                  collapsed ? "justify-center px-0" : ""
+                } ${isActive ? "bg-accent-light text-accent-hover" : "text-gray-600 hover:bg-gray-50"}`
               }
             >
               <item.icon fontSize={18} />
-              {item.label}
+              {!collapsed && item.label}
             </NavLink>
           ))}
         </nav>
         <div className="border-t border-gray-100 px-3 py-3">
           <button
             type="button"
-            className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700"
+            title={collapsed ? "Sign Out" : undefined}
+            className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700 ${
+              collapsed ? "justify-center px-0" : ""
+            }`}
             onClick={() => {
               logout();
               navigate("/login", { replace: true });
             }}
           >
             <SignOutIcon fontSize={18} />
-            Sign Out
+            {!collapsed && "Sign Out"}
           </button>
         </div>
       </aside>

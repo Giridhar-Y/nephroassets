@@ -4,7 +4,7 @@ import { ChevronDownIcon, ChevronUpIcon, ColumnsIcon } from "../lib/icons.js";
 
 export function ColumnPicker({ prefs }: { prefs: ReturnType<typeof useColumnPrefs> }) {
   const [open, setOpen] = useState(false);
-  const { prefs: state, allColumns, toggleColumn, moveColumn } = prefs;
+  const { prefs: state, allColumns, toggleColumn, moveColumn, resetColumns } = prefs;
 
   return (
     <div className="relative">
@@ -58,6 +58,15 @@ export function ColumnPicker({ prefs }: { prefs: ReturnType<typeof useColumnPref
                 );
               })}
             </ul>
+            <div className="mt-1 border-t border-gray-100 pt-1">
+              <button
+                type="button"
+                className="w-full rounded px-2 py-1 text-left text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-ink"
+                onClick={resetColumns}
+              >
+                Reset to default columns, order &amp; widths
+              </button>
+            </div>
           </div>
         </>
       )}

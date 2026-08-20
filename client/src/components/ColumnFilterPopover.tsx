@@ -56,6 +56,14 @@ const FIELD_LABEL_CLASS = "text-[10px] font-bold uppercase tracking-wide text-gr
 const FIELD_INPUT_CLASS =
   "rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 
+function ClearButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="self-start text-[10px] font-semibold text-accent hover:underline" onClick={onClick}>
+      Clear
+    </button>
+  );
+}
+
 export function TextFilterPanel({
   label,
   placeholder,
@@ -82,6 +90,7 @@ export function TextFilterPanel({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
+      {value && <ClearButton onClick={() => onChange("")} />}
     </div>
   );
 }
@@ -111,6 +120,7 @@ export function SelectFilterPanel({
           </option>
         ))}
       </select>
+      {value && <ClearButton onClick={() => onChange("")} />}
     </div>
   );
 }
@@ -152,6 +162,14 @@ export function DateRangeFilterPanel({
         </label>
         <input id={toId} type="date" className={FIELD_INPUT_CLASS} value={to} onChange={(e) => onChangeTo(e.target.value)} />
       </div>
+      {(from || to) && (
+        <ClearButton
+          onClick={() => {
+            onChangeFrom("");
+            onChangeTo("");
+          }}
+        />
+      )}
     </div>
   );
 }

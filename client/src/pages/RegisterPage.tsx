@@ -16,7 +16,7 @@ export function RegisterPage() {
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
   const columnPrefs = useColumnPrefs();
-  const { columns } = columnPrefs;
+  const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
   const asAt = settings?.asAt ?? null;
 
   const [centers, setCenters] = useState<string[]>([]);
@@ -210,6 +210,8 @@ export function RegisterPage() {
         onToggleAll={toggleAllLoaded}
         headerFilters={headerFilters}
         getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+        onResizeColumn={setColumnWidth}
+        onReorderColumn={moveColumnTo}
       />
 
       {transferOpen && asAt && (

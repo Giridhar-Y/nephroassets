@@ -1,12 +1,14 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnDef } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
-import { EmptyIcon, ErrorIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
+import { CollapseExpandIcon, EmptyIcon, ErrorIcon, ExpandIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
 
 const ROW_HEIGHT = 40;
+const MIN_COLUMN_WIDTH = 60;
 
 // FAR ID stays visible while scrolling horizontally through the wider currency columns —
 // it's the one thing you need to know "which row am I looking at". Every pinned cell
@@ -34,6 +36,12 @@ export interface AssetGridProps {
    *  navigation, so right-click/middle-click/Ctrl+click all behave as users expect and
    *  Register stays exactly where it was. Return the in-app path, e.g. `/assets/${farId}`. */
   getAssetHref?: (farId: string) => string;
+  /** Drag-to-resize a column's header edge. Omit to disable resizing (e.g. pages using a
+   *  fixed, non-persisted column set). */
+  onResizeColumn?: (id: string, width: number) => void;
+  /** Drag-and-drop a header to reorder columns; `beforeId` is the column it was dropped
+   *  in front of. Omit to disable drag reordering. */
+  onReorderColumn?: (id: string, beforeId: string) => void;
 }
 
 export function AssetGrid({
@@ -51,9 +59,13 @@ export function AssetGrid({
   onToggleRow,
   onToggleAll,
   headerFilters,
-  getAssetHref
+  getAssetHref,
+  onResizeColumn,
+  onReorderColumn
 }: AssetGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -71,6 +83,32 @@ export function AssetGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtualizer.getVirtualItems(), items.length, hasMore]);
 
+  // Exiting full screen with Escape matches every other overlay in this app.
+  useEffect(() => {
+    if (!expanded) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setExpanded(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
+
+  function startResize(e: React.MouseEvent, colId: string, startWidth: number) {
+    if (!onResizeColumn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    function onMouseMove(moveEvent: MouseEvent) {
+      onResizeColumn!(colId, Math.max(MIN_COLUMN_WIDTH, startWidth + (moveEvent.clientX - startX)));
+    }
+    function onMouseUp() {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    }
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }
+
   const checkboxWidth = selectable ? 40 : 0;
   const actionWidth = getAssetHref ? 40 : 0;
 
@@ -85,7 +123,7 @@ export function AssetGrid({
     }
   }
 
-  return (
+  const content = (
     <>
       {error && (
         <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
@@ -119,15 +157,41 @@ export function AssetGrid({
               return (
                 <div
                   key={col.id}
-                  className={`flex h-9 shrink-0 items-center gap-1 px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${
+                  draggable={!!onReorderColumn}
+                  onDragStart={(e) => e.dataTransfer.setData("text/column-id", col.id)}
+                  onDragOver={(e) => {
+                    if (!onReorderColumn) return;
+                    e.preventDefault();
+                    if (dragOverId !== col.id) setDragOverId(col.id);
+                  }}
+                  onDragLeave={() => setDragOverId((prev) => (prev === col.id ? null : prev))}
+                  onDrop={(e) => {
+                    if (!onReorderColumn) return;
+                    e.preventDefault();
+                    setDragOverId(null);
+                    const draggedId = e.dataTransfer.getData("text/column-id");
+                    if (draggedId) onReorderColumn(draggedId, col.id);
+                  }}
+                  className={`relative flex h-9 shrink-0 items-center gap-1 px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${
                     col.align === "right" ? "justify-end" : filter ? "justify-between" : ""
-                  } ${pinnedOffset !== undefined ? "sticky z-20 bg-gray-50" : ""}`}
+                  } ${pinnedOffset !== undefined ? "sticky z-20 bg-gray-50" : ""} ${
+                    onReorderColumn ? "cursor-grab active:cursor-grabbing" : ""
+                  } ${dragOverId === col.id ? "bg-accent-light" : ""}`}
                   style={{ width: col.width, left: pinnedOffset }}
                 >
                   <span className="truncate">
                     {col.tooltip ? <Tooltip text={col.tooltip}>{col.label}</Tooltip> : col.label}
                   </span>
                   {filter}
+                  {onResizeColumn && (
+                    <div
+                      role="separator"
+                      aria-label={`Resize ${col.label} column`}
+                      draggable={false}
+                      onMouseDown={(e) => startResize(e, col.id, col.width)}
+                      className="absolute -right-1 top-0 z-30 h-full w-2 cursor-col-resize"
+                    />
+                  )}
                 </div>
               );
             })}
@@ -218,5 +282,34 @@ export function AssetGrid({
         </div>
       </div>
     </>
+  );
+
+  const expandButton = (
+    <button
+      type="button"
+      aria-label={expanded ? "Exit full screen" : "Expand table to full screen"}
+      title={expanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+      onClick={() => setExpanded((e) => !e)}
+      className="absolute right-2 top-2 z-30 grid h-7 w-7 place-items-center rounded-md border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-accent hover:text-accent"
+    >
+      {expanded ? <CollapseExpandIcon fontSize={15} /> : <ExpandIcon fontSize={15} />}
+    </button>
+  );
+
+  if (expanded) {
+    return createPortal(
+      <div className="fixed inset-0 z-50 flex flex-col bg-white p-4">
+        {expandButton}
+        {content}
+      </div>,
+      document.body
+    );
+  }
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {expandButton}
+      {content}
+    </div>
   );
 }

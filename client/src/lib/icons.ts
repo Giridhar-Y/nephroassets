@@ -30,5 +30,9 @@ export {
   FilterRegular as FilterIcon,
   PulseRegular as LifecycleIcon,
   EyeRegular as ViewIcon,
-  PrintRegular as PrintIcon
+  PrintRegular as PrintIcon,
+  FullScreenMaximizeRegular as ExpandIcon,
+  FullScreenMinimizeRegular as CollapseExpandIcon,
+  PanelLeftContractRegular as PanelCollapseIcon,
+  PanelLeftExpandRegular as PanelExpandIcon
 } from "@fluentui/react-icons";
