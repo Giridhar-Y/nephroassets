@@ -132,7 +132,11 @@ export async function seed(): Promise<void> {
         ]
       );
 
-      // ~5% of non-disposed assets have been transferred to a different center.
+      // ~5% of non-disposed assets have been transferred to a different center. Must
+      // update the asset's own denormalized revised_location/last_date_of_transaction
+      // too, exactly like the real transfer endpoints (transfers.ts, bulkTransfers.ts) do
+      // — otherwise the Register's center filter (which reads those columns directly,
+      // not the transfers table) silently disagrees with the computed Effective Location.
       if (!isDisposed && rand() < 0.05) {
         const newCenter = pick(CENTERS.filter((c) => c !== center));
         const transferDate = isoDate(addDays(FY_START, Math.floor(rand() * 130)));
@@ -140,6 +144,11 @@ export async function seed(): Promise<void> {
           `INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`,
           [farId, transferDate, newCenter]
         );
+        await client.query(`UPDATE assets SET revised_location = $1, last_date_of_transaction = $2 WHERE far_id = $3`, [
+          newCenter,
+          transferDate,
+          farId
+        ]);
       }
     }
 
