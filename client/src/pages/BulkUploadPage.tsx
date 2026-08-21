@@ -1,6 +1,7 @@
 import { useRef, useState, type DragEvent } from "react";
 import {
   BULK_UPLOAD_PATHS,
+  MASTERS_BULK_UPLOAD_PATHS,
   commitBulkUpload,
   previewBulkUpload,
   type BulkPreviewResult,
@@ -8,10 +9,22 @@ import {
 } from "../api/client.js";
 import { AddCircleIcon, ErrorIcon, ExportIcon, PassIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
 
-type UploadType = "assets" | "disposals" | "transfers";
+type UploadType = "assets" | "disposals" | "transfers" | "masters";
+type MasterListType = "centers" | "subClassifications" | "statuses";
 type Step = "select" | "preview" | "result";
 
-const TYPE_CONFIG: Record<UploadType, { label: string; description: string; required: string[]; optional: string[] }> = {
+interface UploadConfig {
+  label: string;
+  description: string;
+  required: string[];
+  optional: string[];
+  keyColumnLabel: string;
+  path: string;
+  templateName: string;
+  note?: string;
+}
+
+const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
   assets: {
     label: "Assets & Capitalization",
     description:
@@ -40,22 +53,71 @@ const TYPE_CONFIG: Record<UploadType, { label: string; description: string; requ
       "deletionsC1",
       "deletionsC2",
       "saleValue"
-    ]
+    ],
+    keyColumnLabel: "FAR ID",
+    path: BULK_UPLOAD_PATHS.assets,
+    templateName: "assets",
+    note: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
   },
   disposals: {
     label: "Disposals",
     description:
       "Dispose many existing assets at once — full disposal only, same as “Dispose Selected” in Register.",
     required: ["farId", "dateOfDisposal"],
-    optional: ["saleValue"]
+    optional: ["saleValue"],
+    keyColumnLabel: "FAR ID",
+    path: BULK_UPLOAD_PATHS.disposals,
+    templateName: "disposals"
   },
   transfers: {
     label: "Transfers",
     description: "Move many assets to new centers at once — one row per move, each with its own date.",
     required: ["farId", "toLocation", "transactionDate"],
-    optional: []
+    optional: [],
+    keyColumnLabel: "FAR ID",
+    path: BULK_UPLOAD_PATHS.transfers,
+    templateName: "transfers",
+    note: "Location must match an active Center in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
   }
 };
+
+const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: string }> = {
+  centers: {
+    label: "Centers",
+    pillLabel: "Centers",
+    description: "Add or update Centers, matched by Code. An unmatched code creates a new center; a matched one updates it.",
+    required: ["code"],
+    optional: ["description", "active"],
+    keyColumnLabel: "Code",
+    path: MASTERS_BULK_UPLOAD_PATHS.centers,
+    templateName: "centers",
+    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new centers to Active and leave existing ones unchanged."
+  },
+  subClassifications: {
+    label: "Sub Classifications",
+    pillLabel: "Sub Classifications",
+    description: "Add or update Sub Classifications, matched by Name. An unmatched name creates a new entry; a matched one updates it.",
+    required: ["name"],
+    optional: ["active"],
+    keyColumnLabel: "Name",
+    path: MASTERS_BULK_UPLOAD_PATHS.subClassifications,
+    templateName: "sub-classifications",
+    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new entries to Active and leave existing ones unchanged."
+  },
+  statuses: {
+    label: "Statuses",
+    pillLabel: "Statuses",
+    description: "Add or update Statuses, matched by Name. An unmatched name creates a new entry; a matched one updates it.",
+    required: ["name"],
+    optional: ["active"],
+    keyColumnLabel: "Name",
+    path: MASTERS_BULK_UPLOAD_PATHS.statuses,
+    templateName: "statuses",
+    note: "active accepts true/false or Active/Inactive (case-insensitive). A system-managed status (e.g. Disposed) cannot be modified via Bulk Upload."
+  }
+};
+
+const MASTER_LIST_TABS: MasterListType[] = ["centers", "subClassifications", "statuses"];
 
 // One example row per tab, keyed the same as required/optional above, so the downloaded
 // template shows correct formatting (dates as DD-MM-YYYY) instead of blank headers a user
@@ -65,7 +127,7 @@ const TYPE_CONFIG: Record<UploadType, { label: string; description: string; requ
 // uploaded unmodified; this way any error a first-time user gets back is self-explanatory.
 const PLACEHOLDER_FAR_ID = "REPLACE-WITH-YOUR-FAR-ID";
 
-const EXAMPLE_ROWS: Record<UploadType, Record<string, string>> = {
+const EXAMPLE_ROWS: Record<Exclude<UploadType, "masters">, Record<string, string>> = {
   assets: {
     farId: PLACEHOLDER_FAR_ID,
     subClassification: "IT Equipment",
@@ -99,20 +161,24 @@ const EXAMPLE_ROWS: Record<UploadType, Record<string, string>> = {
   }
 };
 
+const MASTER_EXAMPLE_ROWS: Record<MasterListType, Record<string, string>> = {
+  centers: { code: "Center-050", description: "Sample center", active: "true" },
+  subClassifications: { name: "Sample Sub Classification", active: "true" },
+  statuses: { name: "Sample Status", active: "true" }
+};
+
 function csvEscape(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-function downloadTemplate(type: UploadType) {
-  const config = TYPE_CONFIG[type];
+function downloadTemplate(config: UploadConfig, example: Record<string, string>) {
   const headers = [...config.required, ...config.optional];
-  const example = EXAMPLE_ROWS[type];
   const csv = [headers, headers.map((h) => example[h] ?? "")].map((r) => r.map(csvEscape).join(",")).join("\r\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${type}-template.csv`;
+  a.download = `${config.templateName}-template.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -124,7 +190,7 @@ function formatFileSize(bytes: number): string {
 }
 
 const STATUS_BADGE = {
-  new: { className: "bg-blue-50 text-blue-700", label: "New asset", Icon: AddCircleIcon },
+  new: { className: "bg-blue-50 text-blue-700", label: "New", Icon: AddCircleIcon },
   update: { className: "bg-amber-50 text-amber-700", label: "Update", Icon: RetryIcon },
   error: { className: "bg-red-50 text-red-700", label: "Error", Icon: ErrorIcon }
 } as const;
@@ -142,6 +208,7 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
 export function BulkUploadPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [type, setType] = useState<UploadType>("assets");
+  const [masterList, setMasterList] = useState<MasterListType>("centers");
   const [step, setStep] = useState<Step>("select");
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -152,8 +219,9 @@ export function BulkUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
 
-  const config = TYPE_CONFIG[type];
-  const path = BULK_UPLOAD_PATHS[type];
+  const config: UploadConfig = type === "masters" ? MASTER_LIST_CONFIG[masterList] : TYPE_CONFIG[type];
+  const example = type === "masters" ? MASTER_EXAMPLE_ROWS[masterList] : EXAMPLE_ROWS[type];
+  const path = config.path;
 
   function reset() {
     setStep("select");
@@ -167,6 +235,11 @@ export function BulkUploadPage() {
 
   function selectType(next: UploadType) {
     setType(next);
+    reset();
+  }
+
+  function selectMasterList(next: MasterListType) {
+    setMasterList(next);
     reset();
   }
 
@@ -218,11 +291,12 @@ export function BulkUploadPage() {
         Bulk Upload
       </h1>
       <p className="mt-1 max-w-xl text-sm text-gray-500">
-        Import a CSV or Excel file to add or update many assets, capitalizations, disposals, or transfers at once.
+        Import a CSV or Excel file to add or update many assets, capitalizations, disposals, transfers, or master
+        list entries at once.
       </p>
 
       <div className="mt-4 flex gap-2">
-        {(Object.keys(TYPE_CONFIG) as UploadType[]).map((t) => (
+        {(["assets", "disposals", "transfers", "masters"] as UploadType[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -231,10 +305,27 @@ export function BulkUploadPage() {
             }`}
             onClick={() => selectType(t)}
           >
-            {TYPE_CONFIG[t].label}
+            {t === "masters" ? "Masters" : TYPE_CONFIG[t].label}
           </button>
         ))}
       </div>
+
+      {type === "masters" && (
+        <div className="mt-2 flex gap-1.5">
+          {MASTER_LIST_TABS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                masterList === m ? "bg-ink text-white" : "border border-gray-200 text-gray-500 hover:bg-gray-50"
+              }`}
+              onClick={() => selectMasterList(m)}
+            >
+              {MASTER_LIST_CONFIG[m].pillLabel}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="mt-6 max-w-2xl rounded-xl bg-white p-6 shadow-sm">
         <p className="text-sm text-gray-600">{config.description}</p>
@@ -272,7 +363,7 @@ export function BulkUploadPage() {
                 <button
                   type="button"
                   className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
-                  onClick={() => downloadTemplate(type)}
+                  onClick={() => downloadTemplate(config, example)}
                 >
                   <ExportIcon fontSize={15} />
                   Download Template
@@ -343,7 +434,7 @@ export function BulkUploadPage() {
                 <thead className="sticky top-0 bg-gray-50">
                   <tr>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</th>
-                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">FAR ID</th>
+                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">{config.keyColumnLabel}</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Details</th>
                   </tr>
@@ -422,7 +513,7 @@ export function BulkUploadPage() {
                     <thead className="bg-red-50">
                       <tr>
                         <th className="px-3 py-1.5 text-left font-semibold text-red-700">Row</th>
-                        <th className="px-3 py-1.5 text-left font-semibold text-red-700">FAR ID</th>
+                        <th className="px-3 py-1.5 text-left font-semibold text-red-700">{config.keyColumnLabel}</th>
                         <th className="px-3 py-1.5 text-left font-semibold text-red-700">Problem</th>
                       </tr>
                     </thead>
@@ -452,7 +543,7 @@ export function BulkUploadPage() {
         <div className="mt-6 border-t border-gray-100 pt-4">
           <h2 className="text-sm font-semibold text-ink">Expected Columns</h2>
           <p className="mt-1 text-xs text-gray-500">
-            The first row must be a header naming these fields (dates as DD-MM-YYYY):
+            The first row must be a header naming these fields{type !== "masters" ? " (dates as DD-MM-YYYY)" : ""}:
           </p>
           <p className="mt-2 text-xs text-gray-700">
             <span className="font-semibold">Required: </span>
@@ -464,13 +555,7 @@ export function BulkUploadPage() {
               {config.optional.join(", ")}
             </p>
           )}
-          {(type === "assets" || type === "transfers") && (
-            <p className="mt-2 text-xs text-gray-500">
-              {type === "assets"
-                ? "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
-                : "Location must match an active Center in Masters (case-insensitive) — a value that doesn't will show as an Error row above."}
-            </p>
-          )}
+          {config.note && <p className="mt-2 text-xs text-gray-500">{config.note}</p>}
         </div>
       </div>
     </div>

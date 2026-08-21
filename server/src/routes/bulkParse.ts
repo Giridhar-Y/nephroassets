@@ -41,6 +41,19 @@ export const bulkDate = z.string().transform((v, ctx) => {
   return z.NEVER;
 });
 
+// Masters bulk upload's `active` column: accepts true/false or Active/Inactive
+// (case-insensitive), matching the badge labels shown in the Masters screen itself.
+export const bulkActive = z
+  .string()
+  .transform((v, ctx) => {
+    const s = v.trim().toLowerCase();
+    if (["true", "active", "1", "yes"].includes(s)) return true;
+    if (["false", "inactive", "0", "no"].includes(s)) return false;
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Invalid value '${v}' — expected true/false or Active/Inactive.` });
+    return z.NEVER;
+  })
+  .optional();
+
 export async function loadWorksheet(buffer: Buffer, filename: string): Promise<ExcelJS.Worksheet> {
   const workbook = new ExcelJS.Workbook();
   if (filename.toLowerCase().endsWith(".csv")) {
@@ -132,7 +145,7 @@ export interface BulkPreviewResult {
  *  ID), and this merges that with the schema errors from parseWorksheetRows into one
  *  row-ordered list, so the UI can show every row's fate before Confirm Upload commits. */
 export function mergePreviewRows(
-  classified: Array<{ row: number; farId: string; status: "new" | "update" }>,
+  classified: Array<{ row: number; farId: string; status: "new" | "update"; message?: string }>,
   errors: RowError[]
 ): BulkPreviewResult {
   const rows: BulkPreviewRow[] = [

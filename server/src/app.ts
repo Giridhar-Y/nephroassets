@@ -14,6 +14,7 @@ import bulkDisposalsRoutes from "./routes/bulkDisposals.js";
 import bulkTransfersRoutes from "./routes/bulkTransfers.js";
 import assetsExportRoutes from "./routes/assetsExport.js";
 import mastersRoutes from "./routes/masters.js";
+import bulkMastersRoutes from "./routes/bulkMasters.js";
 
 // Builds and registers the Fastify app but never calls `.listen(...)` — shared by the
 // local/Render entry (index.ts, which also seeds the DB and listens on a port) and the
@@ -34,6 +35,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(bulkTransfersRoutes);
   await app.register(assetsExportRoutes);
   await app.register(mastersRoutes);
+  await app.register(bulkMastersRoutes);
 
   app.get("/api/health", async () => ({ ok: true }));
 

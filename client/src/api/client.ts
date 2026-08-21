@@ -218,6 +218,12 @@ export const BULK_UPLOAD_PATHS = {
   transfers: "/api/transfers/bulk-upload"
 } as const;
 
+export const MASTERS_BULK_UPLOAD_PATHS = {
+  centers: "/api/masters/centers/bulk-upload",
+  subClassifications: "/api/masters/sub-classifications/bulk-upload",
+  statuses: "/api/masters/statuses/bulk-upload"
+} as const;
+
 export function previewBulkUpload(path: string, file: File): Promise<BulkPreviewResult> {
   return postFile(`${path}?preview=true`, file);
 }
