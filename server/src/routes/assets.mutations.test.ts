@@ -63,6 +63,24 @@ describe("Capitalization: POST /api/assets", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("rejects additions with no dateOfAddition (would silently never depreciate)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-BAD-2", additionsC1: 5000 }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects a dateOfAddition with zero additions", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-BAD-3", dateOfAddition: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });
 
 describe("Disposal: PATCH /api/assets/:farId/disposal", () => {

@@ -85,6 +85,36 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("rejects a dateOfDisposal whose status isn't \"Disposed\" (silently split from the Disposals screen and the calc engine)", async () => {
+    const withDisposalHeader = HEADER + ",dateOfDisposal";
+    const csv = [withDisposalHeader, "BULK-MISMATCH-1,Test-Sub,Bad Combo,Under Repair,2020-01-01,Center-A,5,5,1000,1000,01-08-2026"].join(
+      "\n"
+    );
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/dateOfDisposal is set but status is "Under Repair"/);
+  });
+
+  it('rejects status "Disposed" with no dateOfDisposal', async () => {
+    const csv = [HEADER, "BULK-MISMATCH-2,Test-Sub,Bad Combo,Disposed,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/status is "Disposed" but dateOfDisposal is not set/);
+  });
+
+  it("rejects additionsC1 with no dateOfAddition (would silently never depreciate)", async () => {
+    const withAdditionsHeader = HEADER + ",additionsC1";
+    const csv = [withAdditionsHeader, "BULK-MISMATCH-3,Test-Sub,Bad Combo,Active,2020-01-01,Center-A,5,5,1000,1000,5000"].join(
+      "\n"
+    );
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/dateOfAddition is required/);
+  });
+
   it("accepts DD-MM-YYYY dates, and reports a clear error for a malformed one", async () => {
     const csv = [
       HEADER,

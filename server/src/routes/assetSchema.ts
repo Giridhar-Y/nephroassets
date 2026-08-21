@@ -3,9 +3,34 @@ import { bulkDate } from "./bulkParse.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+// The calc engine (engine.ts) only ever looks at dateOfAddition — not whether additions
+// are non-zero — to decide if an addition depreciates at all. A row with an addition
+// amount but no date silently costs Gross Block without ever charging depreciation on it,
+// forever; a date with no amount is just dead data. Shared by both schemas below since
+// both the Capitalization form and bulk upload can set these fields.
+function checkAdditionsPairing(
+  data: { additionsC1: number; additionsC2: number; dateOfAddition: string | null },
+  ctx: z.RefinementCtx
+) {
+  const hasAdditions = data.additionsC1 !== 0 || data.additionsC2 !== 0;
+  if (hasAdditions && data.dateOfAddition === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["dateOfAddition"],
+      message: "dateOfAddition is required when additionsC1 or additionsC2 is non-zero."
+    });
+  } else if (!hasAdditions && data.dateOfAddition !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["dateOfAddition"],
+      message: "dateOfAddition is set but additionsC1 and additionsC2 are both zero."
+    });
+  }
+}
+
 // Shared with the Capitalization form (new-asset creation) and bulk upload's row
 // validation, so both paths agree on what a valid asset looks like.
-export const assetCreateSchema = z.object({
+const assetCreateShape = z.object({
   farId: z.string().min(1),
   subClassification: z.string().min(1),
   assetDescription: z.string().min(1),
@@ -25,7 +50,9 @@ export const assetCreateSchema = z.object({
   accDepC2Opening: z.coerce.number().min(0).default(0)
 });
 
-export type AssetCreateInput = z.infer<typeof assetCreateSchema>;
+export const assetCreateSchema = assetCreateShape.superRefine(checkAdditionsPairing);
+
+export type AssetCreateInput = z.infer<typeof assetCreateShape>;
 
 export const ASSET_INSERT_COLUMNS = [
   "far_id",
@@ -74,14 +101,38 @@ export function assetCreateValues(input: AssetCreateInput): unknown[] {
 // Its date columns are DD-MM-YYYY (see bulkDate in bulkParse.ts) rather than the ISO
 // `isoDate` above, which stays tied to the Capitalization form's native <input
 // type="date"> — the two paths intentionally use different date schemas.
-export const bulkAssetRowSchema = assetCreateSchema.extend({
-  dateAcquired: bulkDate,
-  dateOfAddition: bulkDate.optional().nullable().default(null),
-  dateOfDisposal: bulkDate.optional().nullable().default(null),
-  deletionsC1: z.coerce.number().min(0).default(0),
-  deletionsC2: z.coerce.number().min(0).default(0),
-  saleValue: z.coerce.number().min(0).default(0)
-});
+export const bulkAssetRowSchema = assetCreateShape
+  .extend({
+    dateAcquired: bulkDate,
+    dateOfAddition: bulkDate.optional().nullable().default(null),
+    dateOfDisposal: bulkDate.optional().nullable().default(null),
+    deletionsC1: z.coerce.number().min(0).default(0),
+    deletionsC2: z.coerce.number().min(0).default(0),
+    saleValue: z.coerce.number().min(0).default(0)
+  })
+  .superRefine((data, ctx) => {
+    checkAdditionsPairing(data, ctx);
+    // Same reasoning as checkAdditionsPairing: the calc engine (engine.ts) treats an
+    // asset as disposed purely based on dateOfDisposal, but the Disposals screen and the
+    // Register's Status filter both key off `status`. The single/bulk disposal endpoints
+    // always set both together — bulk-uploading assets is the one path that can set them
+    // independently, so it's the one path that needs to reject the mismatch explicitly.
+    const isDisposedStatus = data.status === "Disposed";
+    const hasDisposalDate = data.dateOfDisposal !== null;
+    if (hasDisposalDate && !isDisposedStatus) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["status"],
+        message: `dateOfDisposal is set but status is "${data.status}", not "Disposed".`
+      });
+    } else if (isDisposedStatus && !hasDisposalDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dateOfDisposal"],
+        message: `status is "Disposed" but dateOfDisposal is not set.`
+      });
+    }
+  });
 
 export type BulkAssetRowInput = z.infer<typeof bulkAssetRowSchema>;
 
