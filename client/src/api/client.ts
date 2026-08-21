@@ -50,8 +50,13 @@ export function fetchSubClassifications(): Promise<string[]> {
   return request<string[]>("/api/meta/sub-classifications");
 }
 
-export function fetchStatuses(): Promise<string[]> {
-  return request<string[]>("/api/meta/statuses");
+// excludeSystemManaged=true drops "Disposed" from the list — used by Capitalization,
+// which must never let a brand-new asset be created already disposed (that's the
+// Disposal flow's job); every other consumer (Register's Status filter, most
+// importantly) wants Disposed included, so they call this with no arguments.
+export function fetchStatuses(excludeSystemManaged = false): Promise<string[]> {
+  const query = excludeSystemManaged ? "?excludeSystemManaged=true" : "";
+  return request<string[]>(`/api/meta/statuses${query}`);
 }
 
 export interface FetchAssetsParams extends AssetFilters {
@@ -266,4 +271,88 @@ export function fetchDepreciationPosting(
   asAt: string
 ): Promise<{ asAt: string; totalPeriodDepreciation: number; breakdown: DepreciationPostingBreakdown[] }> {
   return request(`/api/reports/depreciation-posting?${new URLSearchParams({ asAt })}`);
+}
+
+// Masters: managed lists for Center/Location, Sub Classification, and Status — replacing
+// the free-text (or datalist-suggested-but-unenforced) values those fields used to be.
+// Renaming cascades server-side to every asset (and, for centers, every transfer) that
+// currently holds the old value, so the master list and those columns never disagree;
+// deactivating never touches existing rows, it only stops the value being offered again.
+export interface MasterCenter {
+  id: number;
+  code: string;
+  description: string;
+  active: boolean;
+  usageCount: number;
+}
+
+export function fetchMasterCenters(): Promise<MasterCenter[]> {
+  return request("/api/masters/centers");
+}
+
+export function createMasterCenter(payload: { code: string; description?: string }): Promise<MasterCenter> {
+  return request("/api/masters/centers", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateMasterCenter(
+  id: number,
+  payload: Partial<{ code: string; description: string; active: boolean }>
+): Promise<MasterCenter & { assetsUpdated?: number; transfersUpdated?: number }> {
+  return request(`/api/masters/centers/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export interface MasterSubClassification {
+  id: number;
+  name: string;
+  defaultUsefulLifeC1Years: number | null;
+  defaultUsefulLifeC2Years: number | null;
+  active: boolean;
+  usageCount: number;
+}
+
+export function fetchMasterSubClassifications(): Promise<MasterSubClassification[]> {
+  return request("/api/masters/sub-classifications");
+}
+
+export function createMasterSubClassification(payload: {
+  name: string;
+  defaultUsefulLifeC1Years?: number | null;
+  defaultUsefulLifeC2Years?: number | null;
+}): Promise<MasterSubClassification> {
+  return request("/api/masters/sub-classifications", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateMasterSubClassification(
+  id: number,
+  payload: Partial<{
+    name: string;
+    defaultUsefulLifeC1Years: number | null;
+    defaultUsefulLifeC2Years: number | null;
+    active: boolean;
+  }>
+): Promise<MasterSubClassification & { assetsUpdated?: number }> {
+  return request(`/api/masters/sub-classifications/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export interface MasterStatus {
+  id: number;
+  name: string;
+  active: boolean;
+  systemManaged: boolean;
+  usageCount: number;
+}
+
+export function fetchMasterStatuses(): Promise<MasterStatus[]> {
+  return request("/api/masters/statuses");
+}
+
+export function createMasterStatus(payload: { name: string }): Promise<MasterStatus> {
+  return request("/api/masters/statuses", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateMasterStatus(
+  id: number,
+  payload: Partial<{ name: string; active: boolean }>
+): Promise<MasterStatus & { assetsUpdated?: number }> {
+  return request(`/api/masters/statuses/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 }

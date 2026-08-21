@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 
 const createTransferSchema = z.object({
   farIds: z.array(z.string().min(1)).min(1),
@@ -33,8 +34,18 @@ export default async function transfersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid transfer payload.", details: parsed.error.flatten() };
     }
-    const { farIds, toLocation, transactionDate } = parsed.data;
     const db = await getPool();
+
+    // Same master-list check Bulk Transfers applies (routes/bulkTransfers.ts) — the
+    // center-first picker's dropdown already only offers active Centers, but a direct API
+    // call could still send anything.
+    const maps = await loadActiveMasterMaps(db);
+    const toLocation = lookupCanonical(maps.centers, parsed.data.toLocation);
+    if (!toLocation) {
+      reply.code(400);
+      return { error: `Location "${parsed.data.toLocation}" not recognized — see Masters for valid values.` };
+    }
+    const { farIds, transactionDate } = parsed.data;
     const client = await db.connect();
     try {
       await client.query("BEGIN");

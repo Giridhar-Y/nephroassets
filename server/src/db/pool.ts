@@ -52,4 +52,37 @@ export async function applySchema(): Promise<void> {
     const sql = readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8");
     await db.query(sql);
   }
+  // schema.sql only ever runs in full, once, against a truly empty database — an already-
+  // migrated database (like every one this app has had until now) never re-runs it, so a
+  // table added to schema.sql later never appears there on its own. This app has no real
+  // migration system, so new tables get their own `IF NOT EXISTS` bootstrap here instead —
+  // safe to call every boot, and keeps schema.sql itself as the source of truth for what a
+  // brand-new database gets. Must be kept in sync with the `centers`/`sub_classifications`/
+  // `statuses` definitions in schema.sql if either ever changes.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS centers (
+      id            BIGSERIAL PRIMARY KEY,
+      code          TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      active        BOOLEAN NOT NULL DEFAULT TRUE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_centers_code_ci ON centers (LOWER(code));
+
+    CREATE TABLE IF NOT EXISTS sub_classifications (
+      id                             BIGSERIAL PRIMARY KEY,
+      name                           TEXT NOT NULL,
+      default_useful_life_c1_years   NUMERIC,
+      default_useful_life_c2_years   NUMERIC,
+      active                         BOOLEAN NOT NULL DEFAULT TRUE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_classifications_name_ci ON sub_classifications (LOWER(name));
+
+    CREATE TABLE IF NOT EXISTS statuses (
+      id               BIGSERIAL PRIMARY KEY,
+      name             TEXT NOT NULL,
+      active           BOOLEAN NOT NULL DEFAULT TRUE,
+      system_managed   BOOLEAN NOT NULL DEFAULT FALSE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_statuses_name_ci ON statuses (LOWER(name));
+  `);
 }

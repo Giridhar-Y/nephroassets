@@ -16,9 +16,10 @@ test("center-first transfer: pick a center, select an asset, move it to another 
   await page.goto("/#/register");
 
   // Center-first: narrow the list to one center before picking assets to transfer.
-  // Filtering lives in an inline header popover now, so open it before the select is reachable.
+  // Filtering lives in an inline header popover now, so open it before the checkbox is
+  // reachable — the Center filter is a multi-select checkbox list, not a <select>.
   await page.getByRole("button", { name: "Filter Current Location" }).click();
-  await page.getByLabel("Center").selectOption("Center-010");
+  await page.getByRole("checkbox", { name: "Center-010" }).check();
   const row = page.locator(`[data-testid="register-row"][data-far-id="${FAR_ID}"]`);
   await expect(row).toBeVisible();
 

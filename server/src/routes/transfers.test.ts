@@ -31,6 +31,12 @@ describe("Transfers", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    // toLocation is now validated against the active Centers master list
+    // (routes/masters.ts) — seed the ones these fixtures move assets to.
+    await db.query(`DELETE FROM centers`);
+    await db.query(
+      `INSERT INTO centers (code) VALUES ('Center-A'), ('Center-B'), ('Center-C'), ('Center-D'), ('Center-1'), ('Center-2'), ('Center-3')`
+    );
   });
 
   it("creates a transfer and moves the asset's revised location", async () => {
@@ -44,6 +50,31 @@ describe("Transfers", () => {
 
     const db = await getPool();
     const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-1'`);
+    expect(rows[0].revised_location).toBe("Center-B");
+  });
+
+  it("rejects a toLocation that isn't an active Masters center", async () => {
+    await insertAsset("XFER-BADCENTER");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-BADCENTER"], toLocation: "Not-A-Real-Center", transactionDate: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Location "Not-A-Real-Center" not recognized/);
+  });
+
+  it("matches a center case-insensitively but stores the master list's own canonical casing", async () => {
+    await insertAsset("XFER-CASING");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-CASING"], toLocation: "center-b", transactionDate: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(200);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-CASING'`);
     expect(rows[0].revised_location).toBe("Center-B");
   });
 

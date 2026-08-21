@@ -10,7 +10,7 @@ test("Transfer: Go back preserves entered values, Esc dismisses the confirm step
   await request.post(`${API_BASE}/api/assets`, {
     data: {
       farId,
-      subClassification: "Test-Sub",
+      subClassification: "IT Equipment",
       assetDescription: "E2E Transfer Confirmation Asset",
       status: "Active",
       dateAcquired: "2020-01-01",
@@ -59,7 +59,7 @@ test("Dispose: confirm step shows the right summary, then completes the disposal
   await request.post(`${API_BASE}/api/assets`, {
     data: {
       farId,
-      subClassification: "Test-Sub",
+      subClassification: "IT Equipment",
       assetDescription: "E2E Disposal Confirmation Asset",
       status: "Active",
       dateAcquired: "2020-01-01",

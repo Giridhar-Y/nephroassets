@@ -11,6 +11,7 @@ import { CapitalizationPage } from "./pages/CapitalizationPage.js";
 import { DisposalPage } from "./pages/DisposalPage.js";
 import { ReportsPage } from "./pages/ReportsPage.js";
 import { BulkUploadPage } from "./pages/BulkUploadPage.js";
+import { MastersPage } from "./pages/MastersPage.js";
 import { AssetSearchPage } from "./pages/AssetSearchPage.js";
 import { AssetLifecyclePage } from "./pages/AssetLifecyclePage.js";
 import { SettingsProvider } from "./lib/SettingsContext.js";
@@ -125,6 +126,8 @@ export default function App() {
                 />
                 {/* Not gated by SettingsGate: this is where a first-run user configures settings. */}
                 <Route path="/settings" element={<SettingsPage />} />
+                {/* Also ungated — an admin should be able to set up master data before FY settings exist. */}
+                <Route path="/masters" element={<MastersPage />} />
               </Route>
             </Routes>
           </HashRouter>

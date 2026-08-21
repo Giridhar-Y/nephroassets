@@ -464,6 +464,13 @@ export function BulkUploadPage() {
               {config.optional.join(", ")}
             </p>
           )}
+          {(type === "assets" || type === "transfers") && (
+            <p className="mt-2 text-xs text-gray-500">
+              {type === "assets"
+                ? "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
+                : "Location must match an active Center in Masters (case-insensitive) — a value that doesn't will show as an Error row above."}
+            </p>
+          )}
         </div>
       </div>
     </div>

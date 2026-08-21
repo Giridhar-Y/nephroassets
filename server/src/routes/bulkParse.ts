@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import ExcelJS from "exceljs";
 import { z } from "zod";
+import type pg from "pg";
 
 // Cells come back from ExcelJS as plain values, Dates, or rich objects (formula results,
 // hyperlinks, rich text runs) depending on the source file — normalize all of them to the
@@ -144,4 +145,35 @@ export function mergePreviewRows(
     error: rows.filter((r) => r.status === "error").length
   };
   return { totalRows: rows.length, summary, rows };
+}
+
+export interface MasterLookupMaps {
+  /** lowercased value -> canonical (master list) casing, active entries only. */
+  centers: Map<string, string>;
+  subClassifications: Map<string, string>;
+  statuses: Map<string, string>;
+}
+
+/** Loaded fresh per request (not cached) — the whole point is that Masters (routes/
+ *  masters.ts) can add/rename/deactivate entries and have every bulk upload immediately
+ *  see the change, not a stale snapshot. Used by every bulk route that accepts a
+ *  spreadsheet column for Center/Sub Classification/Status, so a value that doesn't match
+ *  an active master entry is rejected instead of silently accepted as free text. */
+export async function loadActiveMasterMaps(db: pg.Pool): Promise<MasterLookupMaps> {
+  const [centers, subClasses, statuses] = await Promise.all([
+    db.query<{ code: string }>(`SELECT code FROM centers WHERE active = TRUE`),
+    db.query<{ name: string }>(`SELECT name FROM sub_classifications WHERE active = TRUE`),
+    db.query<{ name: string }>(`SELECT name FROM statuses WHERE active = TRUE`)
+  ]);
+  return {
+    centers: new Map(centers.rows.map((r) => [r.code.toLowerCase(), r.code])),
+    subClassifications: new Map(subClasses.rows.map((r) => [r.name.toLowerCase(), r.name])),
+    statuses: new Map(statuses.rows.map((r) => [r.name.toLowerCase(), r.name]))
+  };
+}
+
+/** Case-insensitive lookup, returning the master list's own canonical casing (not
+ *  whatever casing the row happened to use) — undefined means no active entry matches. */
+export function lookupCanonical(map: Map<string, string>, value: string): string | undefined {
+  return map.get(value.toLowerCase());
 }

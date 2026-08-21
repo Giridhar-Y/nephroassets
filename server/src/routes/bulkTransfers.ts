@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 
 const transferRowSchema = z.object({
   farId: z.string().min(1),
@@ -35,6 +35,23 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     } catch (err) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
+    }
+
+    // Reject a toLocation that doesn't match an active Centers entry (routes/masters.ts),
+    // case-insensitively, rewriting to the master list's own canonical casing — same
+    // validation bulkUpload.ts applies to Assets & Capitalization rows.
+    {
+      const maps = await loadActiveMasterMaps(await getPool());
+      const stillValid: typeof validRows = [];
+      for (const { row, data } of validRows) {
+        const canonicalLocation = lookupCanonical(maps.centers, data.toLocation);
+        if (!canonicalLocation) {
+          errors.push({ row, farId: data.farId, message: `Location "${data.toLocation}" not recognized — see Masters for valid values.` });
+          continue;
+        }
+        stillValid.push({ row, data: { ...data, toLocation: canonicalLocation } });
+      }
+      validRows = stillValid;
     }
 
     // Preview mode: same FAR-ID-exists check the commit loop below does, read-only.

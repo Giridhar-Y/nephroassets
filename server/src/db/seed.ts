@@ -38,6 +38,35 @@ function addDays(d: Date, days: number): Date {
 const FY_START = new Date(Date.UTC(2026, 3, 1)); // 2026-04-01
 const ASSET_COUNT = Number(process.env.SEED_COUNT ?? 3000);
 
+// One-time bootstrap of the three master-data tables (centers, sub_classifications,
+// statuses) from whatever's *actually* in assets/transfers, rather than from a hardcoded
+// list — correct whether this runs right after seed() populates synthetic demo data, or
+// against an already-migrated real database that never calls seed() at all (SEED_ON_BOOT
+// is deliberately off in that case). No-ops once centers has any row, so it's safe to
+// call unconditionally on every boot.
+export async function seedMasters(): Promise<void> {
+  await applySchema();
+  const db = await getPool();
+
+  const { rows } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM centers`);
+  if (Number(rows[0]?.count) > 0) {
+    console.log("Master data seed skipped: centers table already has data.");
+    return;
+  }
+
+  await db.query(`
+    INSERT INTO centers (code)
+    SELECT DISTINCT loc FROM (
+      SELECT COALESCE(revised_location, location) AS loc FROM assets
+      UNION
+      SELECT location FROM transfers
+    ) all_locations
+  `);
+  await db.query(`INSERT INTO sub_classifications (name) SELECT DISTINCT sub_classification FROM assets`);
+  await db.query(`INSERT INTO statuses (name, system_managed) SELECT DISTINCT status, status = 'Disposed' FROM assets`);
+  console.log("Seeded master data (centers, sub classifications, statuses) from existing distinct values.");
+}
+
 export async function seed(): Promise<void> {
   await applySchema();
   const db = await getPool();

@@ -5,6 +5,7 @@ import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
+import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -253,8 +254,35 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid asset payload.", details: parsed.error.flatten() };
     }
-    const input = parsed.data;
     const db = await getPool();
+
+    // Same master-list check Bulk Upload applies (routes/bulkUpload.ts) — the
+    // Capitalization form's dropdowns already only offer active master values, but a
+    // direct API call could still send anything, and this is the one path that
+    // additionally must reject a *system-managed* status (Disposed): a brand-new asset
+    // must never be capitalized as already disposed, that's the Disposal flow's job.
+    const maps = await loadActiveMasterMaps(db);
+    const canonicalStatus = lookupCanonical(maps.statuses, parsed.data.status);
+    const canonicalSubClass = lookupCanonical(maps.subClassifications, parsed.data.subClassification);
+    const canonicalLocation = lookupCanonical(maps.centers, parsed.data.location);
+    const badFields: string[] = [];
+    if (!canonicalStatus) badFields.push(`Status "${parsed.data.status}"`);
+    if (!canonicalSubClass) badFields.push(`Sub Classification "${parsed.data.subClassification}"`);
+    if (!canonicalLocation) badFields.push(`Location "${parsed.data.location}"`);
+    if (badFields.length > 0) {
+      reply.code(400);
+      return { error: `${badFields.join(", ")} not recognized — see Masters for valid values.` };
+    }
+    const { rows: statusRow } = await db.query<{ system_managed: boolean }>(
+      `SELECT system_managed FROM statuses WHERE name = $1`,
+      [canonicalStatus]
+    );
+    if (statusRow[0]?.system_managed) {
+      reply.code(400);
+      return { error: `Status "${canonicalStatus}" can only be set through the Disposal flow, not Capitalization.` };
+    }
+    const input = { ...parsed.data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! };
+
     const { rows: existing } = await db.query(`SELECT 1 FROM assets WHERE far_id = $1`, [input.farId]);
     if (existing.length > 0) {
       reply.code(409);

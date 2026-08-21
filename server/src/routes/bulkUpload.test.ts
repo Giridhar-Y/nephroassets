@@ -26,6 +26,16 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    // status/subClassification/location are now validated against the active Masters
+    // lists (routes/masters.ts) — seed what these fixtures use.
+    await db.query(`DELETE FROM centers`);
+    await db.query(`DELETE FROM sub_classifications`);
+    await db.query(`DELETE FROM statuses`);
+    await db.query(`INSERT INTO centers (code) VALUES ('Center-A')`);
+    await db.query(`INSERT INTO sub_classifications (name) VALUES ('Test-Sub')`);
+    await db.query(
+      `INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE), ('Under Repair', FALSE), ('Disposed', TRUE)`
+    );
   });
 
   it("upserts valid rows and reports errors for invalid ones", async () => {
@@ -102,6 +112,30 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/status is "Disposed" but dateOfDisposal is not set/);
+  });
+
+  it("rejects a subClassification/status/location that isn't in the active Masters lists", async () => {
+    const csv = [HEADER, "BULK-UNKNOWN,Not A Real Sub,Bad Combo,Not A Real Status,2020-01-01,Not-A-Real-Center,5,5,1000,1000"].join(
+      "\n"
+    );
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Sub Classification "Not A Real Sub" not recognized/);
+    expect(body.errors[0].message).toMatch(/Status "Not A Real Status" not recognized/);
+    expect(body.errors[0].message).toMatch(/Location "Not-A-Real-Center" not recognized/);
+  });
+
+  it("matches a master value case-insensitively but stores the master list's own canonical casing", async () => {
+    const csv = [HEADER, "BULK-CASING,test-sub,Casing Test,ACTIVE,2020-01-01,center-a,5,5,1000,1000"].join("\n");
+    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    expect(res.json().processed).toBe(1);
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT sub_classification, status, location FROM assets WHERE far_id = 'BULK-CASING'`
+    );
+    expect(rows[0]).toEqual({ sub_classification: "Test-Sub", status: "Active", location: "Center-A" });
   });
 
   it("rejects additionsC1 with no dateOfAddition (would silently never depreciate)", async () => {

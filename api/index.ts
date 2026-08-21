@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { buildApp } from "../server/src/app.js";
 import { applySchema } from "../server/src/db/pool.js";
-import { seed } from "../server/src/db/seed.js";
+import { seed, seedMasters } from "../server/src/db/seed.js";
 
 // Vercel serverless entry (Node.js runtime). Reuses the exact same Fastify app as local
 // dev and Render (server/src/app.ts) — this file only adapts it to a request/response
@@ -25,6 +25,10 @@ async function getApp() {
       if (process.env.SEED_ON_BOOT === "true") {
         await seed();
       }
+      // Unconditional, unlike seed() — this derives from whatever's actually in
+      // assets/transfers (real migrated data here, not synthetic), and no-ops once the
+      // master tables have any row, so it's safe to call on every cold start.
+      await seedMasters();
       await app.ready();
       return app;
     })();

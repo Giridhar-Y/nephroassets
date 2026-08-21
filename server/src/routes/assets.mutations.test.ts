@@ -16,6 +16,18 @@ const NEW_ASSET = {
   c2OpeningCost: 10000
 };
 
+// POST /api/assets now validates status/subClassification/location against the active
+// Masters lists (routes/masters.ts) — seed the ones these fixtures use.
+async function seedMasters() {
+  const db = await getPool();
+  await db.query(`DELETE FROM centers`);
+  await db.query(`DELETE FROM sub_classifications`);
+  await db.query(`DELETE FROM statuses`);
+  await db.query(`INSERT INTO centers (code) VALUES ('Center-Test')`);
+  await db.query(`INSERT INTO sub_classifications (name) VALUES ('Test-Sub')`);
+  await db.query(`INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE), ('Disposed', TRUE)`);
+}
+
 describe("Capitalization: POST /api/assets", () => {
   let app: FastifyInstance;
 
@@ -33,6 +45,7 @@ describe("Capitalization: POST /api/assets", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    await seedMasters();
     await db.query(
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, '2026-08-17', '2026-04-01', '2027-03-31', 365)
        ON CONFLICT (id) DO UPDATE SET as_at = '2026-08-17', fy_start = '2026-04-01', fy_end = '2027-03-31', days_in_fy = 365`
@@ -62,6 +75,39 @@ describe("Capitalization: POST /api/assets", () => {
       payload: { farId: "CAP-BAD-1" }
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects a status/subClassification/location that isn't in the active Masters lists", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-UNKNOWN", subClassification: "Not A Real Sub" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Sub Classification "Not A Real Sub" not recognized/);
+  });
+
+  it("rejects capitalizing a brand-new asset directly as a system-managed status (Disposed)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-DISPOSED", status: "Disposed" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/can only be set through the Disposal flow/);
+  });
+
+  it("matches a master value case-insensitively but stores the canonical casing", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-CASING", subClassification: "test-sub", status: "active", location: "center-test" }
+    });
+    expect(res.statusCode).toBe(200);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT sub_classification, status, location FROM assets WHERE far_id = 'CAP-CASING'`);
+    expect(rows[0]).toEqual({ sub_classification: "Test-Sub", status: "Active", location: "Center-Test" });
   });
 
   it("rejects additions with no dateOfAddition (would silently never depreciate)", async () => {
@@ -100,6 +146,7 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    await seedMasters();
     await app.inject({ method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-TEST-1" } });
   });
 

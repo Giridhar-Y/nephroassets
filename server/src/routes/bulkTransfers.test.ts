@@ -36,6 +36,10 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    // toLocation is now validated against the active Centers master list
+    // (routes/masters.ts) — seed the ones these fixtures move assets to.
+    await db.query(`DELETE FROM centers`);
+    await db.query(`INSERT INTO centers (code) VALUES ('Center-A'), ('Center-B'), ('Center-C'), ('Center-D')`);
   });
 
   it("transfers valid rows (each to its own destination) and reports errors for the rest", async () => {
@@ -92,6 +96,26 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     expect(rows[0].revised_location).toBeNull();
     const { rows: history } = await db.query(`SELECT * FROM transfers`);
     expect(history).toHaveLength(0);
+  });
+
+  it("rejects a toLocation that isn't an active Masters center", async () => {
+    await insertAsset("BXFER-BADCENTER");
+    const csv = [HEADER, "BXFER-BADCENTER,Not-A-Real-Center,2026-05-01"].join("\n");
+    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Location "Not-A-Real-Center" not recognized/);
+  });
+
+  it("matches a center case-insensitively but stores the master list's own canonical casing", async () => {
+    await insertAsset("BXFER-CASING");
+    const csv = [HEADER, "BXFER-CASING,center-b,2026-05-01"].join("\n");
+    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    expect(res.json().processed).toBe(1);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT location FROM transfers WHERE far_id = 'BXFER-CASING'`);
+    expect(rows[0].location).toBe("Center-B");
   });
 
   it("accepts a DD-MM-YYYY transfer date and rejects a malformed one with a clear message", async () => {

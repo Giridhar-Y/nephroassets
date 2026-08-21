@@ -1,7 +1,37 @@
 import type { FastifyInstance } from "fastify";
 import { getPool } from "../db/pool.js";
-import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues } from "./assetSchema.js";
-import { loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
+import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
+
+// Rejects (rather than silently accepting) a status/subClassification/location that
+// doesn't match an active Masters entry (routes/masters.ts) — case-insensitively, but the
+// row is rewritten to the master list's own canonical casing before it's ever written to
+// assets, so "it equipment" and "IT Equipment" end up as the exact same stored value.
+async function validateAgainstMasters(
+  validRows: Array<{ row: number; data: BulkAssetRowInput }>,
+  errors: RowError[]
+): Promise<{ validRows: Array<{ row: number; data: BulkAssetRowInput }>; errors: RowError[] }> {
+  const maps = await loadActiveMasterMaps(await getPool());
+  const stillValid: Array<{ row: number; data: BulkAssetRowInput }> = [];
+  const allErrors = [...errors];
+  for (const { row, data } of validRows) {
+    const canonicalStatus = lookupCanonical(maps.statuses, data.status);
+    const canonicalSubClass = lookupCanonical(maps.subClassifications, data.subClassification);
+    const canonicalLocation = lookupCanonical(maps.centers, data.location);
+    const messages: string[] = [];
+    if (!canonicalStatus) messages.push(`Status "${data.status}" not recognized — see Masters for valid values.`);
+    if (!canonicalSubClass) {
+      messages.push(`Sub Classification "${data.subClassification}" not recognized — see Masters for valid values.`);
+    }
+    if (!canonicalLocation) messages.push(`Location "${data.location}" not recognized — see Masters for valid values.`);
+    if (messages.length > 0) {
+      allErrors.push({ row, farId: data.farId, message: messages.join("; ") });
+      continue;
+    }
+    stillValid.push({ row, data: { ...data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! } });
+  }
+  return { validRows: stillValid, errors: allErrors };
+}
 
 export default async function bulkUploadRoutes(app: FastifyInstance) {
   // Bulk Uploads: parse a CSV/XLSX of assets (columns named after the shared AssetInput
@@ -31,6 +61,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
+    ({ validRows, errors } = await validateAgainstMasters(validRows, errors));
 
     // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID
     // already exists), without writing anything — Confirm Upload re-submits the same file

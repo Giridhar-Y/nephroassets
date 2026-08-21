@@ -61,7 +61,9 @@ export function CapitalizationPage() {
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
-    fetchStatuses().then(setStatuses).catch(() => {});
+    // excludeSystemManaged: a brand-new asset must never be capitalized as already
+    // Disposed — that status is only ever set through the Disposal flow.
+    fetchStatuses(true).then(setStatuses).catch(() => {});
     fetchSubClassifications().then(setSubClassifications).catch(() => {});
   }, []);
 
@@ -120,19 +122,19 @@ export function CapitalizationPage() {
             />
           </Field>
           <Field label="Sub Classification" htmlFor="cap-sub-class">
-            <input
+            <select
               id="cap-sub-class"
-              type="text"
-              list="cap-sub-class-options"
               className={INPUT_CLASS}
               value={form.subClassification}
               onChange={(e) => update({ subClassification: e.target.value })}
-            />
-            <datalist id="cap-sub-class-options">
+            >
+              <option value="">Select…</option>
               {subClassifications.map((s) => (
-                <option key={s} value={s} />
+                <option key={s} value={s}>
+                  {s}
+                </option>
               ))}
-            </datalist>
+            </select>
           </Field>
 
           <Field label="Asset Description" htmlFor="cap-description">
@@ -165,19 +167,14 @@ export function CapitalizationPage() {
             />
           </Field>
           <Field label="Status" htmlFor="cap-status">
-            <input
-              id="cap-status"
-              type="text"
-              list="cap-status-options"
-              className={INPUT_CLASS}
-              value={form.status}
-              onChange={(e) => update({ status: e.target.value })}
-            />
-            <datalist id="cap-status-options">
+            <select id="cap-status" className={INPUT_CLASS} value={form.status} onChange={(e) => update({ status: e.target.value })}>
+              <option value="">Select…</option>
               {statuses.map((s) => (
-                <option key={s} value={s} />
+                <option key={s} value={s}>
+                  {s}
+                </option>
               ))}
-            </datalist>
+            </select>
           </Field>
 
           <Field label="Date Acquired" htmlFor="cap-date-acquired">
@@ -190,19 +187,19 @@ export function CapitalizationPage() {
             />
           </Field>
           <Field label="Location" htmlFor="cap-location">
-            <input
+            <select
               id="cap-location"
-              type="text"
-              list="cap-location-options"
               className={INPUT_CLASS}
               value={form.location}
               onChange={(e) => update({ location: e.target.value })}
-            />
-            <datalist id="cap-location-options">
+            >
+              <option value="">Select…</option>
               {centers.map((c) => (
-                <option key={c} value={c} />
+                <option key={c} value={c}>
+                  {c}
+                </option>
               ))}
-            </datalist>
+            </select>
           </Field>
         </div>
 

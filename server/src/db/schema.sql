@@ -51,6 +51,40 @@ CREATE TABLE settings (
   days_in_fy   INTEGER NOT NULL
 );
 
+-- Master data for the three fields that used to be plain free text on assets (location,
+-- status, sub_classification) — see routes/masters.ts. Renaming a master value cascades
+-- to every assets/transfers row currently holding it (in the same transaction), so the
+-- master list and those denormalized string columns never disagree. Deactivating does
+-- NOT touch existing rows — it only stops the value being offered for new picks.
+CREATE TABLE centers (
+  id            BIGSERIAL PRIMARY KEY,
+  code          TEXT NOT NULL,
+  description   TEXT NOT NULL DEFAULT '',
+  active        BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX idx_centers_code_ci ON centers (LOWER(code));
+
+CREATE TABLE sub_classifications (
+  id                             BIGSERIAL PRIMARY KEY,
+  name                           TEXT NOT NULL,
+  default_useful_life_c1_years   NUMERIC,
+  default_useful_life_c2_years   NUMERIC,
+  active                         BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX idx_sub_classifications_name_ci ON sub_classifications (LOWER(name));
+
+-- system_managed marks values (just "Disposed") that only the Disposal flow may ever set
+-- — never manually pickable when capitalizing or editing an asset, and locked from
+-- rename/deactivate in the Masters screen since the backend hardcodes the literal string
+-- in several places (transfers.ts, bulkDisposals.ts, the disposal PATCH endpoint).
+CREATE TABLE statuses (
+  id               BIGSERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  active           BOOLEAN NOT NULL DEFAULT TRUE,
+  system_managed   BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE UNIQUE INDEX idx_statuses_name_ci ON statuses (LOWER(name));
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

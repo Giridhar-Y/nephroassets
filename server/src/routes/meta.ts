@@ -1,28 +1,37 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { getPool } from "../db/pool.js";
 
+// These back every dropdown that picks a Center/Sub Classification/Status elsewhere in
+// the app (Register's filters, TransferModal, CapitalizationPage) — active master-list
+// entries only (see routes/masters.ts), not a live DISTINCT over assets like before, so a
+// value an admin deactivates stops being offered for new picks everywhere at once.
 export default async function metaRoutes(app: FastifyInstance) {
   app.get("/api/meta/centers", async () => {
     const db = await getPool();
-    const { rows } = await db.query<{ center: string }>(
-      `SELECT DISTINCT COALESCE(revised_location, location) AS center FROM assets ORDER BY center`
-    );
-    return rows.map((r) => r.center);
+    const { rows } = await db.query<{ code: string }>(`SELECT code FROM centers WHERE active = TRUE ORDER BY code`);
+    return rows.map((r) => r.code);
   });
 
   app.get("/api/meta/sub-classifications", async () => {
     const db = await getPool();
-    const { rows } = await db.query<{ sub_classification: string }>(
-      `SELECT DISTINCT sub_classification FROM assets ORDER BY sub_classification`
+    const { rows } = await db.query<{ name: string }>(
+      `SELECT name FROM sub_classifications WHERE active = TRUE ORDER BY name`
     );
-    return rows.map((r) => r.sub_classification);
+    return rows.map((r) => r.name);
   });
 
-  app.get("/api/meta/statuses", async () => {
+  // Capitalization excludes system-managed statuses (Disposed) — a brand-new asset must
+  // never be capitalized as already disposed, that's the Disposal flow's job. Every other
+  // consumer (Register's Status filter, most importantly) needs Disposed included, since
+  // otherwise there'd be no way to filter the Register down to disposed assets.
+  const querySchema = z.object({ excludeSystemManaged: z.coerce.boolean().optional() });
+  app.get("/api/meta/statuses", async (req) => {
+    const q = querySchema.parse(req.query);
     const db = await getPool();
-    const { rows } = await db.query<{ status: string }>(
-      `SELECT DISTINCT status FROM assets ORDER BY status`
+    const { rows } = await db.query<{ name: string }>(
+      `SELECT name FROM statuses WHERE active = TRUE ${q.excludeSystemManaged ? "AND system_managed = FALSE" : ""} ORDER BY name`
     );
-    return rows.map((r) => r.status);
+    return rows.map((r) => r.name);
   });
 }
