@@ -21,10 +21,11 @@ export function TransfersPage() {
     fetchCenters().then(setCenters).catch(() => {});
   }, []);
 
-  const setFilter = <K extends keyof TransferHistoryFilters>(key: K, value: string) => {
+  const setFilter = <K extends keyof TransferHistoryFilters>(key: K, value: TransferHistoryFilters[K]) => {
     setFilters((prev) => {
       const next = { ...prev };
-      if (value) next[key] = value;
+      const isEmpty = !value || (Array.isArray(value) && value.length === 0);
+      if (!isEmpty) next[key] = value;
       else delete next[key];
       return next;
     });
@@ -156,16 +157,13 @@ export function TransfersPage() {
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
                 <div className="flex items-center justify-between gap-1">
                   <span>Moved To</span>
-                  <ColumnFilterPopover label="Moved To" active={!!filters.location}>
-                    {(close) => (
+                  <ColumnFilterPopover label="Moved To" active={(filters.location?.length ?? 0) > 0}>
+                    {() => (
                       <SelectFilterPanel
                         label="Center"
                         options={centers}
-                        value={filters.location ?? ""}
-                        onChange={(v) => {
-                          setFilter("location", v);
-                          close();
-                        }}
+                        value={filters.location ?? []}
+                        onChange={(v) => setFilter("location", v)}
                       />
                     )}
                   </ColumnFilterPopover>

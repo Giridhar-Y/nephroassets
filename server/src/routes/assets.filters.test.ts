@@ -146,3 +146,61 @@ describe("GET /api/assets: globalSearch (Register's toolbar search box)", () => 
     expect(body.items.map((i: { asset: { farId: string } }) => i.asset.farId)).toEqual(["PAGE-030"]);
   });
 });
+
+describe("GET /api/assets: multi-value status/subClassification/center filters", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(assetsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("status=Active,Disposed matches either, not neither and not AND'd", async () => {
+    await insertAsset("MULTI-1", "A", { status: "Active" });
+    await insertAsset("MULTI-2", "B", { status: "Disposed" });
+    await insertAsset("MULTI-3", "C", { status: "Under Repair" });
+
+    const res = await app.inject({ method: "GET", url: "/api/assets?status=Active,Disposed" });
+    const farIds = res.json().items.map((i: { asset: { farId: string } }) => i.asset.farId).sort();
+    expect(farIds).toEqual(["MULTI-1", "MULTI-2"]);
+  });
+
+  it("a single value (no comma) still works exactly as before", async () => {
+    await insertAsset("MULTI-4", "A", { subClassification: "RO Plants" });
+    await insertAsset("MULTI-5", "B", { subClassification: "IT Equipment" });
+
+    const res = await app.inject({ method: "GET", url: "/api/assets?subClassification=RO Plants" });
+    expect(res.json().items.map((i: { asset: { farId: string } }) => i.asset.farId)).toEqual(["MULTI-4"]);
+  });
+
+  it("combines a multi-value center filter with another column filter (AND across fields, OR within one)", async () => {
+    await insertAsset("MULTI-6", "A", { location: "Center-X", status: "Active" });
+    await insertAsset("MULTI-7", "B", { location: "Center-Y", status: "Active" });
+    await insertAsset("MULTI-8", "C", { location: "Center-X", status: "Disposed" });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/assets?center=Center-X,Center-Y&status=Active"
+    });
+    const farIds = res.json().items.map((i: { asset: { farId: string } }) => i.asset.farId).sort();
+    expect(farIds).toEqual(["MULTI-6", "MULTI-7"]);
+  });
+});

@@ -17,7 +17,10 @@ export function LocationSummaryPage() {
   const { settings } = useSettings();
   const { filters, setFilter } = useFilters();
   const asAt = settings?.asAt ?? null;
-  const location = filters.center ?? "";
+  // This picker deliberately stays single-select — it decides which one summary to show,
+  // not a list filter — but still shares FiltersContext's `center` key with Register's
+  // (now multi-select) location filter, so a choice made here carries over there too.
+  const location = filters.center?.[0] ?? "";
 
   const [centers, setCenters] = useState<string[]>([]);
   const [summary, setSummary] = useState<LocationSummary | null>(null);
@@ -45,7 +48,7 @@ export function LocationSummaryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, settingsKey]);
 
-  const listFilters = useMemo(() => (location ? { center: location } : {}), [location]);
+  const listFilters = useMemo(() => (location ? { center: [location] } : {}), [location]);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(location ? settings : null, listFilters);
 
   return (
@@ -59,7 +62,7 @@ export function LocationSummaryPage() {
             id="location-summary-picker"
             className="w-56 rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
             value={location}
-            onChange={(e) => setFilter("center", e.target.value || undefined)}
+            onChange={(e) => setFilter("center", e.target.value ? [e.target.value] : undefined)}
           >
             <option value="">Choose a location…</option>
             {centers.map((c) => (

@@ -108,6 +108,30 @@ describe("Transfers", () => {
     expect(items[0].location).toBe("Center-B");
   });
 
+  it("filters history by multiple destination locations at once", async () => {
+    await insertAsset("XFER-9");
+    await app.inject({
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-9"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-9"], toLocation: "Center-C", transactionDate: "2026-06-01" }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-9"], toLocation: "Center-D", transactionDate: "2026-07-01" }
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/transfers?location=Center-B,Center-D" });
+    const { items } = res.json();
+    const locations = items.map((i: { location: string }) => i.location).sort();
+    expect(locations).toEqual(["Center-B", "Center-D"]);
+  });
+
   it("filters history by transaction date range", async () => {
     await insertAsset("XFER-6");
     await app.inject({

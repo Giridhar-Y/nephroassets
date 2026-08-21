@@ -75,46 +75,37 @@ export function RegisterPage() {
       </ColumnFilterPopover>
     ),
     subClassification: (
-      <ColumnFilterPopover label="Sub Classification" active={!!filters.subClassification}>
-        {(close) => (
+      <ColumnFilterPopover label="Sub Classification" active={(filters.subClassification?.length ?? 0) > 0}>
+        {() => (
           <SelectFilterPanel
             label="Sub Classification"
             options={subClassifications}
-            value={filters.subClassification ?? ""}
-            onChange={(v) => {
-              v ? setFilter("subClassification", v) : clearFilter("subClassification");
-              close();
-            }}
+            value={filters.subClassification ?? []}
+            onChange={(v) => (v.length > 0 ? setFilter("subClassification", v) : clearFilter("subClassification"))}
           />
         )}
       </ColumnFilterPopover>
     ),
     status: (
-      <ColumnFilterPopover label="Status" active={!!filters.status}>
-        {(close) => (
+      <ColumnFilterPopover label="Status" active={(filters.status?.length ?? 0) > 0}>
+        {() => (
           <SelectFilterPanel
             label="Status"
             options={statuses}
-            value={filters.status ?? ""}
-            onChange={(v) => {
-              v ? setFilter("status", v) : clearFilter("status");
-              close();
-            }}
+            value={filters.status ?? []}
+            onChange={(v) => (v.length > 0 ? setFilter("status", v) : clearFilter("status"))}
           />
         )}
       </ColumnFilterPopover>
     ),
     effectiveLocation: (
-      <ColumnFilterPopover label="Current Location" active={!!filters.center}>
-        {(close) => (
+      <ColumnFilterPopover label="Current Location" active={(filters.center?.length ?? 0) > 0}>
+        {() => (
           <SelectFilterPanel
             label="Center"
             options={centers}
-            value={filters.center ?? ""}
-            onChange={(v) => {
-              v ? setFilter("center", v) : clearFilter("center");
-              close();
-            }}
+            value={filters.center ?? []}
+            onChange={(v) => (v.length > 0 ? setFilter("center", v) : clearFilter("center"))}
           />
         )}
       </ColumnFilterPopover>

@@ -90,9 +90,9 @@ export interface AssetCreateInput {
 }
 
 export interface AssetFilters {
-  center?: string;
-  subClassification?: string;
-  status?: string;
+  center?: string[];
+  subClassification?: string[];
+  status?: string[];
   dateAcquiredFrom?: string;
   dateAcquiredTo?: string;
   search?: string;

@@ -21,7 +21,7 @@ const COLUMNS = DISPOSAL_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id ===
 // Register (select assets, DisposalModal). This screen just shows what's been disposed.
 export function DisposalPage() {
   const { settings } = useSettings();
-  const filters = useMemo(() => ({ status: "Disposed" }), []);
+  const filters = useMemo(() => ({ status: ["Disposed"] }), []);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
 
   return (

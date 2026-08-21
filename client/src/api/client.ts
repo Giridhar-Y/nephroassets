@@ -145,7 +145,7 @@ export interface TransferHistoryResponse {
 export interface TransferHistoryFilters {
   search?: string;
   descriptionSearch?: string;
-  location?: string;
+  location?: string[];
   transactionDateFrom?: string;
   transactionDateTo?: string;
 }

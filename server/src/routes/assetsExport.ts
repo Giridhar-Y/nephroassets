@@ -14,11 +14,18 @@ import type { AssetInput, AssetCalculationResult } from "../calc/types.js";
 // PL/pgSQL report functions.
 const EXPORT_BATCH_SIZE = 2000;
 
+// Comma-separated multi-value filters — see the identical helper in assets.ts (the
+// non-export list route), which this route's filters intentionally mirror.
+const multiValue = z
+  .string()
+  .optional()
+  .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
+
 const exportQuerySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  center: z.string().optional(),
-  subClassification: z.string().optional(),
-  status: z.string().optional(),
+  center: multiValue,
+  subClassification: multiValue,
+  status: multiValue,
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
@@ -96,15 +103,15 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     const params: unknown[] = [];
     if (q.center) {
       params.push(q.center);
-      conditions.push(`COALESCE(revised_location, location) = $${params.length}`);
+      conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);
     }
     if (q.subClassification) {
       params.push(q.subClassification);
-      conditions.push(`sub_classification = $${params.length}`);
+      conditions.push(`sub_classification = ANY($${params.length})`);
     }
     if (q.status) {
       params.push(q.status);
-      conditions.push(`status = $${params.length}`);
+      conditions.push(`status = ANY($${params.length})`);
     }
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);

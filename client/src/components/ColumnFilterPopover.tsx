@@ -95,6 +95,13 @@ export function TextFilterPanel({
   );
 }
 
+/** Pick any number of values — an empty selection means "All", same as the old
+ *  single-select's blank option. Doesn't auto-close its popover (unlike the old
+ *  single-select, which called `close()` on pick) since picking more than one option is
+ *  the whole point; dismiss via click-outside or Escape like the text/date panels. The
+ *  search box filters which options are *shown*, not the selection itself — a checked
+ *  option stays checked even while scrolled out of view by a search term, same as
+ *  Excel's autofilter search. */
 export function SelectFilterPanel({
   label,
   options,
@@ -103,24 +110,59 @@ export function SelectFilterPanel({
 }: {
   label: string;
   options: string[];
-  value: string;
-  onChange: (v: string) => void;
+  value: string[];
+  onChange: (v: string[]) => void;
 }) {
+  const [search, setSearch] = useState("");
   const id = useId();
+
+  function toggle(option: string) {
+    onChange(value.includes(option) ? value.filter((v) => v !== option) : [...value, option]);
+  }
+
+  const visibleOptions = search
+    ? options.filter((o) => o.toLowerCase().includes(search.toLowerCase()))
+    : options;
+
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className={FIELD_LABEL_CLASS}>
         {label}
       </label>
-      <select id={id} className={FIELD_INPUT_CLASS} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">All</option>
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-      {value && <ClearButton onClick={() => onChange("")} />}
+      {options.length > 8 && (
+        <input
+          id={id}
+          type="text"
+          autoFocus
+          placeholder={`Search ${label.toLowerCase()}…`}
+          className={FIELD_INPUT_CLASS}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      )}
+      <div className="max-h-48 overflow-y-auto rounded-md border border-gray-300">
+        {options.length === 0 ? (
+          <p className="px-2 py-1.5 text-xs text-gray-400">No options yet.</p>
+        ) : visibleOptions.length === 0 ? (
+          <p className="px-2 py-1.5 text-xs text-gray-400">No matches for "{search}".</p>
+        ) : (
+          visibleOptions.map((o) => (
+            <label
+              key={o}
+              className="flex items-center gap-2 px-2 py-1 text-xs text-ink hover:bg-gray-50 first:rounded-t-md last:rounded-b-md"
+            >
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={value.includes(o)}
+                onChange={() => toggle(o)}
+              />
+              {o}
+            </label>
+          ))
+        )}
+      </div>
+      {value.length > 0 && <ClearButton onClick={() => onChange([])} />}
     </div>
   );
 }

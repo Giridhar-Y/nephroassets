@@ -19,11 +19,19 @@ const SORTABLE_COLUMNS: Record<string, string> = {
   location: "location"
 };
 
+// Comma-separated multi-value filters — client sends e.g. "Active,Disposed" as one query
+// param (URLSearchParams.set(key, String(array)) already produces this), matched with
+// `= ANY(...)` below instead of `=`.
+const multiValue = z
+  .string()
+  .optional()
+  .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
+
 const querySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  center: z.string().optional(),
-  subClassification: z.string().optional(),
-  status: z.string().optional(),
+  center: multiValue,
+  subClassification: multiValue,
+  status: multiValue,
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
@@ -84,15 +92,15 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
     if (q.center) {
       params.push(q.center);
-      conditions.push(`COALESCE(revised_location, location) = $${params.length}`);
+      conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);
     }
     if (q.subClassification) {
       params.push(q.subClassification);
-      conditions.push(`sub_classification = $${params.length}`);
+      conditions.push(`sub_classification = ANY($${params.length})`);
     }
     if (q.status) {
       params.push(q.status);
-      conditions.push(`status = $${params.length}`);
+      conditions.push(`status = ANY($${params.length})`);
     }
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);

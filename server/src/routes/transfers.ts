@@ -8,10 +8,16 @@ const createTransferSchema = z.object({
   transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 });
 
+// Comma-separated multi-value filter — see the identical helper in assets.ts.
+const multiValue = z
+  .string()
+  .optional()
+  .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
+
 const historyQuerySchema = z.object({
   search: z.string().optional(),
   descriptionSearch: z.string().optional(),
-  location: z.string().optional(),
+  location: multiValue,
   transactionDateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   transactionDateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   cursor: z.coerce.number().int().optional(),
@@ -80,7 +86,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
     }
     if (location) {
       params.push(location);
-      conditions.push(`t.location = $${params.length}`);
+      conditions.push(`t.location = ANY($${params.length})`);
     }
     if (transactionDateFrom) {
       params.push(transactionDateFrom);
