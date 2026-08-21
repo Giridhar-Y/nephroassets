@@ -2,6 +2,7 @@ import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
+import { Logo } from "./Logo.js";
 import {
   RegisterIcon,
   SettingsIcon,
@@ -14,7 +15,8 @@ import {
   UploadIcon,
   LifecycleIcon,
   PanelCollapseIcon,
-  PanelExpandIcon
+  PanelExpandIcon,
+  BookDatabaseIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
@@ -28,6 +30,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
   { to: "/disposals", label: "Disposals", icon: DeleteIcon },
   { to: "/bulk-upload", label: "Bulk Upload", icon: UploadIcon },
   { to: "/reports", label: "Reports", icon: ReportsIcon },
+  { to: "/masters", label: "Masters", icon: BookDatabaseIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon }
 ];
 
@@ -98,7 +101,12 @@ export function Layout() {
         }`}
       >
         <div className={`flex items-center py-5 ${collapsed ? "justify-center px-2" : "justify-between px-5"}`}>
-          {!collapsed && <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>}
+          {!collapsed && (
+            <span className="flex items-center gap-2">
+              <Logo size={24} />
+              <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>
+            </span>
+          )}
           <button
             type="button"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { DEMO_PASSWORD, DEMO_USERNAME, useAuth } from "../lib/AuthContext.js";
-import { ErrorIcon, InfoIcon, LockIcon } from "../lib/icons.js";
+import { ErrorIcon, InfoIcon } from "../lib/icons.js";
+import { Logo } from "../components/Logo.js";
 
 export function LoginPage() {
   const { isAuthenticated, login } = useAuth();
@@ -26,7 +27,7 @@ export function LoginPage() {
     <div className="flex h-full items-center justify-center bg-[#FAFAFA]">
       <div className="w-full max-w-sm rounded-xl bg-white p-8 shadow-sm">
         <div className="flex items-center gap-2">
-          <LockIcon fontSize={22} className="text-ink" />
+          <Logo size={26} />
           <h1 className="text-lg font-bold tracking-tight text-ink">NephroAssets</h1>
         </div>
         <p className="mt-1 text-sm text-gray-500">Sign in to preview the register.</p>
