@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { applyFullDisposal } from "./disposalWriteOff.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
@@ -71,18 +72,8 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       try {
         await client.query("BEGIN");
         for (const { row, data } of validRows) {
-          const { rows: updatedRows } = await client.query(
-            `UPDATE assets
-             SET date_of_disposal = $1,
-                 deletions_c1 = c1_opening_cost + additions_c1,
-                 deletions_c2 = c2_opening_cost + additions_c2,
-                 sale_value = $2,
-                 status = 'Disposed'
-             WHERE far_id = $3 AND date_of_disposal IS NULL
-             RETURNING far_id`,
-            [data.dateOfDisposal, data.saleValue, data.farId]
-          );
-          if (updatedRows.length === 0) {
+          const written = await applyFullDisposal(client, data.farId, data.dateOfDisposal, data.saleValue);
+          if (!written) {
             const { rows: check } = await client.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [
               data.farId
             ]);

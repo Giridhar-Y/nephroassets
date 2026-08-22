@@ -6,6 +6,7 @@ import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { applyFullDisposal } from "./disposalWriteOff.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -308,18 +309,8 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { farId } = paramsParsed.data;
     const { dateOfDisposal, saleValue } = bodyParsed.data;
     const db = await getPool();
-    const { rows } = await db.query(
-      `UPDATE assets
-       SET date_of_disposal = $1,
-           deletions_c1 = c1_opening_cost + additions_c1,
-           deletions_c2 = c2_opening_cost + additions_c2,
-           sale_value = $2,
-           status = 'Disposed'
-       WHERE far_id = $3 AND date_of_disposal IS NULL
-       RETURNING far_id`,
-      [dateOfDisposal, saleValue, farId]
-    );
-    if (rows.length === 0) {
+    const written = await applyFullDisposal(db, farId, dateOfDisposal, saleValue);
+    if (!written) {
       const { rows: check } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [farId]);
       if (check.length === 0) {
         reply.code(404);
