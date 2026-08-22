@@ -187,7 +187,7 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     width: 150,
     align: "right",
     group: "grossBlockCost",
-    render: (i) => formatCurrency(i.asset.c1OpeningCost)
+    render: (i) => formatCurrency(i.result.c1.openingGrossBlock)
   },
   {
     id: "c2OpeningCost",
@@ -196,7 +196,7 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     width: 150,
     align: "right",
     group: "grossBlockCost",
-    render: (i) => formatCurrency(i.asset.c2OpeningCost)
+    render: (i) => formatCurrency(i.result.c2.openingGrossBlock)
   },
   {
     id: "additionsC1",
@@ -205,7 +205,7 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     width: 140,
     align: "right",
     group: "grossBlockCost",
-    render: (i) => formatCurrency(i.asset.additionsC1)
+    render: (i) => formatCurrency(i.result.c1.additionsGrossBlock)
   },
   {
     id: "additionsC2",
@@ -214,7 +214,7 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     width: 140,
     align: "right",
     group: "grossBlockCost",
-    render: (i) => formatCurrency(i.asset.additionsC2)
+    render: (i) => formatCurrency(i.result.c2.additionsGrossBlock)
   },
 
   // --- 3. Addition Date --------------------------------------------------------

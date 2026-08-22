@@ -31,6 +31,8 @@ export interface ComponentResult {
   disposalEffective: boolean;
   daysHeldOpening: number;
   daysHeldAddition: number;
+  openingGrossBlock: number;
+  additionsGrossBlock: number;
   openingNbv: number;
   depOnOpening: number;
   depOnAdditions: number;

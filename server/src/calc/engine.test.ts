@@ -20,6 +20,7 @@ describe("Depreciation on Opening (step 3)", () => {
   it("normal case: mid-year AS_AT over a full opening balance", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -38,6 +39,7 @@ describe("Depreciation on Opening (step 3)", () => {
   it("boundary case: AS_AT equals FY start (1 day held)", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 36500,
         additions: 0,
         dateOfAddition: null,
@@ -56,6 +58,7 @@ describe("Depreciation on Opening (step 3)", () => {
   it("edge case: zero useful life never divides by zero, yields zero depreciation", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 50000,
         additions: 0,
         dateOfAddition: null,
@@ -80,6 +83,7 @@ describe("Depreciation on Additions (step 4)", () => {
   it("normal case: addition partway through the year", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 50000,
         dateOfAddition: "2025-05-01",
@@ -98,6 +102,7 @@ describe("Depreciation on Additions (step 4)", () => {
   it("boundary case: addition date equals AS_AT (1 day held)", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 36500,
         dateOfAddition: "2025-06-15",
@@ -116,6 +121,7 @@ describe("Depreciation on Additions (step 4)", () => {
   it("edge case: addition dated after AS_AT is not yet effective", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 40000,
         dateOfAddition: "2026-01-15",
@@ -139,6 +145,7 @@ describe("Period Depreciation cap (step 5)", () => {
   it("normal case: raw depreciation is below the remaining depreciable value", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -157,6 +164,7 @@ describe("Period Depreciation cap (step 5)", () => {
   it("boundary case: opening accumulated depreciation already exceeds cost, cap floors at zero", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -174,6 +182,7 @@ describe("Period Depreciation cap (step 5)", () => {
   it("edge case (doc): fully depreciated asset shows zero further depreciation, NBV stays zero not negative", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -198,6 +207,7 @@ describe("Gross Block as at AS_AT (step 6)", () => {
   it("normal case: opening cost plus additions, no disposal", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 20000,
         dateOfAddition: "2025-07-01",
@@ -215,6 +225,7 @@ describe("Gross Block as at AS_AT (step 6)", () => {
   it("boundary case: full disposal brings Gross Block to zero", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 50000,
         additions: 0,
         dateOfAddition: null,
@@ -232,6 +243,7 @@ describe("Gross Block as at AS_AT (step 6)", () => {
   it("edge case (doc): disposal date after AS_AT is ignored for this AS_AT", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 80000,
         additions: 0,
         dateOfAddition: null,
@@ -257,6 +269,7 @@ describe("Disposed Ratio (step 7)", () => {
   it("normal case: partial disposal ratio", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -274,6 +287,7 @@ describe("Disposed Ratio (step 7)", () => {
   it("boundary case: zero cost base guards against division by zero", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 0,
         dateOfAddition: null,
@@ -292,6 +306,7 @@ describe("Disposed Ratio (step 7)", () => {
   it("edge case: full disposal gives a ratio of 1", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 50000,
         additions: 0,
         dateOfAddition: null,
@@ -314,6 +329,7 @@ describe("Disposal accounting (steps 8-11)", () => {
   it("normal case: partial disposal mid-year with opening accumulated depreciation", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -336,6 +352,7 @@ describe("Disposal accounting (steps 8-11)", () => {
   it("edge case (doc): asset added and disposed within the same period never goes negative", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 50000,
         dateOfAddition: "2025-05-01",
@@ -359,6 +376,7 @@ describe("Disposal accounting (steps 8-11)", () => {
   it("edge case (doc): no additions and no disposal leaves WDV/P&L null, not zero", () => {
     const r = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 60000,
         additions: 0,
         dateOfAddition: null,
@@ -385,6 +403,7 @@ describe("NBV as at FY start (openingNbv)", () => {
   it("normal case: opening cost minus opening accumulated depreciation", () => {
     const result = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 50000,
         dateOfAddition: "2025-06-01",
@@ -402,6 +421,7 @@ describe("NBV as at FY start (openingNbv)", () => {
   it("edge case: unaffected by additions, disposal, or AS_AT — it's fixed at FY start", () => {
     const withAddition = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 999999,
         dateOfAddition: "2025-06-01",
@@ -419,6 +439,7 @@ describe("NBV as at FY start (openingNbv)", () => {
   it("boundary case: fully depreciated at opening still reports the (zero) opening NBV, not the cap", () => {
     const result = computeComponent(
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -431,6 +452,113 @@ describe("NBV as at FY start (openingNbv)", () => {
       FY
     );
     expect(result.openingNbv).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opening vs Addition reclassification (FY-rollover fix) — the two cost tranches
+// (openingCost @ dateAcquired, additions @ dateOfAddition) are classified live against
+// the *current* fyStart, not by which field they were entered into. Numbers chosen so
+// days-held divides cleanly (dateAcquired/dateOfAddition landing exactly on fyStart, and
+// asAt equal to fyStart too — 1 day held, same precedent as the existing "addition date
+// equals AS_AT" boundary test — so every expected figure below is hand-checkable.
+// ---------------------------------------------------------------------------
+describe("Opening vs Addition reclassification (cost-side FY-rollover fix)", () => {
+  it("an asset acquired mid-FY (on FY Start) has its cost classified as an Addition, not Opening", () => {
+    const r = computeComponent(
+      {
+        dateAcquired: "2025-04-01", // == fyStart: not *before* it, so this is an Addition
+        openingCost: 36500,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 0
+      },
+      fy({ asAt: "2025-04-01" })
+    );
+    expect(r.openingGrossBlock).toBe(0);
+    expect(r.additionsGrossBlock).toBe(36500);
+    expect(r.depOnOpening).toBe(0);
+    expect(r.depOnAdditions).toBeCloseTo(10, 6); // 36500/10 * 1/365
+    expect(r.grossBlock).toBe(36500);
+    expect(r.openingNbv).toBe(0);
+  });
+
+  it("an addition dated before the current FY Start (a rolled-over prior-FY addition) now counts as Opening", () => {
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01", // long-owned, genuinely opening, but contributes 0 (openingCost=0)
+        openingCost: 0,
+        additions: 36500,
+        dateOfAddition: "2025-01-01", // before fyStart 2025-04-01 — last FY's addition
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 5000
+      },
+      fy({ asAt: "2025-04-01" })
+    );
+    expect(r.additionsGrossBlock).toBe(0); // no longer "this FY's addition"
+    expect(r.openingGrossBlock).toBe(36500); // rolled into Opening automatically
+    expect(r.depOnAdditions).toBe(0);
+    expect(r.depOnOpening).toBeCloseTo(10, 6); // 36500/10 * 1/365, dated from fyStart not dateOfAddition
+    expect(r.openingNbv).toBe(36500 - 5000);
+  });
+
+  it("mixed: opening cost and addition each reclassify to the opposite side of FY Start", () => {
+    const r = computeComponent(
+      {
+        dateAcquired: "2025-04-01", // == fyStart -> Addition
+        openingCost: 36500,
+        additions: 73000,
+        dateOfAddition: "2024-01-01", // well before fyStart -> Opening
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 0
+      },
+      fy({ asAt: "2025-04-01" })
+    );
+    expect(r.openingGrossBlock).toBe(73000); // from the "additions" field
+    expect(r.additionsGrossBlock).toBe(36500); // from the "opening cost" field
+    expect(r.depOnOpening).toBeCloseTo(20, 6); // 73000/10 * 1/365
+    expect(r.depOnAdditions).toBeCloseTo(10, 6); // 36500/10 * 1/365
+    expect(r.grossBlock).toBe(109500);
+    expect(r.openingNbv).toBe(73000);
+  });
+
+  it("rolling FY Start forward reclassifies the same data with no changes to the asset itself", () => {
+    const input = {
+      dateAcquired: "2020-01-01",
+      openingCost: 100000,
+      additions: 40000,
+      dateOfAddition: "2025-08-15", // mid-FY addition for the FY25 view below
+      usefulLifeYears: 10,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 30000
+    };
+
+    // Viewed still within FY25 (fyStart 2025-04-01): the addition is still "this FY's".
+    const duringFy25 = computeComponent(input, fy({ asAt: "2025-12-31" }));
+    expect(duringFy25.openingGrossBlock).toBe(100000);
+    expect(duringFy25.additionsGrossBlock).toBe(40000);
+
+    // Same asset, same stored fields, FY Start now advanced to FY26 (2026-04-01) — the
+    // exact same dateOfAddition (2025-08-15) is now *before* the new FY Start, so it
+    // reclassifies into Opening automatically. No edit, no migration.
+    const duringFy26 = computeComponent(
+      input,
+      { asAt: "2026-09-30", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+    );
+    expect(duringFy26.additionsGrossBlock).toBe(0);
+    expect(duringFy26.openingGrossBlock).toBe(140000); // 100000 + the rolled-forward addition
   });
 });
 
@@ -585,6 +713,7 @@ describe("reconciliation invariants", () => {
     [
       "no disposal, cap not binding",
       {
+        dateAcquired: "2020-01-01",
         openingCost: 60000,
         additions: 15000,
         dateOfAddition: "2025-07-01",
@@ -599,6 +728,7 @@ describe("reconciliation invariants", () => {
     [
       "partial disposal mid-year",
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -613,6 +743,7 @@ describe("reconciliation invariants", () => {
     [
       "fully depreciated, no disposal",
       {
+        dateAcquired: "2020-01-01",
         openingCost: 100000,
         additions: 0,
         dateOfAddition: null,
@@ -627,6 +758,7 @@ describe("reconciliation invariants", () => {
     [
       "added and fully disposed same period",
       {
+        dateAcquired: "2020-01-01",
         openingCost: 0,
         additions: 50000,
         dateOfAddition: "2025-05-01",

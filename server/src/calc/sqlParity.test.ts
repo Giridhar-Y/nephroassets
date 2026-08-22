@@ -19,6 +19,7 @@ const fixtures: Fixture[] = [
   {
     name: "normal opening depreciation",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 100000,
       additions: 0,
       dateOfAddition: null,
@@ -33,6 +34,7 @@ const fixtures: Fixture[] = [
   {
     name: "addition mid-year, no disposal",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 20000,
       additions: 50000,
       dateOfAddition: "2025-05-01",
@@ -47,6 +49,7 @@ const fixtures: Fixture[] = [
   {
     name: "fully depreciated (cap binds)",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 100000,
       additions: 0,
       dateOfAddition: null,
@@ -61,6 +64,7 @@ const fixtures: Fixture[] = [
   {
     name: "over-depreciated bad data (cap floors at zero, closing capped at gross block)",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 100000,
       additions: 0,
       dateOfAddition: null,
@@ -75,6 +79,7 @@ const fixtures: Fixture[] = [
   {
     name: "partial disposal mid-year with opening acc dep",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 100000,
       additions: 0,
       dateOfAddition: null,
@@ -89,6 +94,7 @@ const fixtures: Fixture[] = [
   {
     name: "added and fully disposed within the same period",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 0,
       additions: 50000,
       dateOfAddition: "2025-05-01",
@@ -103,6 +109,7 @@ const fixtures: Fixture[] = [
   {
     name: "disposal dated after AS_AT is not yet effective",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 80000,
       additions: 0,
       dateOfAddition: null,
@@ -117,6 +124,7 @@ const fixtures: Fixture[] = [
   {
     name: "zero useful life never divides by zero",
     input: {
+      dateAcquired: "2020-01-01",
       openingCost: 50000,
       additions: 0,
       dateOfAddition: null,
@@ -127,6 +135,52 @@ const fixtures: Fixture[] = [
       accDepOpening: 0
     },
     fy: FY
+  },
+  {
+    // Opening/Addition reclassification (cost-side FY-rollover fix) — three cases:
+    name: "opening cost dated mid-FY reclassifies as an Addition, not Opening",
+    input: {
+      dateAcquired: "2025-06-01", // after FY Start (2025-04-01)
+      openingCost: 60000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 5,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 0
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
+  },
+  {
+    name: "addition dated before current FY Start (a rolled-over prior-year addition) reclassifies as Opening",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 40000,
+      additions: 15000,
+      dateOfAddition: "2025-02-01", // before FY Start (2025-04-01) — simulates last FY's addition
+      usefulLifeYears: 8,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 5000
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
+  },
+  {
+    name: "mixed: opening cost and addition each reclassify to the opposite side of FY Start",
+    input: {
+      dateAcquired: "2025-06-01", // after FY Start -> opening cost reclassifies as Addition
+      openingCost: 25000,
+      additions: 12000,
+      dateOfAddition: "2025-02-01", // before FY Start -> addition reclassifies as Opening
+      usefulLifeYears: 6,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 3000
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
   }
 ];
 
@@ -135,7 +189,7 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
 
   const pool = getTestPool();
   const { rows } = await pool.query(
-    `SELECT (far_calc_component($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)).*`,
+    `SELECT (far_calc_component($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)).*`,
     [
       input.openingCost,
       input.additions,
@@ -147,7 +201,8 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
       input.accDepOpening,
       fy.asAt,
       fy.fyStart,
-      fy.daysInFy
+      fy.daysInFy,
+      input.dateAcquired
     ]
   );
   const sql = rows[0];
@@ -156,6 +211,9 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
   expect(sql.disposal_effective).toBe(ts.disposalEffective);
   expect(Number(sql.days_held_opening)).toBe(ts.daysHeldOpening);
   expect(Number(sql.days_held_addition)).toBe(ts.daysHeldAddition);
+  expect(Number(sql.opening_gross_block)).toBeCloseTo(ts.openingGrossBlock, 6);
+  expect(Number(sql.additions_gross_block)).toBeCloseTo(ts.additionsGrossBlock, 6);
+  expect(Number(sql.opening_nbv)).toBeCloseTo(ts.openingNbv, 6);
   expect(Number(sql.dep_on_opening)).toBeCloseTo(ts.depOnOpening, 6);
   expect(Number(sql.dep_on_additions)).toBeCloseTo(ts.depOnAdditions, 6);
   expect(Number(sql.period_depreciation)).toBeCloseTo(ts.periodDepreciation, 6);

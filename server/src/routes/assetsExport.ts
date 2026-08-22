@@ -126,7 +126,11 @@ const EXPORT_COLUMNS: ExportColumn[] = [
     width: 22,
     groupKey: "g2",
     kind: "number",
-    value: (a) => a.c1OpeningCost
+    // Live-classified Opening Gross Block (see engine.ts's splitTranche), not the raw
+    // c1OpeningCost column — a mid-FY capitalization now correctly shows 0 here and its
+    // full cost under Additions instead, and a prior-FY addition now correctly rolls
+    // into this figure once FY Start advances, with no manual re-entry.
+    value: (_a, r) => r.c1.openingGrossBlock
   },
   {
     key: "c2OpeningCost",
@@ -134,10 +138,24 @@ const EXPORT_COLUMNS: ExportColumn[] = [
     width: 22,
     groupKey: "g2",
     kind: "number",
-    value: (a) => a.c2OpeningCost
+    value: (_a, r) => r.c2.openingGrossBlock
   },
-  { key: "additionsC1", label: "Additions C1 (during FY)", width: 20, groupKey: "g2", kind: "number", value: (a) => a.additionsC1 },
-  { key: "additionsC2", label: "Additions C2 (during FY)", width: 20, groupKey: "g2", kind: "number", value: (a) => a.additionsC2 },
+  {
+    key: "additionsC1",
+    label: "Additions C1 (during FY)",
+    width: 20,
+    groupKey: "g2",
+    kind: "number",
+    value: (_a, r) => r.c1.additionsGrossBlock
+  },
+  {
+    key: "additionsC2",
+    label: "Additions C2 (during FY)",
+    width: 20,
+    groupKey: "g2",
+    kind: "number",
+    value: (_a, r) => r.c2.additionsGrossBlock
+  },
 
   // --- 3. Addition Date --------------------------------------------------------
   {
@@ -336,17 +354,20 @@ function groupRuns(columns: ExportColumn[]): Array<{ groupKey: string; startCol:
 // rather than needing their own SQL expression.
 const SQL_SUM_EXPRESSIONS: Record<string, string> = {
   qty: "SUM(qty)",
-  c1OpeningCost: "SUM(c1_opening_cost)",
-  c2OpeningCost: "SUM(c2_opening_cost)",
-  additionsC1: "SUM(additions_c1)",
-  additionsC2: "SUM(additions_c2)",
+  // Opening/Additions totals read the calc engine's own live-classified fields (see
+  // far_calc_component in schema.sql), not the raw columns — matching the per-row
+  // export values above, which do the same via `result.c1/c2.openingGrossBlock`.
+  c1OpeningCost: "SUM((c1).opening_gross_block)",
+  c2OpeningCost: "SUM((c2).opening_gross_block)",
+  additionsC1: "SUM((c1).additions_gross_block)",
+  additionsC2: "SUM((c2).additions_gross_block)",
   deletionsC1: "SUM(deletions_c1)",
   deletionsC2: "SUM(deletions_c2)",
   saleValue: "SUM(sale_value)",
   accDepC1Opening: "SUM(acc_dep_c1_opening)",
   accDepC2Opening: "SUM(acc_dep_c2_opening)",
-  c1NbvOpening: "SUM(c1_opening_cost - acc_dep_c1_opening)",
-  c2NbvOpening: "SUM(c2_opening_cost - acc_dep_c2_opening)",
+  c1NbvOpening: "SUM((c1).opening_nbv)",
+  c2NbvOpening: "SUM((c2).opening_nbv)",
   c1GrossBlock: "SUM((c1).gross_block)",
   c2GrossBlock: "SUM((c2).gross_block)",
   c1PeriodDep: "SUM((c1).period_depreciation)",
@@ -453,12 +474,12 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     const daysPh = params.length + 3;
     const { rows: totalsRows } = await db.query(
       `WITH calc AS (
-         SELECT qty, c1_opening_cost, c2_opening_cost, acc_dep_c1_opening, acc_dep_c2_opening,
+         SELECT qty, acc_dep_c1_opening, acc_dep_c2_opening,
            far_calc_component(c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}) AS c1,
+             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}, date_acquired) AS c1,
            far_calc_component(c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}) AS c2,
-           additions_c1, additions_c2, deletions_c1, deletions_c2, sale_value
+             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}, date_acquired) AS c2,
+           deletions_c1, deletions_c2, sale_value
          FROM assets ${whereClause}
        )
        SELECT

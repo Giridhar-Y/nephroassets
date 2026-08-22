@@ -48,6 +48,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
       for (const asset of assets) {
         const c1 = computeComponent(
           {
+            dateAcquired: asset.dateAcquired,
             openingCost: asset.c1OpeningCost,
             additions: asset.additionsC1,
             dateOfAddition: asset.dateOfAddition,
@@ -61,6 +62,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
         );
         const c2 = computeComponent(
           {
+            dateAcquired: asset.dateAcquired,
             openingCost: asset.c2OpeningCost,
             additions: asset.additionsC2,
             dateOfAddition: asset.dateOfAddition,
@@ -120,6 +122,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     for (const asset of atCenter) {
       const c1 = computeComponent(
         {
+          dateAcquired: asset.dateAcquired,
           openingCost: asset.c1OpeningCost,
           additions: asset.additionsC1,
           dateOfAddition: asset.dateOfAddition,

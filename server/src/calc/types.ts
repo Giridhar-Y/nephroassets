@@ -49,6 +49,14 @@ export interface ComponentResult {
   disposalEffective: boolean;
   daysHeldOpening: number;
   daysHeldAddition: number;
+  /** Opening Gross Block, as at FY Start — live-classified from dateAcquired/
+   *  dateOfAddition against the *current* FY Start, not the raw stored
+   *  c1/c2OpeningCost field. See engine.ts's `splitTranche` for why. */
+  openingGrossBlock: number;
+  /** Additions Gross Block "during FY" — the complement of `openingGrossBlock`: a
+   *  cost tranche dated on/after FY Start (and on/before this view's effective end
+   *  date). Also live-classified, not the raw stored additionsC1/C2 field. */
+  additionsGrossBlock: number;
   openingNbv: number;
   depOnOpening: number;
   depOnAdditions: number;

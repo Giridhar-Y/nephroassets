@@ -44,7 +44,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
          COUNT(*) AS asset_count,
          COALESCE(SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2, $3, $4
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2, $3, $4, date_acquired
          )).gross_block), 0) AS total_c1_gross_block
        FROM assets
        WHERE COALESCE(revised_location, location) = $1`,
@@ -92,21 +92,28 @@ export default async function reportsRoutes(app: FastifyInstance) {
       `WITH calc AS (
          SELECT
            sub_classification,
-           c1_opening_cost, additions_c1, deletions_c1, acc_dep_c1_opening,
-           c2_opening_cost, additions_c2, deletions_c2, acc_dep_c2_opening,
+           deletions_c1, acc_dep_c1_opening,
+           deletions_c2, acc_dep_c2_opening,
            far_calc_component(
              c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3
+             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3, date_acquired
            ) AS c1,
            far_calc_component(
              c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3
+             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3, date_acquired
            ) AS c2,
            (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
          FROM assets
        )
+       -- Opening/Additions sums now come from the calc engine's own live-classified
+       -- opening_gross_block/additions_gross_block (see far_calc_component in
+       -- schema.sql), not the raw c1_opening_cost/additions_c1 columns — the whole
+       -- point of the FY-rollover fix is that those raw columns no longer mean
+       -- "Opening"/"this FY's Addition" unconditionally, so this tie-out has to read
+       -- the same reclassified figures the register itself displays, or a mid-FY
+       -- capitalization / a future-dated addition would show as a false mismatch.
        SELECT sub_classification, 'C1' AS component,
-         SUM(c1_opening_cost) AS opening_sum, SUM(additions_c1) AS additions_sum,
+         SUM((c1).opening_gross_block) AS opening_sum, SUM((c1).additions_gross_block) AS additions_sum,
          SUM(CASE WHEN deletions_countable THEN deletions_c1 ELSE 0 END) AS deletions_sum,
          SUM((c1).gross_block) AS closing_gross_block_sum,
          SUM(acc_dep_c1_opening) AS acc_dep_opening_sum, SUM((c1).period_depreciation) AS period_dep_sum,
@@ -114,7 +121,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
        FROM calc GROUP BY sub_classification
        UNION ALL
        SELECT sub_classification, 'C2' AS component,
-         SUM(c2_opening_cost), SUM(additions_c2),
+         SUM((c2).opening_gross_block), SUM((c2).additions_gross_block),
          SUM(CASE WHEN deletions_countable THEN deletions_c2 ELSE 0 END),
          SUM((c2).gross_block),
          SUM(acc_dep_c2_opening), SUM((c2).period_depreciation),
@@ -186,11 +193,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
          sub_classification,
          SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3, date_acquired
          )).period_depreciation) AS c1_period_dep,
          SUM((far_calc_component(
            c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3
+           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3, date_acquired
          )).period_depreciation) AS c2_period_dep
        FROM assets
        GROUP BY sub_classification

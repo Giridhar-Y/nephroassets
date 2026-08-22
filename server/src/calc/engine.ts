@@ -9,14 +9,66 @@ import type {
 } from "./types.js";
 
 interface ComponentInput {
+  dateAcquired: IsoDate;
   openingCost: number;
   additions: number;
-  dateOfAddition: string | null;
+  dateOfAddition: IsoDate | null;
   usefulLifeYears: number;
-  dateOfDisposal: string | null;
+  dateOfDisposal: IsoDate | null;
   deletionsCost: number;
   saleValue: number;
   accDepOpening: number;
+}
+
+interface TrancheSplit {
+  openingAmount: number;
+  additionAmount: number;
+  openingDep: number;
+  additionDep: number;
+  /** Diagnostic only (surfaced via `daysHeldAddition`) — nothing else consumes it. */
+  additionDaysHeld: number;
+}
+
+const ZERO_SPLIT: TrancheSplit = { openingAmount: 0, additionAmount: 0, openingDep: 0, additionDep: 0, additionDaysHeld: 0 };
+
+/**
+ * Classifies one dated cost tranche — an asset's original acquisition cost
+ * (openingCost @ dateAcquired) or its one mid-life addition (additions @
+ * dateOfAddition) — against the *current* FY Start, live, every time this runs. A
+ * tranche dated before FY Start is Opening; on/after FY Start (and on/before
+ * `viewEnd`) is an Addition "during FY"; after `viewEnd` it hasn't happened yet as of
+ * this view and contributes nothing at all (matching how Deletions/disposal are
+ * already date-gated below).
+ *
+ * This is the actual fix for the FY-rollover bug: nothing here trusts which form
+ * field an amount was typed into. Capitalizing an asset mid-year correctly shows it
+ * as an Addition this year; the moment FY Start advances (Settings), the exact same
+ * dateAcquired now falls before the new FY Start, so it reclassifies as Opening on
+ * its own — no manual re-entry, no "close year" migration step required.
+ */
+function splitTranche(
+  amount: number,
+  date: IsoDate | null,
+  fyStart: IsoDate,
+  viewEnd: IsoDate,
+  usefulLife: number,
+  daysInFy: number
+): TrancheSplit {
+  if (amount === 0 || date === null || isAfter(date, viewEnd)) return ZERO_SPLIT;
+  const isOpening = isAfter(fyStart, date); // date < fyStart
+  const daysHeld = Math.max(0, daysHeldInclusive(isOpening ? fyStart : date, viewEnd));
+  const dep = usefulLife > 0 ? (amount / usefulLife) * (daysHeld / daysInFy) : 0;
+  return isOpening
+    ? { openingAmount: amount, additionAmount: 0, openingDep: dep, additionDep: 0, additionDaysHeld: 0 }
+    : { openingAmount: 0, additionAmount: amount, openingDep: 0, additionDep: dep, additionDaysHeld: daysHeld };
+}
+
+/** Whether a tranche's date falls before FY Start — used only for the FY-Start
+ *  snapshot (openingGrossBlock/openingNbv), which is deliberately independent of
+ *  AS_AT or a later disposal: what the asset was worth the moment the year began,
+ *  not "as of today" and not "before it was sold off." */
+function isOpeningTranche(amount: number, date: IsoDate | null, fyStart: IsoDate): boolean {
+  return amount !== 0 && date !== null && isAfter(fyStart, date);
 }
 
 /**
@@ -25,43 +77,42 @@ interface ComponentInput {
  */
 export function computeComponent(input: ComponentInput, fy: FySettings): ComponentResult {
   const { asAt, fyStart, daysInFy } = fy;
+  const usefulLife = input.usefulLifeYears;
+  const hasUsefulLife = usefulLife > 0;
 
   // Step 1: Effective End Date
   const disposalEffective =
     input.dateOfDisposal !== null && isOnOrBefore(input.dateOfDisposal, asAt);
   const effectiveEndDate = disposalEffective ? input.dateOfDisposal! : asAt;
 
-  // Step 2: Days Held
+  // Opening Gross Block / NBV as at FY start — a fixed snapshot for the whole FY,
+  // independent of AS_AT, additions, or disposal: whichever tranche(s) are dated
+  // before FY Start. accDepOpening stays the stored/entered value as-is (not
+  // re-derived via SLM-since-acquisition) — see the comment on `accDepOpening` below
+  // for why, and how this doubles as a future "locked opening balance" hook.
+  const openingGrossBlock =
+    (isOpeningTranche(input.openingCost, input.dateAcquired, fyStart) ? input.openingCost : 0) +
+    (isOpeningTranche(input.additions, input.dateOfAddition, fyStart) ? input.additions : 0);
+  const openingNbv = openingGrossBlock - input.accDepOpening;
+
+  // Steps 2-4: per-tranche days held / depreciation, live-classified against FY Start
+  // as of `effectiveEndDate` (AS_AT, or an earlier Disposal Date).
+  const acq = splitTranche(input.openingCost, input.dateAcquired, fyStart, effectiveEndDate, usefulLife, daysInFy);
+  const add = splitTranche(input.additions, input.dateOfAddition, fyStart, effectiveEndDate, usefulLife, daysInFy);
+
   const daysHeldOpening = Math.max(0, daysHeldInclusive(fyStart, effectiveEndDate));
+  const daysHeldAddition = add.additionDaysHeld;
 
-  const additionApplies =
-    input.additions !== 0 &&
-    input.dateOfAddition !== null &&
-    !isAfter(input.dateOfAddition, effectiveEndDate);
-  const daysHeldAddition = additionApplies
-    ? Math.max(0, daysHeldInclusive(input.dateOfAddition!, effectiveEndDate))
-    : 0;
+  const depOnOpening = acq.openingDep + add.openingDep;
+  const depOnAdditions = acq.additionDep + add.additionDep;
 
-  const usefulLife = input.usefulLifeYears;
-  const hasUsefulLife = usefulLife > 0;
+  // Additions Gross Block "during FY" — gated by effectiveEndDate: a tranche dated
+  // after it (whether AS_AT or an earlier disposal) hasn't happened yet as of this
+  // view, so it contributes nothing, same as a Deletion dated after AS_AT below.
+  const additionsGrossBlock = acq.additionAmount + add.additionAmount;
+  const openingGrossBlockAsAt = acq.openingAmount + add.openingAmount;
 
-  // NBV as at FY start (brought-forward opening NBV) — fixed for the whole FY,
-  // independent of AS_AT: what the asset was worth on the books the moment the year
-  // began, before this year's additions or depreciation are applied.
-  const openingNbv = input.openingCost - input.accDepOpening;
-
-  // Step 3: Depreciation on Opening
-  const depOnOpening = hasUsefulLife
-    ? (input.openingCost / usefulLife) * (daysHeldOpening / daysInFy)
-    : 0;
-
-  // Step 4: Depreciation on Additions
-  const depOnAdditions =
-    hasUsefulLife && additionApplies
-      ? (input.additions / usefulLife) * (daysHeldAddition / daysInFy)
-      : 0;
-
-  // Full cost basis (Opening Cost + Additions), i.e. Gross Block before any disposal
+  // Full cost basis as at `effectiveEndDate`, i.e. Gross Block before any disposal
   // write-off. Used as the depreciable ceiling in step 5 and as the denominator in step 7,
   // matching step 7's own explicit "(Opening Cost + Additions)" wording. Using the
   // *net-of-disposal* figure here instead would zero out an asset's entire in-year
@@ -69,7 +120,7 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // wiping out the depreciation charge already accrued up to the disposal date, which
   // would also make Closing Accumulated Depreciation go negative. See engine.test.ts's
   // "added and disposed within the same period" case.
-  const costBase = input.openingCost + input.additions;
+  const costBase = openingGrossBlockAsAt + additionsGrossBlock;
 
   // Step 5: Period Depreciation (final) — capped at the remaining depreciable value
   // (full cost basis minus what's already been depreciated), so NBV can never go negative
@@ -87,27 +138,18 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   const disposedRatio = costBase !== 0 ? effectiveDisposedCost / costBase : 0;
 
   // Step 8: Depreciation on the disposed portion, up to Disposal Date. Re-applies the same
-  // opening/addition SLM shape as steps 3-4, but cut off at Disposal Date instead of AS_AT,
-  // then scales the result by the Disposed Ratio to isolate the disposed portion's share
-  // (the Deletions fields don't record whether the disposed cost came from the opening
-  // balance or from an in-year addition, so this proportional split is the closest
+  // per-tranche classification as steps 3-4, but cut off at Disposal Date instead of
+  // AS_AT, then scales the result by the Disposed Ratio to isolate the disposed portion's
+  // share (the Deletions fields don't record whether the disposed cost came from the
+  // opening balance or from an in-year addition, so this proportional split is the closest
   // consistent reading of "depreciation on the disposed portion").
   let depOnDisposedPortion = 0;
   if (disposalEffective && hasUsefulLife) {
     const disposalDate = input.dateOfDisposal!;
-    const openingDaysAtDisposal = Math.max(0, daysHeldInclusive(fyStart, disposalDate));
-    const openingDepAtDisposal = (input.openingCost / usefulLife) * (openingDaysAtDisposal / daysInFy);
-
-    const additionAppliesAtDisposal =
-      input.additions !== 0 && input.dateOfAddition !== null && !isAfter(input.dateOfAddition, disposalDate);
-    const additionDaysAtDisposal = additionAppliesAtDisposal
-      ? Math.max(0, daysHeldInclusive(input.dateOfAddition!, disposalDate))
-      : 0;
-    const additionDepAtDisposal = additionAppliesAtDisposal
-      ? (input.additions / usefulLife) * (additionDaysAtDisposal / daysInFy)
-      : 0;
-
-    depOnDisposedPortion = disposedRatio * (openingDepAtDisposal + additionDepAtDisposal);
+    const acqAtDisposal = splitTranche(input.openingCost, input.dateAcquired, fyStart, disposalDate, usefulLife, daysInFy);
+    const addAtDisposal = splitTranche(input.additions, input.dateOfAddition, fyStart, disposalDate, usefulLife, daysInFy);
+    depOnDisposedPortion =
+      disposedRatio * (acqAtDisposal.openingDep + acqAtDisposal.additionDep + addAtDisposal.openingDep + addAtDisposal.additionDep);
   }
 
   const accDepOnDisposed = disposalEffective
@@ -133,6 +175,8 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
     disposalEffective,
     daysHeldOpening,
     daysHeldAddition,
+    openingGrossBlock,
+    additionsGrossBlock,
     openingNbv,
     depOnOpening,
     depOnAdditions,
@@ -204,6 +248,7 @@ export function computeAsset(
 ): AssetCalculationResult {
   const c1 = computeComponent(
     {
+      dateAcquired: asset.dateAcquired,
       openingCost: asset.c1OpeningCost,
       additions: asset.additionsC1,
       dateOfAddition: asset.dateOfAddition,
@@ -211,6 +256,14 @@ export function computeAsset(
       dateOfDisposal: asset.dateOfDisposal,
       deletionsCost: asset.deletionsC1,
       saleValue: asset.saleValue,
+      // Not reclassified/re-derived by date, unlike Opening Gross Block above — this
+      // stays exactly the stored/entered value, unconditionally. It's effectively
+      // already the "locked opening balance" a future Close-FY feature would formalize:
+      // there's no transaction ledger of historical depreciation charges to re-derive
+      // it from (past useful-life changes, impairments, etc. wouldn't survive a clean
+      // SLM-since-acquisition recompute), so it has to be an entered fact, not a
+      // formula. When Close-FY ships, "locking" a year is just: this field already
+      // works as an override — the only new part is *what writes it* at year-end.
       accDepOpening: asset.accDepC1Opening
     },
     fy
@@ -218,6 +271,7 @@ export function computeAsset(
 
   const c2 = computeComponent(
     {
+      dateAcquired: asset.dateAcquired,
       openingCost: asset.c2OpeningCost,
       additions: asset.additionsC2,
       dateOfAddition: asset.dateOfAddition,
