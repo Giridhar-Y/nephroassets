@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { disposeAsset } from "../api/client.js";
+import { disposeAsset, previewDisposal, type DisposalPreview } from "../api/client.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { DeleteIcon, ErrorIcon } from "../lib/icons.js";
@@ -24,6 +24,8 @@ export function DisposalModal({
   const [saleValue, setSaleValue] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previews, setPreviews] = useState<Map<string, DisposalPreview>>(new Map());
 
   // Dismissing the confirmation step (Esc, click outside) returns to the form with
   // entered values intact — it must never silently submit or discard anything.
@@ -36,9 +38,20 @@ export function DisposalModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [step]);
 
-  function handleReview() {
+  async function handleReview() {
     setError(null);
+    setPreviewing(true);
     setStep("confirm");
+    try {
+      const results = await Promise.all(
+        assets.map((a) => previewDisposal(a.asset.farId, { dateOfDisposal, saleValue }))
+      );
+      setPreviews(new Map(results.map((r) => [r.farId, r])));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not compute disposal preview.");
+    } finally {
+      setPreviewing(false);
+    }
   }
 
   async function handleConfirm() {
@@ -150,13 +163,13 @@ export function DisposalModal({
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">FAR ID</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Asset Description</th>
                     <th className="px-3 py-1.5 text-right font-semibold text-gray-600">Sale Value</th>
-                    <th className="px-3 py-1.5 text-right font-semibold text-gray-600">Est. Profit / (Loss)</th>
+                    <th className="px-3 py-1.5 text-right font-semibold text-gray-600">Profit / (Loss)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {assets.map((item) => {
-                    const currentNbv = item.result.c1.nbv + item.result.c2.nbv;
-                    const estProfitLoss = saleValue - currentNbv;
+                    const preview = previews.get(item.asset.farId);
+                    const profitLoss = preview?.profitLoss;
                     return (
                       <tr key={item.asset.farId} className="border-t border-gray-100">
                         <td className="px-3 py-1.5 font-medium text-ink">{item.asset.farId}</td>
@@ -164,12 +177,18 @@ export function DisposalModal({
                         <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(saleValue)}</td>
                         <td
                           className={`px-3 py-1.5 text-right font-medium ${
-                            estProfitLoss >= 0 ? "text-green-700" : "text-red-600"
+                            profitLoss === undefined ? "text-gray-400" : profitLoss >= 0 ? "text-green-700" : "text-red-600"
                           }`}
                         >
-                          {estProfitLoss >= 0 ? "" : "("}
-                          {formatCurrency(Math.abs(estProfitLoss))}
-                          {estProfitLoss >= 0 ? "" : ")"}
+                          {profitLoss === undefined ? (
+                            previewing ? "…" : "—"
+                          ) : (
+                            <>
+                              {profitLoss >= 0 ? "" : "("}
+                              {formatCurrency(Math.abs(profitLoss))}
+                              {profitLoss >= 0 ? "" : ")"}
+                            </>
+                          )}
                         </td>
                       </tr>
                     );
@@ -178,8 +197,8 @@ export function DisposalModal({
               </table>
             </div>
             <p className="mt-1 text-[11px] text-gray-400">
-              Estimated from each asset's net book value as of the current "Figures as of" date — the exact
-              figure will be calculated against the disposal date above.
+              Depreciation is calculated up to the disposal date above; deletions are each asset's full
+              capitalized cost.
             </p>
 
             <p className="mt-3 text-xs font-medium text-red-600">
@@ -207,7 +226,7 @@ export function DisposalModal({
                 type="button"
                 className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
                 onClick={handleConfirm}
-                disabled={submitting}
+                disabled={submitting || previewing}
               >
                 {submitting ? "Disposing…" : "Confirm & Dispose"}
               </button>

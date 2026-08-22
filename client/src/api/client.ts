@@ -134,6 +134,27 @@ export function disposeAsset(
   });
 }
 
+export interface DisposalPreview {
+  farId: string;
+  c1Wdv: number | null;
+  c2Wdv: number | null;
+  totalWdv: number;
+  profitLoss: number;
+}
+
+// Real preview, not an estimate: runs the same calc engine formula (WDV/Profit-Loss
+// evaluated at the chosen Disposal Date), against the same full-cost write-off a real
+// disposal applies — without writing anything.
+export function previewDisposal(
+  farId: string,
+  payload: { dateOfDisposal: string; saleValue: number }
+): Promise<DisposalPreview> {
+  return request(`/api/assets/${encodeURIComponent(farId)}/disposal/preview`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export interface TransferHistoryItem {
   id: number;
   farId: string;

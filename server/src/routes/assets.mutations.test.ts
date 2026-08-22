@@ -191,3 +191,96 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(assetsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await seedMasters();
+    await app.inject({ method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "PREV-TEST-1" } });
+  });
+
+  it("computes real WDV/Profit-Loss for the chosen Disposal Date without writing anything", async () => {
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
+    });
+    expect(preview.statusCode).toBe(200);
+    const body = preview.json();
+    // Full write-off: deletions = 10000 (C1) + 10000 (C2) opening cost, both components.
+    // Depreciation accrues from FY Start (2026-04-01) to the disposal date (2026-08-01)
+    // — the preview isn't a rough "today's NBV" estimate, it's the actual formula.
+    expect(body.c1Wdv).toBeGreaterThan(0);
+    expect(body.c1Wdv).toBeLessThan(10000);
+    expect(body.totalWdv).toBeCloseTo(body.c1Wdv + body.c2Wdv, 6);
+    // Matches the existing Register/Export convention (columns.ts): Profit/(Loss) sums
+    // each component's own (saleValue - componentWdv), not a single (saleValue - total).
+    expect(body.profitLoss).toBeCloseTo(9000 - body.c1Wdv + (9000 - body.c2Wdv), 6);
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT date_of_disposal, deletions_c1, status FROM assets WHERE far_id = 'PREV-TEST-1'`
+    );
+    expect(rows[0].date_of_disposal).toBeNull();
+    expect(Number(rows[0].deletions_c1)).toBe(0);
+    expect(rows[0].status).toBe("Active");
+  });
+
+  it("matches what actually confirming the disposal on that same date produces", async () => {
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
+    });
+    const previewBody = preview.json();
+
+    await app.inject({
+      method: "PATCH",
+      url: "/api/assets/PREV-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
+    });
+    const detail = await app.inject({ method: "GET", url: "/api/assets/PREV-TEST-1?asAt=2026-08-01" });
+    const result = detail.json().result;
+
+    expect(previewBody.c1Wdv).toBeCloseTo(result.c1.wdvAtDisposal, 6);
+    expect(previewBody.c2Wdv).toBeCloseTo(result.c2.wdvAtDisposal, 6);
+    expect(previewBody.profitLoss).toBeCloseTo(result.c1.profitLossOnDisposal + result.c2.profitLossOnDisposal, 6);
+  });
+
+  it("404s for an unknown FAR ID", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets/DOES-NOT-EXIST/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("409s for an asset that's already disposed", async () => {
+    await app.inject({
+      method: "PATCH",
+      url: "/api/assets/PREV-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-05", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(409);
+  });
+});

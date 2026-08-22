@@ -297,6 +297,65 @@ export default async function assetsRoutes(app: FastifyInstance) {
     return { farId: input.farId, created: true };
   });
 
+  // Disposal preview: exactly what the real disposal would compute (same full-cost
+  // write-off `applyFullDisposal` applies, same calc engine), for the *chosen* Disposal
+  // Date — without writing anything. Lets the confirmation dialog show real WDV/Profit-
+  // Loss figures instead of approximating with today's NBV. AS_AT is pinned to the
+  // chosen Disposal Date itself (not whatever the app's global "Figures as of" is set
+  // to) so depreciation accrues up to exactly that date, matching what disposing on it
+  // for real would produce.
+  app.post("/api/assets/:farId/disposal/preview", async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = disposalSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "Invalid disposal payload.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const { dateOfDisposal, saleValue } = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1`, [farId]);
+    const row = rows[0];
+    if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    const asset = mapAssetRow(row);
+    if (asset.dateOfDisposal !== null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has already been disposed.` };
+    }
+
+    const { rows: settingsRows } = await db.query<SettingsRow>(
+      `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
+    );
+    const fySettings = settingsRows[0];
+    if (!fySettings) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    const fy = mapSettingsRow(fySettings);
+    fy.asAt = dateOfDisposal;
+
+    const hypothetical = {
+      ...asset,
+      dateOfDisposal,
+      deletionsC1: asset.c1OpeningCost + asset.additionsC1,
+      deletionsC2: asset.c2OpeningCost + asset.additionsC2,
+      saleValue
+    };
+    const result = computeAsset(hypothetical, fy, []);
+
+    return {
+      farId,
+      c1Wdv: result.c1.wdvAtDisposal,
+      c2Wdv: result.c2.wdvAtDisposal,
+      totalWdv: (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0),
+      profitLoss: (result.c1.profitLossOnDisposal ?? 0) + (result.c2.profitLossOnDisposal ?? 0)
+    };
+  });
+
   // Disposal: full disposal only, so Deletions is always the asset's entire capitalized
   // cost (opening + additions) rather than a user-entered partial amount.
   app.patch("/api/assets/:farId/disposal", async (req, reply) => {
