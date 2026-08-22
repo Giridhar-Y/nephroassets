@@ -49,6 +49,7 @@ export interface ComponentResult {
   disposalEffective: boolean;
   daysHeldOpening: number;
   daysHeldAddition: number;
+  openingNbv: number;
   depOnOpening: number;
   depOnAdditions: number;
   periodDepreciation: number;
@@ -67,4 +68,9 @@ export interface AssetCalculationResult {
   c1: ComponentResult;
   c2: ComponentResult;
   effectiveLocation: string;
+  /** Latest of Date Acquired, Date of Addition, every Transfer date, and Date of
+   *  Disposal — whichever of those events actually apply on or before AS_AT. Distinct
+   *  from `AssetInput.lastDateOfTransaction` (a stored column touched only by Transfer
+   *  routes) — this is the fuller definition the Register/Export screens display. */
+  lastDateOfTransaction: IsoDate;
 }

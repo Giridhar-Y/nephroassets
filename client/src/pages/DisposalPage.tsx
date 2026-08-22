@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
-import { ALL_COLUMNS } from "../lib/columns.js";
+import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { DeleteIcon } from "../lib/icons.js";
 
 const DISPOSAL_COLUMN_IDS = [
@@ -15,7 +15,7 @@ const DISPOSAL_COLUMN_IDS = [
   "c1Wdv",
   "profitLoss"
 ];
-const COLUMNS = DISPOSAL_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
+const RAW_COLUMNS = DISPOSAL_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
 
 // Read-only, like Transfers: initiating a disposal happens via "Dispose Selected" in
 // Register (select assets, DisposalModal). This screen just shows what's been disposed.
@@ -23,6 +23,7 @@ export function DisposalPage() {
   const { settings } = useSettings();
   const filters = useMemo(() => ({ status: ["Disposed"] }), []);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
+  const COLUMNS = resolveColumns(RAW_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
 
   return (
     <div className="flex h-full flex-col">

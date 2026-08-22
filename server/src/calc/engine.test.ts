@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeAsset, computeComponent, computeEffectiveLocation } from "./engine.js";
+import { computeAsset, computeComponent, computeEffectiveLocation, computeLastDateOfTransaction } from "./engine.js";
 import type { AssetInput, FySettings, TransferRecord } from "./types.js";
 
 const FY: FySettings = {
@@ -381,6 +381,59 @@ describe("Disposal accounting (steps 8-11)", () => {
 // ---------------------------------------------------------------------------
 // Step 12: Effective Location
 // ---------------------------------------------------------------------------
+describe("NBV as at FY start (openingNbv)", () => {
+  it("normal case: opening cost minus opening accumulated depreciation", () => {
+    const result = computeComponent(
+      {
+        openingCost: 100000,
+        additions: 50000,
+        dateOfAddition: "2025-06-01",
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 30000
+      },
+      FY
+    );
+    expect(result.openingNbv).toBe(70000);
+  });
+
+  it("edge case: unaffected by additions, disposal, or AS_AT — it's fixed at FY start", () => {
+    const withAddition = computeComponent(
+      {
+        openingCost: 100000,
+        additions: 999999,
+        dateOfAddition: "2025-06-01",
+        usefulLifeYears: 10,
+        dateOfDisposal: "2025-07-01",
+        deletionsCost: 100000,
+        saleValue: 5000,
+        accDepOpening: 30000
+      },
+      fy({ asAt: "2026-01-01" })
+    );
+    expect(withAddition.openingNbv).toBe(70000);
+  });
+
+  it("boundary case: fully depreciated at opening still reports the (zero) opening NBV, not the cap", () => {
+    const result = computeComponent(
+      {
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 5,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 100000
+      },
+      FY
+    );
+    expect(result.openingNbv).toBe(0);
+  });
+});
+
 describe("Effective Location (step 12)", () => {
   const transfers: TransferRecord[] = [
     { farId: "A1", transactionDate: "2025-05-01", location: "Center-B" },
@@ -399,6 +452,69 @@ describe("Effective Location (step 12)", () => {
   it("edge case: no transfer on or before AS_AT falls back to original Location", () => {
     const t: TransferRecord[] = [{ farId: "A1", transactionDate: "2026-01-01", location: "Center-E" }];
     expect(computeEffectiveLocation("A1", "Center-A", t, "2025-09-30")).toBe("Center-A");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Last Date of Transaction: max(Date Acquired, Date of Addition, Transfers, Date of
+// Disposal), each only if it applies on or before AS_AT.
+// ---------------------------------------------------------------------------
+describe("Last Date of Transaction", () => {
+  const asset: AssetInput = {
+    farId: "A1",
+    subClassification: "Test-Sub",
+    assetDescription: "Test",
+    serialNo: "SN-1",
+    qty: 1,
+    status: "Active",
+    dateAcquired: "2024-01-01",
+    location: "Center-A",
+    revisedLocation: null,
+    lastDateOfTransaction: null,
+    usefulLifeC1Years: 5,
+    usefulLifeC2Years: 5,
+    c1OpeningCost: 10000,
+    c2OpeningCost: 10000,
+    additionsC1: 0,
+    additionsC2: 0,
+    dateOfAddition: null,
+    dateOfDisposal: null,
+    deletionsC1: 0,
+    deletionsC2: 0,
+    saleValue: 0,
+    accDepC1Opening: 0,
+    accDepC2Opening: 0
+  };
+
+  it("normal case: no addition, transfer, or disposal yet — falls back to Date Acquired", () => {
+    expect(computeLastDateOfTransaction(asset, [], "2025-09-30")).toBe("2024-01-01");
+  });
+
+  it("normal case: picks the latest of Date Acquired, Date of Addition, and a Transfer", () => {
+    const withAddition = { ...asset, dateOfAddition: "2025-05-01" };
+    const transfers: TransferRecord[] = [{ farId: "A1", transactionDate: "2025-06-15", location: "Center-B" }];
+    expect(computeLastDateOfTransaction(withAddition, transfers, "2025-09-30")).toBe("2025-06-15");
+  });
+
+  it("normal case: Date of Disposal wins when it's the latest qualifying event", () => {
+    const disposed = { ...asset, dateOfAddition: "2025-05-01", dateOfDisposal: "2025-08-01" };
+    const transfers: TransferRecord[] = [{ farId: "A1", transactionDate: "2025-06-15", location: "Center-B" }];
+    expect(computeLastDateOfTransaction(disposed, transfers, "2025-09-30")).toBe("2025-08-01");
+  });
+
+  it("boundary case: an event dated exactly on AS_AT counts", () => {
+    const withAddition = { ...asset, dateOfAddition: "2025-09-30" };
+    expect(computeLastDateOfTransaction(withAddition, [], "2025-09-30")).toBe("2025-09-30");
+  });
+
+  it("edge case: a future-dated disposal (after AS_AT) is excluded, not counted early", () => {
+    const disposed = { ...asset, dateOfDisposal: "2025-12-01" };
+    expect(computeLastDateOfTransaction(disposed, [], "2025-09-30")).toBe("2024-01-01");
+  });
+
+  it("edge case: ignores transfers belonging to a different FAR ID", () => {
+    const transfers: TransferRecord[] = [{ farId: "OTHER", transactionDate: "2025-06-15", location: "Center-B" }];
+    expect(computeLastDateOfTransaction(asset, transfers, "2025-09-30")).toBe("2024-01-01");
   });
 });
 
@@ -450,6 +566,14 @@ describe("computeAsset", () => {
     ];
     const result = computeAsset(baseAsset, fy({ asAt: "2025-09-30" }), transfers);
     expect(result.effectiveLocation).toBe("Center-Z");
+  });
+
+  it("wires lastDateOfTransaction through to the top-level result", () => {
+    const transfers: TransferRecord[] = [
+      { farId: "FAR-0001", transactionDate: "2025-06-01", location: "Center-Z" }
+    ];
+    const result = computeAsset(baseAsset, fy({ asAt: "2025-09-30" }), transfers);
+    expect(result.lastDateOfTransaction).toBe("2025-06-01");
   });
 });
 

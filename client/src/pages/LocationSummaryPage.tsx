@@ -5,13 +5,28 @@ import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { Tooltip } from "../components/Tooltip.js";
-import { ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS } from "../lib/columns.js";
+import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { ErrorIcon, LocationIcon } from "../lib/icons.js";
 
-const COLUMNS = ALL_COLUMNS.filter((c) => DEFAULT_VISIBLE_COLUMNS.includes(c.id));
+// A focused subset for this single-location summary view — Register's full 39-column
+// default would overwhelm what's meant to be a quick "what's here" list.
+const LOCATION_SUMMARY_COLUMN_IDS = [
+  "farId",
+  "assetDescription",
+  "subClassification",
+  "status",
+  "effectiveLocation",
+  "dateAcquired",
+  "c1GrossBlock",
+  "c1AccDep",
+  "c1Nbv",
+  "c2GrossBlock",
+  "c2Nbv"
+];
+const RAW_COLUMNS = LOCATION_SUMMARY_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
 
 export function LocationSummaryPage() {
   const { settings } = useSettings();
@@ -22,6 +37,7 @@ export function LocationSummaryPage() {
   // (now multi-select) location filter, so a choice made here carries over there too.
   const location = filters.center?.[0] ?? "";
 
+  const COLUMNS = resolveColumns(RAW_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const [centers, setCenters] = useState<string[]>([]);
   const [summary, setSummary] = useState<LocationSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);

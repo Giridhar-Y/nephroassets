@@ -31,6 +31,7 @@ export interface ComponentResult {
   disposalEffective: boolean;
   daysHeldOpening: number;
   daysHeldAddition: number;
+  openingNbv: number;
   depOnOpening: number;
   depOnAdditions: number;
   periodDepreciation: number;
@@ -49,6 +50,7 @@ export interface AssetCalculationResult {
   c1: ComponentResult;
   c2: ComponentResult;
   effectiveLocation: string;
+  lastDateOfTransaction: string;
 }
 
 export interface AssetListItem {

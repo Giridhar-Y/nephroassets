@@ -4,6 +4,7 @@ import type {
   AssetInput,
   ComponentResult,
   FySettings,
+  IsoDate,
   TransferRecord
 } from "./types.js";
 
@@ -43,6 +44,11 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
 
   const usefulLife = input.usefulLifeYears;
   const hasUsefulLife = usefulLife > 0;
+
+  // NBV as at FY start (brought-forward opening NBV) — fixed for the whole FY,
+  // independent of AS_AT: what the asset was worth on the books the moment the year
+  // began, before this year's additions or depreciation are applied.
+  const openingNbv = input.openingCost - input.accDepOpening;
 
   // Step 3: Depreciation on Opening
   const depOnOpening = hasUsefulLife
@@ -127,6 +133,7 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
     disposalEffective,
     daysHeldOpening,
     daysHeldAddition,
+    openingNbv,
     depOnOpening,
     depOnAdditions,
     periodDepreciation,
@@ -159,6 +166,35 @@ export function computeEffectiveLocation(
   const latestDate = maxIsoDate(applicable.map((t) => t.transactionDate));
   const candidates = applicable.filter((t) => t.transactionDate === latestDate);
   return candidates[candidates.length - 1]!.location;
+}
+
+/**
+ * Latest of Date Acquired (Capitalization), Date of Addition, every Transfer date, and
+ * Date of Disposal — whichever of those events actually apply on or before AS_AT (the
+ * same "as at" cut-off every other figure in the register respects). Date Acquired is
+ * always included as the floor: even an asset with no additions, transfers, or disposal
+ * yet still has *a* last transaction date, the day it was capitalized.
+ */
+export function computeLastDateOfTransaction(
+  asset: AssetInput,
+  transfers: TransferRecord[],
+  asAt: string
+): IsoDate {
+  const candidates: IsoDate[] = [];
+  if (isOnOrBefore(asset.dateAcquired, asAt)) candidates.push(asset.dateAcquired);
+  if (asset.dateOfAddition !== null && isOnOrBefore(asset.dateOfAddition, asAt)) {
+    candidates.push(asset.dateOfAddition);
+  }
+  for (const t of transfers) {
+    if (t.farId === asset.farId && isOnOrBefore(t.transactionDate, asAt)) candidates.push(t.transactionDate);
+  }
+  if (asset.dateOfDisposal !== null && isOnOrBefore(asset.dateOfDisposal, asAt)) {
+    candidates.push(asset.dateOfDisposal);
+  }
+  // Falls back to Date Acquired even when it's after AS_AT (a future-dated asset) —
+  // there's no earlier real event to report, and returning it un-filtered beats crashing
+  // on an empty array.
+  return candidates.length > 0 ? maxIsoDate(candidates) : asset.dateAcquired;
 }
 
 export function computeAsset(
@@ -201,5 +237,7 @@ export function computeAsset(
     fy.asAt
   );
 
-  return { farId: asset.farId, c1, c2, effectiveLocation };
+  const lastDateOfTransaction = computeLastDateOfTransaction(asset, transfers, fy.asAt);
+
+  return { farId: asset.farId, c1, c2, effectiveLocation, lastDateOfTransaction };
 }

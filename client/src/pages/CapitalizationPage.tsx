@@ -1,8 +1,27 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
-import type { AssetCreateInput } from "../lib/types.js";
-import { AddCircleIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
+import { useAssetList } from "../hooks/useAssetList.js";
+import { AssetGrid } from "../components/AssetGrid.js";
+import { ColumnFilterPopover, TextFilterPanel } from "../components/ColumnFilterPopover.js";
+import { useToast } from "../components/Toast.js";
+import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
+import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
+import { AddCircleIcon, ErrorIcon } from "../lib/icons.js";
+
+type Tab = "add" | "log";
+
+const LOG_COLUMN_IDS = [
+  "farId",
+  "assetDescription",
+  "subClassification",
+  "dateAcquired",
+  "location",
+  "c1OpeningCost",
+  "c2OpeningCost",
+  "status"
+];
+const RAW_LOG_COLUMNS = LOG_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
 
 function blankForm(defaultDate: string): AssetCreateInput {
   return {
@@ -51,13 +70,29 @@ function Field({
 
 export function CapitalizationPage() {
   const { settings } = useSettings();
+  const { showToast } = useToast();
+  const [tab, setTab] = useState<Tab>("add");
   const [centers, setCenters] = useState<string[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<string[]>([]);
   const [form, setForm] = useState<AssetCreateInput>(() => blankForm(settings?.asAt ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+
+  // Kept fetching regardless of the active tab (like Disposals' own log) so the data is
+  // already fresh — no loading flicker — the moment the user switches to the Log tab or
+  // clicks "View in Log" in the success toast below.
+  const [logFilters, setLogFilters] = useState<AssetFilters>({});
+  const logSort = useMemo(() => ({ sortBy: "dateAcquired" as const, sortDir: "desc" as const }), []);
+  const LOG_COLUMNS = resolveColumns(RAW_LOG_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
+  const {
+    items: logItems,
+    nextCursor: logNextCursor,
+    loading: logLoading,
+    error: logError,
+    reload: reloadLog,
+    loadMore: loadMoreLog
+  } = useAssetList(settings, logFilters, logSort);
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -69,7 +104,43 @@ export function CapitalizationPage() {
 
   const update = (patch: Partial<AssetCreateInput>) => {
     setForm((prev) => ({ ...prev, ...patch }));
-    setSuccess(null);
+  };
+
+  const setLogFilter = <K extends keyof AssetFilters>(key: K, value: AssetFilters[K]) => {
+    setLogFilters((prev) => {
+      const next = { ...prev };
+      const isEmpty = !value || (Array.isArray(value) && value.length === 0);
+      if (!isEmpty) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+  };
+
+  const logHeaderFilters: Partial<Record<string, ReactNode>> = {
+    farId: (
+      <ColumnFilterPopover label="FAR ID" active={!!logFilters.search}>
+        {() => (
+          <TextFilterPanel
+            label="FAR ID"
+            placeholder="e.g. FAR-000123"
+            value={logFilters.search ?? ""}
+            onChange={(v) => setLogFilter("search", v)}
+          />
+        )}
+      </ColumnFilterPopover>
+    ),
+    assetDescription: (
+      <ColumnFilterPopover label="Asset Description" active={!!logFilters.descriptionSearch}>
+        {() => (
+          <TextFilterPanel
+            label="Asset Description"
+            placeholder="Search description…"
+            value={logFilters.descriptionSearch ?? ""}
+            onChange={(v) => setLogFilter("descriptionSearch", v)}
+          />
+        )}
+      </ColumnFilterPopover>
+    )
   };
 
   function validate(): string | null {
@@ -93,245 +164,308 @@ export function CapitalizationPage() {
     setError(null);
     try {
       await createAsset(form);
-      setSuccess(`Asset "${form.farId}" was capitalized.`);
+      showToast(`Asset ${form.farId} (${form.assetDescription}) capitalized successfully.`, "success", {
+        label: "View in Log",
+        onClick: () => setTab("log")
+      });
       setForm(blankForm(settings?.asAt ?? ""));
+      reloadLog();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not capitalize the asset.");
+      showToast(err instanceof Error ? err.message : "Could not capitalize the asset.", "error");
     } finally {
       setSubmitting(false);
     }
   }
 
+  const logFilterCount = Object.keys(logFilters).length;
+
   return (
-    <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <AddCircleIcon fontSize={20} />
-        Capitalization
-      </h1>
-      <p className="mt-1 max-w-xl text-sm text-gray-500">Register a brand-new asset into the Fixed Asset Register.</p>
+    <div className="flex h-full flex-col bg-white">
+      <div className="border-b border-gray-200 px-6 py-4">
+        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+          <AddCircleIcon fontSize={20} />
+          Capitalization
+        </h1>
+        <p className="mt-1 max-w-xl text-sm text-gray-500">
+          {tab === "add"
+            ? "Register a brand-new asset into the Fixed Asset Register."
+            : "Every asset that has been capitalized, newest first."}
+        </p>
 
-      <div className="mt-6 max-w-3xl rounded-xl bg-white p-6 shadow-sm">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="FAR ID" htmlFor="cap-far-id">
-            <input
-              id="cap-far-id"
-              type="text"
-              className={INPUT_CLASS}
-              value={form.farId}
-              onChange={(e) => update({ farId: e.target.value })}
-            />
-          </Field>
-          <Field label="Sub Classification" htmlFor="cap-sub-class">
-            <select
-              id="cap-sub-class"
-              className={INPUT_CLASS}
-              value={form.subClassification}
-              onChange={(e) => update({ subClassification: e.target.value })}
-            >
-              <option value="">Select…</option>
-              {subClassifications.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Asset Description" htmlFor="cap-description">
-            <input
-              id="cap-description"
-              type="text"
-              className={INPUT_CLASS}
-              value={form.assetDescription}
-              onChange={(e) => update({ assetDescription: e.target.value })}
-            />
-          </Field>
-          <Field label="Serial No" htmlFor="cap-serial">
-            <input
-              id="cap-serial"
-              type="text"
-              className={INPUT_CLASS}
-              value={form.serialNo}
-              onChange={(e) => update({ serialNo: e.target.value })}
-            />
-          </Field>
-
-          <Field label="Qty" htmlFor="cap-qty">
-            <input
-              id="cap-qty"
-              type="number"
-              min={0}
-              className={INPUT_CLASS}
-              value={form.qty}
-              onChange={(e) => update({ qty: Number(e.target.value) })}
-            />
-          </Field>
-          <Field label="Status" htmlFor="cap-status">
-            <select id="cap-status" className={INPUT_CLASS} value={form.status} onChange={(e) => update({ status: e.target.value })}>
-              <option value="">Select…</option>
-              {statuses.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Date Acquired" htmlFor="cap-date-acquired">
-            <input
-              id="cap-date-acquired"
-              type="date"
-              className={INPUT_CLASS}
-              value={form.dateAcquired}
-              onChange={(e) => update({ dateAcquired: e.target.value })}
-            />
-          </Field>
-          <Field label="Location" htmlFor="cap-location">
-            <select
-              id="cap-location"
-              className={INPUT_CLASS}
-              value={form.location}
-              onChange={(e) => update({ location: e.target.value })}
-            >
-              <option value="">Select…</option>
-              {centers.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </Field>
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === "add" ? "bg-accent text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+            }`}
+            onClick={() => setTab("add")}
+          >
+            Add New
+          </button>
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === "log" ? "bg-accent text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+            }`}
+            onClick={() => setTab("log")}
+          >
+            Capitalization Log
+          </button>
         </div>
-
-        <div className="mt-6 border-t border-gray-100 pt-4">
-          <h2 className="text-sm font-semibold text-ink">Cost &amp; Useful Life</h2>
-          <div className="mt-3 grid grid-cols-2 gap-4">
-            <Field label="Component 1 Useful Life (Years)" htmlFor="cap-life-c1">
-              <input
-                id="cap-life-c1"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.usefulLifeC1Years}
-                onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Component 2 Useful Life (Years)" htmlFor="cap-life-c2">
-              <input
-                id="cap-life-c2"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.usefulLifeC2Years}
-                onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Component 1 Opening Cost" htmlFor="cap-cost-c1">
-              <input
-                id="cap-cost-c1"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.c1OpeningCost}
-                onChange={(e) => update({ c1OpeningCost: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Component 2 Opening Cost" htmlFor="cap-cost-c2">
-              <input
-                id="cap-cost-c2"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.c2OpeningCost}
-                onChange={(e) => update({ c2OpeningCost: Number(e.target.value) })}
-              />
-            </Field>
-          </div>
-        </div>
-
-        <div className="mt-6 border-t border-gray-100 pt-4">
-          <h2 className="text-sm font-semibold text-ink">Mid-Year Additions (optional)</h2>
-          <div className="mt-3 grid grid-cols-3 gap-4">
-            <Field label="Additions C1" htmlFor="cap-add-c1">
-              <input
-                id="cap-add-c1"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.additionsC1}
-                onChange={(e) => update({ additionsC1: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Additions C2" htmlFor="cap-add-c2">
-              <input
-                id="cap-add-c2"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.additionsC2}
-                onChange={(e) => update({ additionsC2: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Date of Addition" htmlFor="cap-add-date">
-              <input
-                id="cap-add-date"
-                type="date"
-                className={INPUT_CLASS}
-                value={form.dateOfAddition ?? ""}
-                onChange={(e) => update({ dateOfAddition: e.target.value || null })}
-              />
-            </Field>
-          </div>
-        </div>
-
-        <div className="mt-6 border-t border-gray-100 pt-4">
-          <h2 className="text-sm font-semibold text-ink">Opening Accumulated Depreciation (optional)</h2>
-          <div className="mt-3 grid grid-cols-2 gap-4">
-            <Field label="Component 1" htmlFor="cap-accdep-c1">
-              <input
-                id="cap-accdep-c1"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.accDepC1Opening}
-                onChange={(e) => update({ accDepC1Opening: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="Component 2" htmlFor="cap-accdep-c2">
-              <input
-                id="cap-accdep-c2"
-                type="number"
-                min={0}
-                className={INPUT_CLASS}
-                value={form.accDepC2Opening}
-                onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
-              />
-            </Field>
-          </div>
-        </div>
-
-        {error && (
-          <p className="mt-4 flex items-center gap-1.5 text-sm text-red-600">
-            <ErrorIcon fontSize={15} />
-            {error}
-          </p>
-        )}
-        {success && !error && (
-          <p className="mt-4 flex items-center gap-1.5 text-sm text-green-700">
-            <PassIcon fontSize={15} />
-            {success}
-          </p>
-        )}
-
-        <button
-          type="button"
-          className="mt-6 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-          onClick={handleSubmit}
-          disabled={submitting}
-        >
-          {submitting ? "Capitalizing…" : "Capitalize Asset"}
-        </button>
       </div>
+
+      {tab === "add" && (
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="max-w-3xl rounded-xl bg-white p-6 shadow-sm">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="FAR ID" htmlFor="cap-far-id">
+                <input
+                  id="cap-far-id"
+                  type="text"
+                  className={INPUT_CLASS}
+                  value={form.farId}
+                  onChange={(e) => update({ farId: e.target.value })}
+                />
+              </Field>
+              <Field label="Sub Classification" htmlFor="cap-sub-class">
+                <select
+                  id="cap-sub-class"
+                  className={INPUT_CLASS}
+                  value={form.subClassification}
+                  onChange={(e) => update({ subClassification: e.target.value })}
+                >
+                  <option value="">Select…</option>
+                  {subClassifications.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Asset Description" htmlFor="cap-description">
+                <input
+                  id="cap-description"
+                  type="text"
+                  className={INPUT_CLASS}
+                  value={form.assetDescription}
+                  onChange={(e) => update({ assetDescription: e.target.value })}
+                />
+              </Field>
+              <Field label="Serial No" htmlFor="cap-serial">
+                <input
+                  id="cap-serial"
+                  type="text"
+                  className={INPUT_CLASS}
+                  value={form.serialNo}
+                  onChange={(e) => update({ serialNo: e.target.value })}
+                />
+              </Field>
+
+              <Field label="Qty" htmlFor="cap-qty">
+                <input
+                  id="cap-qty"
+                  type="number"
+                  min={0}
+                  className={INPUT_CLASS}
+                  value={form.qty}
+                  onChange={(e) => update({ qty: Number(e.target.value) })}
+                />
+              </Field>
+              <Field label="Status" htmlFor="cap-status">
+                <select id="cap-status" className={INPUT_CLASS} value={form.status} onChange={(e) => update({ status: e.target.value })}>
+                  <option value="">Select…</option>
+                  {statuses.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Date Acquired" htmlFor="cap-date-acquired">
+                <input
+                  id="cap-date-acquired"
+                  type="date"
+                  className={INPUT_CLASS}
+                  value={form.dateAcquired}
+                  onChange={(e) => update({ dateAcquired: e.target.value })}
+                />
+              </Field>
+              <Field label="Location" htmlFor="cap-location">
+                <select
+                  id="cap-location"
+                  className={INPUT_CLASS}
+                  value={form.location}
+                  onChange={(e) => update({ location: e.target.value })}
+                >
+                  <option value="">Select…</option>
+                  {centers.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <h2 className="text-sm font-semibold text-ink">Cost &amp; Useful Life</h2>
+              <div className="mt-3 grid grid-cols-2 gap-4">
+                <Field label="Component 1 Useful Life (Years)" htmlFor="cap-life-c1">
+                  <input
+                    id="cap-life-c1"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.usefulLifeC1Years}
+                    onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Component 2 Useful Life (Years)" htmlFor="cap-life-c2">
+                  <input
+                    id="cap-life-c2"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.usefulLifeC2Years}
+                    onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Component 1 Opening Cost" htmlFor="cap-cost-c1">
+                  <input
+                    id="cap-cost-c1"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.c1OpeningCost}
+                    onChange={(e) => update({ c1OpeningCost: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Component 2 Opening Cost" htmlFor="cap-cost-c2">
+                  <input
+                    id="cap-cost-c2"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.c2OpeningCost}
+                    onChange={(e) => update({ c2OpeningCost: Number(e.target.value) })}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <h2 className="text-sm font-semibold text-ink">Mid-Year Additions (optional)</h2>
+              <div className="mt-3 grid grid-cols-3 gap-4">
+                <Field label="Additions C1" htmlFor="cap-add-c1">
+                  <input
+                    id="cap-add-c1"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.additionsC1}
+                    onChange={(e) => update({ additionsC1: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Additions C2" htmlFor="cap-add-c2">
+                  <input
+                    id="cap-add-c2"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.additionsC2}
+                    onChange={(e) => update({ additionsC2: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Date of Addition" htmlFor="cap-add-date">
+                  <input
+                    id="cap-add-date"
+                    type="date"
+                    className={INPUT_CLASS}
+                    value={form.dateOfAddition ?? ""}
+                    onChange={(e) => update({ dateOfAddition: e.target.value || null })}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <h2 className="text-sm font-semibold text-ink">Opening Accumulated Depreciation (optional)</h2>
+              <div className="mt-3 grid grid-cols-2 gap-4">
+                <Field label="Component 1" htmlFor="cap-accdep-c1">
+                  <input
+                    id="cap-accdep-c1"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.accDepC1Opening}
+                    onChange={(e) => update({ accDepC1Opening: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Component 2" htmlFor="cap-accdep-c2">
+                  <input
+                    id="cap-accdep-c2"
+                    type="number"
+                    min={0}
+                    className={INPUT_CLASS}
+                    value={form.accDepC2Opening}
+                    onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            {error && (
+              <p className="mt-4 flex items-center gap-1.5 text-sm text-red-600">
+                <ErrorIcon fontSize={15} />
+                {error}
+              </p>
+            )}
+
+            <button
+              type="button"
+              className="mt-6 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+              onClick={handleSubmit}
+              disabled={submitting}
+            >
+              {submitting ? "Capitalizing…" : "Capitalize Asset"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab === "log" && (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {logFilterCount > 0 && (
+            <div className="flex items-center gap-2 border-b border-gray-200 bg-white px-6 py-2">
+              <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
+                {logFilterCount} filter{logFilterCount === 1 ? "" : "s"} applied
+              </span>
+              <button
+                type="button"
+                className="text-xs font-medium text-accent hover:underline"
+                onClick={() => setLogFilters({})}
+              >
+                Clear all filters
+              </button>
+            </div>
+          )}
+          <AssetGrid
+            items={logItems}
+            columns={LOG_COLUMNS}
+            loading={logLoading}
+            error={logError}
+            hasMore={!!logNextCursor}
+            onLoadMore={loadMoreLog}
+            onRetry={reloadLog}
+            emptyTitle="No assets have been capitalized yet."
+            emptyHint="Assets you capitalize from the Add New tab will show up here."
+            headerFilters={logHeaderFilters}
+            getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+          />
+        </div>
+      )}
     </div>
   );
 }

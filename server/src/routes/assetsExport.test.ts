@@ -74,10 +74,27 @@ describe("Register Export: GET /api/assets/export", () => {
     expect(res.headers["content-disposition"]).toContain("attachment");
 
     const worksheet = await readWorkbook(res.rawPayload);
-    // header row + 3 data rows
-    expect(worksheet.rowCount).toBe(4);
-    const headerRow = worksheet.getRow(1).values as unknown[];
+    // totals row + group band row + column name row + 3 data rows
+    expect(worksheet.rowCount).toBe(6);
+    expect(worksheet.getRow(1).getCell(1).value).toBe("TOTAL");
+    expect(worksheet.getRow(2).getCell(1).value).toBe("Asset Identification");
+    const headerRow = worksheet.getRow(3).values as unknown[];
     expect(headerRow).toContain("FAR ID");
+    expect(worksheet.getRow(1).getCell(1).font?.bold).toBe(true);
+    expect(worksheet.getRow(2).getCell(1).font?.bold).toBe(true);
+    expect(worksheet.getRow(3).getCell(1).font?.bold).toBe(true);
+    // Group band keeps a distinct fill per group (color stays in the export even though
+    // the on-screen Register table dropped it) — column 1 (Asset ID) and column 13 (C1
+    // Opening, Gross Block group) must differ.
+    const g1Fill = worksheet.getRow(2).getCell(1).fill as { fgColor?: { argb?: string } };
+    const g2Fill = worksheet.getRow(2).getCell(13).fill as { fgColor?: { argb?: string } };
+    expect(g1Fill.fgColor?.argb).toBeTruthy();
+    expect(g1Fill.fgColor?.argb).not.toBe(g2Fill.fgColor?.argb);
+    // 39 columns, dates as DD-MM-YYYY, currency with 2 decimals
+    expect((worksheet.getRow(3).values as unknown[]).length - 1).toBe(39);
+    const firstDataRow = worksheet.getRow(4);
+    expect(firstDataRow.getCell(3).value).toBe("01-01-2020"); // Date Acquired
+    expect(worksheet.getColumn(13).numFmt).toBe("#,##0.00"); // C1 Opening (a numeric column)
   });
 
   it("applies filters (center) so only matching rows are exported", async () => {
@@ -86,9 +103,30 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/assets/export?center=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
-    expect(worksheet.rowCount).toBe(2);
-    const dataRow = worksheet.getRow(2).values as unknown[];
+    expect(worksheet.rowCount).toBe(4);
+    const dataRow = worksheet.getRow(4).values as unknown[];
     expect(dataRow).toContain("EXP-4");
+  });
+
+  it("sums numeric columns (Qty and C1 Opening Cost) into the totals row, respecting the same filters", async () => {
+    await insertAsset("EXP-TOTALS-1", { qty: 2, c1_opening_cost: 10000 });
+    await insertAsset("EXP-TOTALS-2", { qty: 3, c1_opening_cost: 25000, location: "Center-Other" });
+
+    const res = await app.inject({ method: "GET", url: "/api/assets/export?center=Center-Export" });
+    const worksheet = await readWorkbook(res.rawPayload);
+    const totalsRow = worksheet.getRow(1);
+    // Qty is column 10, C1 Opening Cost is column 13 (see EXPORT_COLUMNS order).
+    expect(totalsRow.getCell(10).value).toBe(2);
+    expect(totalsRow.getCell(13).value).toBe(10000);
+  });
+
+  it("blanks the totals row for non-numeric and non-totalable columns (Useful Life)", async () => {
+    await insertAsset("EXP-BLANK-1", { useful_life_c1_years: 7 });
+    const res = await app.inject({ method: "GET", url: "/api/assets/export" });
+    const worksheet = await readWorkbook(res.rawPayload);
+    const totalsRow = worksheet.getRow(1);
+    expect(totalsRow.getCell(2).value).toBeNull(); // Sub Classification
+    expect(totalsRow.getCell(11).value).toBeNull(); // Useful Life C1 (Yrs)
   });
 
   it("409s when financial year settings are missing", async () => {

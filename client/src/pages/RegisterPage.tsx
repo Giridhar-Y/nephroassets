@@ -15,7 +15,7 @@ import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } fr
 export function RegisterPage() {
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
-  const columnPrefs = useColumnPrefs();
+  const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
   const asAt = settings?.asAt ?? null;
 
@@ -203,6 +203,7 @@ export function RegisterPage() {
         getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
         onResizeColumn={setColumnWidth}
         onReorderColumn={moveColumnTo}
+        showGroupBand
       />
 
       {transferOpen && asAt && (
