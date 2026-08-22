@@ -80,7 +80,11 @@ test("Dispose: confirm step shows the right summary, then completes the disposal
   await page.getByRole("button", { name: /Record Movement \(1\)/ }).click();
   await page.getByRole("button", { name: "Dispose", exact: true }).click();
 
-  await page.getByLabel("Sale Value").fill("500");
+  // Scoped by id, not getByLabel("Sale Value") — Register's now-visible-by-default "Sale
+  // Value / Proceeds" column has a resize handle whose aria-label ("Resize Sale Value /
+  // Proceeds column") also contains "Sale Value", and Register stays mounted underneath
+  // this modal, so an unscoped label match is ambiguous between the two.
+  await page.locator("#disposal-modal-sale-value").fill("500");
   await page.getByRole("button", { name: "Dispose", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "Confirm Disposal" })).toBeVisible();
@@ -88,8 +92,9 @@ test("Dispose: confirm step shows the right summary, then completes the disposal
   await expect(page.getByText(/cannot be easily undone/)).toBeVisible();
 
   await page.getByRole("button", { name: "Confirm & Dispose" }).click();
+  // Success is now a toast, and the modal closes on its own — no "Done" click required.
   await expect(page.getByText(/asset.*disposed/)).toBeVisible();
-  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByRole("heading", { name: "Confirm Disposal" })).toBeHidden();
 
   const res = await request.get(`${API_BASE}/api/assets?search=${farId}&limit=1`);
   const body = await res.json();

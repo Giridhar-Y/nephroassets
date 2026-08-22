@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { disposeAsset } from "../api/client.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
-import { DeleteIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
+import { DeleteIcon, ErrorIcon } from "../lib/icons.js";
+import { useToast } from "./Toast.js";
 
-type Step = "form" | "confirm" | "success";
+type Step = "form" | "confirm";
 
 export function DisposalModal({
   assets,
@@ -17,6 +18,7 @@ export function DisposalModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const { showToast } = useToast();
   const [step, setStep] = useState<Step>("form");
   const [dateOfDisposal, setDateOfDisposal] = useState(defaultDate);
   const [saleValue, setSaleValue] = useState(0);
@@ -44,7 +46,8 @@ export function DisposalModal({
     setError(null);
     try {
       await Promise.all(assets.map((a) => disposeAsset(a.asset.farId, { dateOfDisposal, saleValue })));
-      setStep("success");
+      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} disposed.`);
+      onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Disposal failed.");
     } finally {
@@ -207,24 +210,6 @@ export function DisposalModal({
                 disabled={submitting}
               >
                 {submitting ? "Disposing…" : "Confirm & Dispose"}
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === "success" && (
-          <>
-            <p className="flex items-center gap-2 text-sm font-medium text-green-700">
-              <PassIcon fontSize={18} />
-              {assets.length} asset{assets.length === 1 ? "" : "s"} disposed.
-            </p>
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-                onClick={onDone}
-              >
-                Done
               </button>
             </div>
           </>

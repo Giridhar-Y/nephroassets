@@ -42,7 +42,7 @@ test("changing FY Start on the Settings page recomputes the register with no sta
   await page.goto("/#/settings");
   await page.getByLabel("Financial Year Start (FY Start)").fill("2026-01-01");
   await page.getByRole("button", { name: "Save Settings" }).click();
-  await expect(page.getByText("Settings saved.")).toBeVisible();
+  await expect(page.getByText(/Settings saved\./)).toBeVisible();
 
   const expectedAfter = await fetchExpectedC1Nbv(request);
 

@@ -8,6 +8,7 @@ import {
   type BulkUploadResult
 } from "../api/client.js";
 import { AddCircleIcon, ErrorIcon, ExportIcon, PassIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
+import { useToast } from "../components/Toast.js";
 
 type UploadType = "assets" | "disposals" | "transfers" | "masters";
 type MasterListType = "centers" | "subClassifications" | "statuses";
@@ -206,6 +207,7 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
 }
 
 export function BulkUploadPage() {
+  const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [type, setType] = useState<UploadType>("assets");
   const [masterList, setMasterList] = useState<MasterListType>("centers");
@@ -269,6 +271,8 @@ export function BulkUploadPage() {
       const res = await commitBulkUpload(path, file);
       setResult(res);
       setStep("result");
+      const skipped = res.errors.length > 0 ? ` ${res.errors.length} row${res.errors.length === 1 ? "" : "s"} skipped due to errors.` : "";
+      showToast(`${res.added} added, ${res.updated} updated.${skipped}`, res.processed > 0 ? "success" : "error");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not upload the file.");
     } finally {

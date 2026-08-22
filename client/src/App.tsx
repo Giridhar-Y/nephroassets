@@ -19,9 +19,11 @@ import { FiltersProvider } from "./lib/FiltersContext.js";
 import { AuthProvider } from "./lib/AuthContext.js";
 import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
+import { ToastProvider } from "./components/Toast.js";
 
 export default function App() {
   return (
+    <ToastProvider>
     <AuthProvider>
       <SettingsProvider>
         <FiltersProvider>
@@ -134,5 +136,6 @@ export default function App() {
         </FiltersProvider>
       </SettingsProvider>
     </AuthProvider>
+    </ToastProvider>
   );
 }

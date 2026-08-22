@@ -13,7 +13,8 @@ import {
   type MasterStatus,
   type MasterSubClassification
 } from "../api/client.js";
-import { BookDatabaseIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
+import { BookDatabaseIcon } from "../lib/icons.js";
+import { useToast } from "../components/Toast.js";
 
 type Tab = "centers" | "subClassifications" | "statuses";
 
@@ -40,29 +41,20 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
-function Banner({ message, isError }: { message: string; isError?: boolean }) {
-  return (
-    <p className={`mt-3 flex items-center gap-1.5 text-sm ${isError ? "text-red-600" : "text-green-700"}`}>
-      {isError ? <ErrorIcon fontSize={15} /> : <PassIcon fontSize={15} />}
-      {message}
-    </p>
-  );
-}
-
 function CentersTab() {
+  const { showToast } = useToast();
   const [rows, setRows] = useState<MasterCenter[] | null>(null);
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editCode, setEditCode] = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [message, setMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
   function load() {
     fetchMasterCenters()
       .then(setRows)
-      .catch((err) => setMessage({ text: err instanceof Error ? err.message : "Could not load centers.", isError: true }));
+      .catch((err) => showToast(err instanceof Error ? err.message : "Could not load centers.", "error"));
   }
 
   useEffect(load, []);
@@ -70,15 +62,14 @@ function CentersTab() {
   async function handleAdd() {
     if (!code.trim()) return;
     setBusy(true);
-    setMessage(null);
     try {
       await createMasterCenter({ code: code.trim(), description: description.trim() });
+      showToast(`${code.trim()} added successfully.`);
       setCode("");
       setDescription("");
-      setMessage({ text: `Added "${code.trim()}".` });
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not add center.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not add center.", "error");
     } finally {
       setBusy(false);
     }
@@ -88,22 +79,20 @@ function CentersTab() {
     setEditingId(row.id);
     setEditCode(row.code);
     setEditDescription(row.description);
-    setMessage(null);
   }
 
   async function saveEdit(row: MasterCenter) {
     setBusy(true);
-    setMessage(null);
     try {
       const res = await updateMasterCenter(row.id, { code: editCode.trim(), description: editDescription.trim() });
       setEditingId(null);
       const parts: string[] = [];
       if (res.assetsUpdated) parts.push(`${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"}`);
       if (res.transfersUpdated) parts.push(`${res.transfersUpdated} transfer record${res.transfersUpdated === 1 ? "" : "s"}`);
-      setMessage({ text: parts.length > 0 ? `Renamed — updated ${parts.join(" and ")}.` : "Saved." });
+      showToast(parts.length > 0 ? `${res.code} updated — ${parts.join(" and ")} updated.` : `${res.code} updated successfully.`);
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not save changes.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not save changes.", "error");
     } finally {
       setBusy(false);
     }
@@ -111,12 +100,16 @@ function CentersTab() {
 
   async function toggleActive(row: MasterCenter) {
     setBusy(true);
-    setMessage(null);
     try {
       await updateMasterCenter(row.id, { active: !row.active });
+      showToast(
+        row.active
+          ? `${row.code} deactivated. It's hidden from new selections but existing assets are unaffected.`
+          : `${row.code} reactivated.`
+      );
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not update center.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not update center.", "error");
     } finally {
       setBusy(false);
     }
@@ -147,7 +140,6 @@ function CentersTab() {
           Add Center
         </button>
       </div>
-      {message && <Banner message={message.text} isError={message.isError} />}
 
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
@@ -221,6 +213,7 @@ function CentersTab() {
 }
 
 function SubClassificationsTab() {
+  const { showToast } = useToast();
   const [rows, setRows] = useState<MasterSubClassification[] | null>(null);
   const [name, setName] = useState("");
   const [lifeC1, setLifeC1] = useState("");
@@ -229,13 +222,12 @@ function SubClassificationsTab() {
   const [editName, setEditName] = useState("");
   const [editLifeC1, setEditLifeC1] = useState("");
   const [editLifeC2, setEditLifeC2] = useState("");
-  const [message, setMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
   function load() {
     fetchMasterSubClassifications()
       .then(setRows)
-      .catch((err) => setMessage({ text: err instanceof Error ? err.message : "Could not load sub classifications.", isError: true }));
+      .catch((err) => showToast(err instanceof Error ? err.message : "Could not load sub classifications.", "error"));
   }
 
   useEffect(load, []);
@@ -243,20 +235,19 @@ function SubClassificationsTab() {
   async function handleAdd() {
     if (!name.trim()) return;
     setBusy(true);
-    setMessage(null);
     try {
       await createMasterSubClassification({
         name: name.trim(),
         defaultUsefulLifeC1Years: lifeC1 ? Number(lifeC1) : null,
         defaultUsefulLifeC2Years: lifeC2 ? Number(lifeC2) : null
       });
+      showToast(`${name.trim()} added successfully.`);
       setName("");
       setLifeC1("");
       setLifeC2("");
-      setMessage({ text: `Added "${name.trim()}".` });
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not add sub classification.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not add sub classification.", "error");
     } finally {
       setBusy(false);
     }
@@ -267,12 +258,10 @@ function SubClassificationsTab() {
     setEditName(row.name);
     setEditLifeC1(row.defaultUsefulLifeC1Years?.toString() ?? "");
     setEditLifeC2(row.defaultUsefulLifeC2Years?.toString() ?? "");
-    setMessage(null);
   }
 
   async function saveEdit(row: MasterSubClassification) {
     setBusy(true);
-    setMessage(null);
     try {
       const res = await updateMasterSubClassification(row.id, {
         name: editName.trim(),
@@ -280,12 +269,14 @@ function SubClassificationsTab() {
         defaultUsefulLifeC2Years: editLifeC2 ? Number(editLifeC2) : null
       });
       setEditingId(null);
-      setMessage({
-        text: res.assetsUpdated ? `Renamed — updated ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"}.` : "Saved."
-      });
+      showToast(
+        res.assetsUpdated
+          ? `${res.name} updated — ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"} updated.`
+          : `${res.name} updated successfully.`
+      );
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not save changes.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not save changes.", "error");
     } finally {
       setBusy(false);
     }
@@ -293,12 +284,16 @@ function SubClassificationsTab() {
 
   async function toggleActive(row: MasterSubClassification) {
     setBusy(true);
-    setMessage(null);
     try {
       await updateMasterSubClassification(row.id, { active: !row.active });
+      showToast(
+        row.active
+          ? `${row.name} deactivated. It's hidden from new selections but existing assets are unaffected.`
+          : `${row.name} reactivated.`
+      );
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not update sub classification.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not update sub classification.", "error");
     } finally {
       setBusy(false);
     }
@@ -342,7 +337,6 @@ function SubClassificationsTab() {
           Add Sub Classification
         </button>
       </div>
-      {message && <Banner message={message.text} isError={message.isError} />}
 
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
@@ -433,17 +427,17 @@ function SubClassificationsTab() {
 }
 
 function StatusesTab() {
+  const { showToast } = useToast();
   const [rows, setRows] = useState<MasterStatus[] | null>(null);
   const [name, setName] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
-  const [message, setMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
   function load() {
     fetchMasterStatuses()
       .then(setRows)
-      .catch((err) => setMessage({ text: err instanceof Error ? err.message : "Could not load statuses.", isError: true }));
+      .catch((err) => showToast(err instanceof Error ? err.message : "Could not load statuses.", "error"));
   }
 
   useEffect(load, []);
@@ -451,14 +445,13 @@ function StatusesTab() {
   async function handleAdd() {
     if (!name.trim()) return;
     setBusy(true);
-    setMessage(null);
     try {
       await createMasterStatus({ name: name.trim() });
+      showToast(`${name.trim()} added successfully.`);
       setName("");
-      setMessage({ text: `Added "${name.trim()}".` });
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not add status.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not add status.", "error");
     } finally {
       setBusy(false);
     }
@@ -467,21 +460,21 @@ function StatusesTab() {
   function startEdit(row: MasterStatus) {
     setEditingId(row.id);
     setEditName(row.name);
-    setMessage(null);
   }
 
   async function saveEdit(row: MasterStatus) {
     setBusy(true);
-    setMessage(null);
     try {
       const res = await updateMasterStatus(row.id, { name: editName.trim() });
       setEditingId(null);
-      setMessage({
-        text: res.assetsUpdated ? `Renamed — updated ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"}.` : "Saved."
-      });
+      showToast(
+        res.assetsUpdated
+          ? `${res.name} updated — ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"} updated.`
+          : `${res.name} updated successfully.`
+      );
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not save changes.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not save changes.", "error");
     } finally {
       setBusy(false);
     }
@@ -489,12 +482,16 @@ function StatusesTab() {
 
   async function toggleActive(row: MasterStatus) {
     setBusy(true);
-    setMessage(null);
     try {
       await updateMasterStatus(row.id, { active: !row.active });
+      showToast(
+        row.active
+          ? `${row.name} deactivated. It's hidden from new selections but existing assets are unaffected.`
+          : `${row.name} reactivated.`
+      );
       load();
     } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : "Could not update status.", isError: true });
+      showToast(err instanceof Error ? err.message : "Could not update status.", "error");
     } finally {
       setBusy(false);
     }
@@ -516,7 +513,6 @@ function StatusesTab() {
           Add Status
         </button>
       </div>
-      {message && <Banner message={message.text} isError={message.isError} />}
 
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">

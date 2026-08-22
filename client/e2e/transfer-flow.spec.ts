@@ -36,9 +36,8 @@ test("center-first transfer: pick a center, select an asset, move it to another 
   await expect(page.getByRole("cell", { name: FAR_ID })).toBeVisible();
   await page.getByRole("button", { name: "Confirm & Transfer" }).click();
 
-  // Success step, then dismiss it — the modal only closes once the user acknowledges it.
+  // Success is now a toast, and the modal closes on its own — no "Done" click required.
   await expect(page.getByText(/asset.*transferred to Center-020/)).toBeVisible();
-  await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByLabel("Destination Center")).toBeHidden();
 
   const res = await request.get(`${API_BASE}/api/assets?search=${FAR_ID}&limit=1`);

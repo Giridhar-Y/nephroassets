@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { createTransfer, fetchCenters } from "../api/client.js";
 import { formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
-import { ErrorIcon, PassIcon, TransferIcon } from "../lib/icons.js";
+import { ErrorIcon, TransferIcon } from "../lib/icons.js";
+import { useToast } from "./Toast.js";
 
-type Step = "form" | "confirm" | "success";
+type Step = "form" | "confirm";
 
 export function TransferModal({
   assets,
@@ -17,6 +18,7 @@ export function TransferModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const { showToast } = useToast();
   const [step, setStep] = useState<Step>("form");
   const [centers, setCenters] = useState<string[]>([]);
   const [toLocation, setToLocation] = useState("");
@@ -53,7 +55,8 @@ export function TransferModal({
     setError(null);
     try {
       await createTransfer({ farIds: assets.map((a) => a.asset.farId), toLocation, transactionDate });
-      setStep("success");
+      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} transferred to ${toLocation}.`);
+      onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transfer failed.");
     } finally {
@@ -197,24 +200,6 @@ export function TransferModal({
                 disabled={submitting}
               >
                 {submitting ? "Transferring…" : "Confirm & Transfer"}
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === "success" && (
-          <>
-            <p className="flex items-center gap-2 text-sm font-medium text-green-700">
-              <PassIcon fontSize={18} />
-              {assets.length} asset{assets.length === 1 ? "" : "s"} transferred to {toLocation}.
-            </p>
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-                onClick={onDone}
-              >
-                Done
               </button>
             </div>
           </>

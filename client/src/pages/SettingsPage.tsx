@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { Tooltip } from "../components/Tooltip.js";
+import { useToast } from "../components/Toast.js";
+import { formatDate } from "../lib/format.js";
 import type { FySettings } from "../lib/types.js";
-import { ErrorIcon, PassIcon, SettingsIcon } from "../lib/icons.js";
+import { ErrorIcon, SettingsIcon } from "../lib/icons.js";
 
 function daysBetweenInclusive(start: string, end: string): number | null {
   if (!start || !end) return null;
@@ -22,10 +24,10 @@ const BLANK_FORM: FySettings = { asAt: todayIso(), fyStart: "", fyEnd: "", daysI
 
 export function SettingsPage() {
   const { settings, loading, notConfigured, saveSettings } = useSettings();
+  const { showToast } = useToast();
   const [form, setForm] = useState<FySettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (form) return;
@@ -48,7 +50,6 @@ export function SettingsPage() {
 
   const update = (patch: Partial<FySettings>) => {
     setForm((prev) => (prev ? { ...prev, ...patch } : prev));
-    setSaved(false);
   };
 
   const validationError = (): string | null => {
@@ -73,9 +74,9 @@ export function SettingsPage() {
     setError(null);
     try {
       await saveSettings(form!);
-      setSaved(true);
+      showToast(`Settings saved. Figures now shown as of ${formatDate(form!.asAt)}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save settings.");
+      showToast(err instanceof Error ? err.message : "Could not save settings.", "error");
     } finally {
       setSaving(false);
     }
@@ -173,12 +174,6 @@ export function SettingsPage() {
           <p className="mt-4 flex items-center gap-1.5 text-sm text-red-600">
             <ErrorIcon fontSize={15} />
             {error}
-          </p>
-        )}
-        {saved && !error && (
-          <p className="mt-4 flex items-center gap-1.5 text-sm text-green-700">
-            <PassIcon fontSize={15} />
-            Settings saved.
           </p>
         )}
 
