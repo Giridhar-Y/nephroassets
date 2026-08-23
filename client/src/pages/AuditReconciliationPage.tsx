@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchAuditReconciliation, type ReconciliationItem } from "../api/client.js";
+import { fetchAuditReconciliation, getAuditReconciliationExportUrl, type ReconciliationItem } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { formatCurrency } from "../lib/format.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
-import { EmptyIcon, ErrorIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
+import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -54,11 +54,24 @@ export function AuditReconciliationPage() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
       <div className="border-b border-gray-200 px-6 py-4">
-        <h1 className="text-base font-semibold text-ink">Audit Reconciliation</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-base font-semibold text-ink">Audit Reconciliation</h1>
+          <a
+            href={asAt ? getAuditReconciliationExportUrl(asAt) : undefined}
+            aria-disabled={!asAt}
+            className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 ${
+              !asAt ? "pointer-events-none opacity-40" : ""
+            }`}
+          >
+            <ExportIcon fontSize={14} />
+            Export to Excel
+          </a>
+        </div>
         <p className="mt-1 text-sm text-gray-500">
-          For every sub classification and cost component, this checks that the numbers roll forward correctly:
-          Opening + Additions − Deletions should equal Closing cost, and Opening Depreciation + This Period's
-          Depreciation − Depreciation Removed should equal Closing Depreciation.
+          For every sub classification and cost component (C1, C2, and Combined), this checks that the numbers roll
+          forward correctly: Opening + Additions − Deletions should equal Closing cost, Opening Depreciation + This
+          Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
+          Closing Depreciation should equal Closing NBV.
         </p>
       </div>
 
@@ -87,7 +100,7 @@ export function AuditReconciliationPage() {
             <p className="text-xs text-gray-400">Once assets are in the register, this report checks their totals.</p>
           </div>
         ) : (
-          <table className="w-full min-w-[1100px] border-separate border-spacing-0 text-sm">
+          <table className="w-full min-w-[1300px] border-separate border-spacing-0 text-sm">
             <thead>
               <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
                 <th className="border-b-2 border-gray-300 py-2 pr-3">Sub Classification</th>
@@ -103,13 +116,24 @@ export function AuditReconciliationPage() {
                   <Tooltip text={FIELD_INFO.accumulatedDepreciation.tooltip}>Closing Acc Dep</Tooltip>
                 </th>
                 <th className="border-b-2 border-gray-300 py-2 pr-3">Acc Dep Check</th>
+                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">NBV Closing</th>
+                <th className="border-b-2 border-gray-300 py-2 pr-3">NBV Check</th>
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={`${item.subClassification}-${item.component}`} className="align-top">
+                <tr
+                  key={`${item.subClassification}-${item.component}`}
+                  className={`align-top ${item.component === "Combined" ? "bg-gray-50" : ""}`}
+                >
                   <td className="border-b border-gray-100 py-2 pr-3 font-medium text-ink">{item.subClassification}</td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-gray-500">{item.component}</td>
+                  <td
+                    className={`border-b border-gray-100 py-2 pr-3 ${
+                      item.component === "Combined" ? "font-semibold text-ink" : "text-gray-500"
+                    }`}
+                  >
+                    {item.component}
+                  </td>
                   <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
                     {formatCurrency(item.openingSum)}
                   </td>
@@ -130,6 +154,12 @@ export function AuditReconciliationPage() {
                   </td>
                   <td className="border-b border-gray-100 py-2 pr-3">
                     <CheckBadge pass={item.depCheckPass} message={item.depCheckMessage} />
+                  </td>
+                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+                    {formatCurrency(item.nbvClosingSum)}
+                  </td>
+                  <td className="border-b border-gray-100 py-2 pr-3">
+                    <CheckBadge pass={item.nbvCheckPass} message={item.nbvCheckMessage} />
                   </td>
                 </tr>
               ))}

@@ -286,7 +286,7 @@ export function fetchLocationSummary(location: string, asAt: string): Promise<Lo
 
 export interface ReconciliationItem {
   subClassification: string;
-  component: "C1" | "C2";
+  component: "C1" | "C2" | "Combined";
   openingSum: number;
   additionsSum: number;
   deletionsSum: number;
@@ -301,10 +301,21 @@ export interface ReconciliationItem {
   depCheckPass: boolean;
   depCheckDelta: number;
   depCheckMessage: string;
+  nbvOpeningSum: number;
+  nbvClosingSum: number;
+  nbvCheckPass: boolean;
+  nbvCheckDelta: number;
+  nbvCheckMessage: string;
 }
 
 export function fetchAuditReconciliation(asAt: string): Promise<{ asAt: string; items: ReconciliationItem[] }> {
   return request(`/api/reports/audit-reconciliation?${new URLSearchParams({ asAt })}`);
+}
+
+// Same pattern as the Register's getExportUrl — the browser downloads it directly via
+// the Content-Disposition header, this just builds the URL.
+export function getAuditReconciliationExportUrl(asAt: string): string {
+  return `/api/reports/audit-reconciliation/export?${new URLSearchParams({ asAt })}`;
 }
 
 export interface DepreciationPostingBreakdown {

@@ -200,4 +200,61 @@ describe("Audit Reconciliation report", () => {
     expect(futureDisposal.costCheckDelta).toBeCloseTo(0, 6);
     expect(futureDisposal.depCheckPass).toBe(true);
   });
+
+  it("passes the NBV check (Gross Block - Acc Dep = NBV) for a clean sub classification", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const clean = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Clean" && i.component === "C1"
+    );
+    expect(clean).toBeDefined();
+    expect(clean.nbvCheckPass).toBe(true);
+    expect(clean.nbvCheckDelta).toBeCloseTo(0, 6);
+  });
+
+  it("provides a Combined (C1+C2) row per sub classification, summing both components", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const c1 = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Clean" && i.component === "C1"
+    );
+    const c2 = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Clean" && i.component === "C2"
+    );
+    const combined = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Clean" && i.component === "Combined"
+    );
+    expect(combined).toBeDefined();
+    expect(combined.openingSum).toBeCloseTo(c1.openingSum + c2.openingSum, 6);
+    expect(combined.closingGrossBlockSum).toBeCloseTo(c1.closingGrossBlockSum + c2.closingGrossBlockSum, 6);
+    expect(combined.costCheckPass).toBe(true);
+    expect(combined.depCheckPass).toBe(true);
+    expect(combined.nbvCheckPass).toBe(true);
+  });
+
+  it("Combined row still fails when the underlying C1 side is broken", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const combined = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Broken" && i.component === "Combined"
+    );
+    expect(combined).toBeDefined();
+    expect(combined.costCheckPass).toBe(false);
+    expect(Math.abs(combined.costCheckDelta)).toBeCloseTo(30000, 6);
+    expect(combined.depCheckPass).toBe(false);
+    expect(Math.abs(combined.depCheckDelta)).toBeCloseTo(50000, 6);
+  });
+
+  it("exports an Excel workbook", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(res.headers["content-disposition"]).toContain("audit-reconciliation-");
+    expect(res.rawPayload.length).toBeGreaterThan(0);
+  });
 });
