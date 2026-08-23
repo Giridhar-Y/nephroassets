@@ -53,6 +53,11 @@ export interface AssetCalculationResult {
   c2: ComponentResult;
   effectiveLocation: string;
   lastDateOfTransaction: string;
+  /** Asset-level Profit/(Loss) on Disposal — saleValue counted once against the combined
+   *  c1+c2 WDV. NOT the same as c1.profitLossOnDisposal + c2.profitLossOnDisposal, which
+   *  double-counts saleValue (each per-component field independently subtracts the full
+   *  saleValue). Always use this field for the asset's total Profit/(Loss). */
+  assetProfitLossOnDisposal: number | null;
 }
 
 export interface AssetListItem {

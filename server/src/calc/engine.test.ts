@@ -726,6 +726,48 @@ describe("computeAsset", () => {
     const result = computeAsset(baseAsset, fy({ asAt: "2025-09-30" }), transfers);
     expect(result.lastDateOfTransaction).toBe("2025-06-01");
   });
+
+  it("assetProfitLossOnDisposal counts saleValue once against the combined WDV, unlike summing the per-component fields", () => {
+    // Verified against the reference workbook's Methodology sheet ("Profit/(Loss) =
+    // Sale Value − Total WDV at Disposal") — saleValue used once, not once per component.
+    const disposedAsset: AssetInput = {
+      ...baseAsset,
+      usefulLifeC1Years: 10,
+      usefulLifeC2Years: 10,
+      c1OpeningCost: 60000,
+      c2OpeningCost: 40000,
+      dateOfDisposal: "2026-08-01",
+      deletionsC1: 60000,
+      deletionsC2: 40000,
+      saleValue: 9000,
+      accDepC1Opening: 54000,
+      accDepC2Opening: 36000
+    };
+    const result = computeAsset(
+      disposedAsset,
+      fy({ asAt: "2026-08-01", fyStart: "2026-04-01", fyEnd: "2027-03-31" }),
+      []
+    );
+
+    expect(result.c1.wdvAtDisposal).toBeCloseTo(3978.0821917808207, 6);
+    expect(result.c2.wdvAtDisposal).toBeCloseTo(2652.054794520547, 6);
+    expect(result.assetProfitLossOnDisposal).toBeCloseTo(2369.863013698632, 6);
+
+    // Per-component fields stay available for anyone who genuinely needs the
+    // breakdown — each independently uses the full saleValue, which is why summing
+    // them (the bug this field replaces) doesn't equal assetProfitLossOnDisposal.
+    expect(result.c1.profitLossOnDisposal).toBeCloseTo(5021.917808219179, 6);
+    expect(result.c2.profitLossOnDisposal).toBeCloseTo(6347.945205479453, 6);
+    expect(result.c1.profitLossOnDisposal! + result.c2.profitLossOnDisposal!).not.toBeCloseTo(
+      result.assetProfitLossOnDisposal!,
+      2
+    );
+  });
+
+  it("assetProfitLossOnDisposal is null when the asset hasn't been disposed", () => {
+    const result = computeAsset(baseAsset, fy({ asAt: "2025-09-30" }), []);
+    expect(result.assetProfitLossOnDisposal).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

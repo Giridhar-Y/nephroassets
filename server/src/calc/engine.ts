@@ -294,5 +294,14 @@ export function computeAsset(
 
   const lastDateOfTransaction = computeLastDateOfTransaction(asset, transfers, fy.asAt);
 
-  return { farId: asset.farId, c1, c2, effectiveLocation, lastDateOfTransaction };
+  // Sale Value counted once against the combined WDV — see the doc comment on
+  // `AssetCalculationResult.assetProfitLossOnDisposal`. Both components share the same
+  // `disposalEffective`/`wdvAtDisposal` null-ness (they're driven by the same
+  // asset-level dateOfDisposal), so checking c1 alone is sufficient.
+  const assetProfitLossOnDisposal =
+    c1.wdvAtDisposal !== null && c2.wdvAtDisposal !== null
+      ? asset.saleValue - (c1.wdvAtDisposal + c2.wdvAtDisposal)
+      : null;
+
+  return { farId: asset.farId, c1, c2, effectiveLocation, lastDateOfTransaction, assetProfitLossOnDisposal };
 }

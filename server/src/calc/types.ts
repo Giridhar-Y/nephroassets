@@ -81,4 +81,14 @@ export interface AssetCalculationResult {
    *  from `AssetInput.lastDateOfTransaction` (a stored column touched only by Transfer
    *  routes) — this is the fuller definition the Register/Export screens display. */
   lastDateOfTransaction: IsoDate;
+  /** Profit/(Loss) on Disposal for the asset as a whole = saleValue − (c1.wdvAtDisposal +
+   *  c2.wdvAtDisposal), saleValue counted once against the combined WDV — matching the
+   *  reference workbook's Methodology sheet ("Profit/(Loss) = Sale Value − Total WDV at
+   *  Disposal") and its AI6 formula. Deliberately named differently from
+   *  `ComponentResult.profitLossOnDisposal`: each per-component field independently
+   *  subtracts the *full* saleValue (there's no per-component sale price to split), so
+   *  summing c1's and c2's double-counts saleValue — the exact bug this field exists to
+   *  prevent a repeat of. Consumers that want the asset's total Profit/(Loss) must use
+   *  this field, never `c1.profitLossOnDisposal + c2.profitLossOnDisposal`. */
+  assetProfitLossOnDisposal: number | null;
 }

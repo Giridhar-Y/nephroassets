@@ -87,7 +87,7 @@ function buildTimeline(data: AssetDetailResponse): TimelineEvent[] {
 
   if (asset.dateOfDisposal) {
     const wdv = (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
-    const profitLoss = (result.c1.profitLossOnDisposal ?? 0) + (result.c2.profitLossOnDisposal ?? 0);
+    const profitLoss = result.assetProfitLossOnDisposal ?? 0;
     events.push({ type: "disposal", date: asset.dateOfDisposal, saleValue: asset.saleValue, wdv, profitLoss });
   }
 
@@ -246,7 +246,7 @@ export function AssetLifecyclePage() {
     asset.status === "Disposed"
       ? null
       : Math.max(0, Math.min(100, Math.round((1 - age.years / Math.max(asset.usefulLifeC1Years, 1)) * 100)));
-  const disposalProfitLoss = (result.c1.profitLossOnDisposal ?? 0) + (result.c2.profitLossOnDisposal ?? 0);
+  const disposalProfitLoss = result.assetProfitLossOnDisposal ?? 0;
   const disposalWdv = (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
 
   return (

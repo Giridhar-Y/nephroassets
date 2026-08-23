@@ -352,7 +352,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       c1Wdv: result.c1.wdvAtDisposal,
       c2Wdv: result.c2.wdvAtDisposal,
       totalWdv: (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0),
-      profitLoss: (result.c1.profitLossOnDisposal ?? 0) + (result.c2.profitLossOnDisposal ?? 0)
+      profitLoss: result.assetProfitLossOnDisposal ?? 0
     };
   });
 

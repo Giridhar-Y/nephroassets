@@ -292,7 +292,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
     width: 22,
     groupKey: "g9",
     kind: "number",
-    value: (_a, r) => (r.c1.profitLossOnDisposal === null ? null : r.c1.profitLossOnDisposal + (r.c2.profitLossOnDisposal ?? 0))
+    value: (_a, r) => r.assetProfitLossOnDisposal
   },
 
   // --- 10. Net Block (NBV) --------------------------------------------------------
@@ -349,9 +349,10 @@ function groupRuns(columns: ExportColumn[]): Array<{ groupKey: string; startCol:
 }
 
 // The columns SUM(...)'d in the aggregate totals query — every `kind: "number"` column
-// with `totalable !== false`, except `totalWdv` and `profitLoss` which are combined C1+C2
-// figures derived in JS afterwards from the c1/c2 component sums (also fetched below),
-// rather than needing their own SQL expression.
+// with `totalable !== false`, except `totalWdv`, which is a combined C1+C2 figure derived
+// in JS afterwards from the c1/c2 component sums (also fetched below) rather than needing
+// its own SQL expression. `profitLoss` DOES need its own expression (assetProfitLoss,
+// below) rather than summing per-component figures — see its comment for why.
 const SQL_SUM_EXPRESSIONS: Record<string, string> = {
   qty: "SUM(qty)",
   // Opening/Additions totals read the calc engine's own live-classified fields (see
@@ -378,8 +379,12 @@ const SQL_SUM_EXPRESSIONS: Record<string, string> = {
   c2AccDep: "SUM((c2).closing_acc_dep)",
   c1Wdv: "SUM((c1).wdv_at_disposal)",
   c2Wdv: "SUM((c2).wdv_at_disposal)",
-  c1ProfitLoss: "SUM((c1).profit_loss_on_disposal)",
-  c2ProfitLoss: "SUM((c2).profit_loss_on_disposal)",
+  // Sale Value counted once against the combined WDV, matching the reference workbook's
+  // Methodology sheet — NOT SUM(c1.profit_loss_on_disposal) + SUM(c2.profit_loss_on_disposal),
+  // which double-counts sale_value once per disposed row (each per-component field
+  // independently subtracts the *full* sale_value). NULL for non-disposed rows (both WDVs
+  // are NULL), so SUM() skips them automatically, same as the per-component sums above.
+  assetProfitLoss: "SUM(sale_value - ((c1).wdv_at_disposal + (c2).wdv_at_disposal))",
   c1Nbv: "SUM((c1).nbv)",
   c2Nbv: "SUM((c2).nbv)"
 };
@@ -505,8 +510,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
          ${SQL_SUM_EXPRESSIONS.c2AccDep} AS c2_acc_dep,
          ${SQL_SUM_EXPRESSIONS.c1Wdv} AS c1_wdv,
          ${SQL_SUM_EXPRESSIONS.c2Wdv} AS c2_wdv,
-         ${SQL_SUM_EXPRESSIONS.c1ProfitLoss} AS c1_profit_loss,
-         ${SQL_SUM_EXPRESSIONS.c2ProfitLoss} AS c2_profit_loss,
+         ${SQL_SUM_EXPRESSIONS.assetProfitLoss} AS asset_profit_loss,
          ${SQL_SUM_EXPRESSIONS.c1Nbv} AS c1_nbv,
          ${SQL_SUM_EXPRESSIONS.c2Nbv} AS c2_nbv
        FROM calc`,
@@ -538,7 +542,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       c1Wdv: num(t.c1_wdv),
       c2Wdv: num(t.c2_wdv),
       totalWdv: num(t.c1_wdv) + num(t.c2_wdv),
-      profitLoss: num(t.c1_profit_loss) + num(t.c2_profit_loss),
+      profitLoss: num(t.asset_profit_loss),
       c1Nbv: num(t.c1_nbv),
       c2Nbv: num(t.c2_nbv)
     };

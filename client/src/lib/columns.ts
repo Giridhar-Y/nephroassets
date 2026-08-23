@@ -398,9 +398,7 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     align: "right",
     group: "disposalPnl",
     render: (i) =>
-      i.result.c1.profitLossOnDisposal === null
-        ? "—"
-        : formatCurrency(i.result.c1.profitLossOnDisposal + (i.result.c2.profitLossOnDisposal ?? 0))
+      i.result.assetProfitLossOnDisposal === null ? "—" : formatCurrency(i.result.assetProfitLossOnDisposal)
   },
 
   // --- 10. Net Block (NBV) --------------------------------------------------------

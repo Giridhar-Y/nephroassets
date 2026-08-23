@@ -227,9 +227,9 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
     expect(body.c1Wdv).toBeGreaterThan(0);
     expect(body.c1Wdv).toBeLessThan(10000);
     expect(body.totalWdv).toBeCloseTo(body.c1Wdv + body.c2Wdv, 6);
-    // Matches the existing Register/Export convention (columns.ts): Profit/(Loss) sums
-    // each component's own (saleValue - componentWdv), not a single (saleValue - total).
-    expect(body.profitLoss).toBeCloseTo(9000 - body.c1Wdv + (9000 - body.c2Wdv), 6);
+    // saleValue counted once against the combined WDV, not once per component (that
+    // would double-count saleValue) — see assetProfitLossOnDisposal's doc comment.
+    expect(body.profitLoss).toBeCloseTo(9000 - (body.c1Wdv + body.c2Wdv), 6);
 
     const db = await getPool();
     const { rows } = await db.query(
@@ -258,7 +258,7 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
 
     expect(previewBody.c1Wdv).toBeCloseTo(result.c1.wdvAtDisposal, 6);
     expect(previewBody.c2Wdv).toBeCloseTo(result.c2.wdvAtDisposal, 6);
-    expect(previewBody.profitLoss).toBeCloseTo(result.c1.profitLossOnDisposal + result.c2.profitLossOnDisposal, 6);
+    expect(previewBody.profitLoss).toBeCloseTo(result.assetProfitLossOnDisposal, 6);
   });
 
   it("404s for an unknown FAR ID", async () => {
