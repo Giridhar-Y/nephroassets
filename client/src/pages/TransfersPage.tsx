@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { fetchCenters, fetchTransferHistory, type TransferHistoryFilters, type TransferHistoryItem } from "../api/client.js";
 import { formatDate } from "../lib/format.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
-import { EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon } from "../lib/icons.js";
+import { useAuth } from "../lib/AuthContext.js";
+import { EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
 
 const PAGE_SIZE = 100;
 
 // Read-only history log — not a workflow of its own. Initiating a transfer still only
 // happens via the center-first picker in Register, per the requirements doc.
 export function TransfersPage() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [filters, setFilters] = useState<TransferHistoryFilters>({});
   const [centers, setCenters] = useState<string[]>([]);
   const [items, setItems] = useState<TransferHistoryItem[]>([]);
@@ -68,10 +72,22 @@ export function TransfersPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-gray-200 bg-white px-6 py-4">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <HistoryIcon fontSize={20} />
-          Transfers
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <HistoryIcon fontSize={20} />
+            Transfers
+          </h1>
+          {user?.role !== "viewer" && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+              onClick={() => navigate("/bulk-upload?type=transfers")}
+            >
+              <UploadIcon fontSize={14} />
+              Bulk Transfer
+            </button>
+          )}
+        </div>
         <p className="mt-1 text-sm text-gray-500">A history of every transfer between centers, newest first.</p>
         {hasActiveFilters && (
           <div className="mt-2 flex items-center gap-2">

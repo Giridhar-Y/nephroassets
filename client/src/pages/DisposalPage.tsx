@@ -1,9 +1,11 @@
 import { useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
-import { DeleteIcon } from "../lib/icons.js";
+import { useAuth } from "../lib/AuthContext.js";
+import { DeleteIcon, UploadIcon } from "../lib/icons.js";
 
 const DISPOSAL_COLUMN_IDS = [
   "farId",
@@ -20,6 +22,8 @@ const RAW_COLUMNS = DISPOSAL_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id
 // Read-only, like Transfers: initiating a disposal happens via "Dispose Selected" in
 // Register (select assets, DisposalModal). This screen just shows what's been disposed.
 export function DisposalPage() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const { settings } = useSettings();
   const filters = useMemo(() => ({ status: ["Disposed"] }), []);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
@@ -28,10 +32,22 @@ export function DisposalPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-gray-200 bg-white px-6 py-4">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <DeleteIcon fontSize={20} />
-          Disposals
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <DeleteIcon fontSize={20} />
+            Disposals
+          </h1>
+          {user?.role !== "viewer" && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+              onClick={() => navigate("/bulk-upload?type=disposals")}
+            >
+              <UploadIcon fontSize={14} />
+              Bulk Disposal
+            </button>
+          )}
+        </div>
         <p className="mt-1 text-sm text-gray-500">
           Assets that have been disposed, with disposal date, sale value, and profit/(loss).
         </p>

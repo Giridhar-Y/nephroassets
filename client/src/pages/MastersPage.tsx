@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   createMasterCenter,
   createMasterStatus,
@@ -13,15 +14,16 @@ import {
   type MasterStatus,
   type MasterSubClassification
 } from "../api/client.js";
-import { BookDatabaseIcon } from "../lib/icons.js";
+import { useAuth } from "../lib/AuthContext.js";
+import { BookDatabaseIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 
 type Tab = "centers" | "subClassifications" | "statuses";
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "centers", label: "Centers (Locations)" },
-  { id: "subClassifications", label: "Sub Classifications" },
-  { id: "statuses", label: "Statuses" }
+const TABS: Array<{ id: Tab; label: string; bulkLabel: string }> = [
+  { id: "centers", label: "Centers (Locations)", bulkLabel: "Centers" },
+  { id: "subClassifications", label: "Sub Classifications", bulkLabel: "Sub Classifications" },
+  { id: "statuses", label: "Statuses", bulkLabel: "Statuses" }
 ];
 
 const INPUT_CLASS =
@@ -600,14 +602,28 @@ function StatusesTab() {
 }
 
 export function MastersPage() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [tab, setTab] = useState<Tab>("centers");
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <BookDatabaseIcon fontSize={20} />
-        Masters
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+          <BookDatabaseIcon fontSize={20} />
+          Masters
+        </h1>
+        {user?.role !== "viewer" && (
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+            onClick={() => navigate(`/bulk-upload?type=masters&list=${tab}`)}
+          >
+            <UploadIcon fontSize={14} />
+            Bulk Import {TABS.find((t) => t.id === tab)?.bulkLabel}
+          </button>
+        )}
+      </div>
       <p className="mt-1 max-w-2xl text-sm text-gray-500">
         Manage the lists that Centers, Sub Classifications, and Statuses are picked from everywhere else in the app —
         Capitalization, Bulk Upload, Transfers, and the Register's filters. Deactivating a value hides it from future

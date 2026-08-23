@@ -1,4 +1,5 @@
 import { useRef, useState, type DragEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   BULK_UPLOAD_PATHS,
   MASTERS_BULK_UPLOAD_PATHS,
@@ -206,11 +207,20 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
   );
 }
 
+const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "masters"];
+
 export function BulkUploadPage() {
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [type, setType] = useState<UploadType>("assets");
-  const [masterList, setMasterList] = useState<MasterListType>("centers");
+  const [searchParams] = useSearchParams();
+  const [type, setType] = useState<UploadType>(() => {
+    const requested = searchParams.get("type");
+    return UPLOAD_TYPES.includes(requested as UploadType) ? (requested as UploadType) : "assets";
+  });
+  const [masterList, setMasterList] = useState<MasterListType>(() => {
+    const requested = searchParams.get("list");
+    return MASTER_LIST_TABS.includes(requested as MasterListType) ? (requested as MasterListType) : "centers";
+  });
   const [step, setStep] = useState<Step>("select");
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);

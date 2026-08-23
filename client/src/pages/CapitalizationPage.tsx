@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
@@ -6,8 +7,9 @@ import { AssetGrid } from "../components/AssetGrid.js";
 import { ColumnFilterPopover, TextFilterPanel } from "../components/ColumnFilterPopover.js";
 import { useToast } from "../components/Toast.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
+import { useAuth } from "../lib/AuthContext.js";
 import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
-import { AddCircleIcon, ErrorIcon } from "../lib/icons.js";
+import { AddCircleIcon, ErrorIcon, UploadIcon } from "../lib/icons.js";
 
 type Tab = "add" | "log";
 
@@ -69,6 +71,8 @@ function Field({
 }
 
 export function CapitalizationPage() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const { settings } = useSettings();
   const { showToast } = useToast();
   const [tab, setTab] = useState<Tab>("add");
@@ -182,10 +186,22 @@ export function CapitalizationPage() {
   return (
     <div className="flex h-full flex-col bg-white">
       <div className="border-b border-gray-200 px-6 py-4">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <AddCircleIcon fontSize={20} />
-          Capitalization
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <AddCircleIcon fontSize={20} />
+            Capitalization
+          </h1>
+          {user?.role !== "viewer" && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+              onClick={() => navigate("/bulk-upload?type=assets")}
+            >
+              <UploadIcon fontSize={14} />
+              Bulk Upload
+            </button>
+          )}
+        </div>
         <p className="mt-1 max-w-xl text-sm text-gray-500">
           {tab === "add"
             ? "Register a brand-new asset into the Fixed Asset Register."
