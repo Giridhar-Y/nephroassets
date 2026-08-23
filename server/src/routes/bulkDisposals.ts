@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { applyFullDisposal } from "./disposalWriteOff.js";
 import { requireEditor } from "../auth/middleware.js";
 
@@ -39,25 +39,33 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
 
-    // Preview mode: same not-found / already-disposed checks the commit loop below does,
-    // against the same schema-valid rows, but read-only — no UPDATE, no transaction.
+    // Preview mode: same not-found / already-disposed / before-capitalization checks the
+    // commit loop below does, against the same schema-valid rows, but read-only — no
+    // UPDATE, no transaction.
     if ((req.query as Record<string, string>).preview === "true") {
       const db = await getPool();
       const farIds = validRows.map(({ data }) => data.farId);
-      const existing = new Map<string, string | null>();
+      const existing = new Map<string, { dateOfDisposal: string | null; dateAcquired: string }>();
       if (farIds.length > 0) {
-        const { rows } = await db.query<{ far_id: string; date_of_disposal: string | null }>(
-          `SELECT far_id, date_of_disposal FROM assets WHERE far_id = ANY($1)`,
+        const { rows } = await db.query<{ far_id: string; date_of_disposal: string | null; date_acquired: string }>(
+          `SELECT far_id, date_of_disposal, date_acquired FROM assets WHERE far_id = ANY($1)`,
           [farIds]
         );
-        for (const r of rows) existing.set(r.far_id, r.date_of_disposal);
+        for (const r of rows) existing.set(r.far_id, { dateOfDisposal: r.date_of_disposal, dateAcquired: r.date_acquired });
       }
       const classified: Array<{ row: number; farId: string; status: "update" }> = [];
       for (const { row, data } of validRows) {
-        if (!existing.has(data.farId)) {
+        const info = existing.get(data.farId);
+        if (!info) {
           errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
-        } else if (existing.get(data.farId) != null) {
+        } else if (info.dateOfDisposal != null) {
           errors.push({ row, farId: data.farId, message: `Asset "${data.farId}" has already been disposed.` });
+        } else if (data.dateOfDisposal < info.dateAcquired) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(info.dateAcquired)}).`
+          });
         } else {
           classified.push({ row, farId: data.farId, status: "update" });
         }
@@ -75,17 +83,19 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
         for (const { row, data } of validRows) {
           const written = await applyFullDisposal(client, data.farId, data.dateOfDisposal, data.saleValue);
           if (!written) {
-            const { rows: check } = await client.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [
-              data.farId
-            ]);
-            errors.push({
-              row,
-              farId: data.farId,
-              message:
-                check.length === 0
-                  ? `No asset found with FAR ID "${data.farId}".`
-                  : `Asset "${data.farId}" has already been disposed.`
-            });
+            const { rows: check } = await client.query<{ date_of_disposal: string | null; date_acquired: string }>(
+              `SELECT date_of_disposal, date_acquired FROM assets WHERE far_id = $1`,
+              [data.farId]
+            );
+            let message: string;
+            if (check.length === 0) {
+              message = `No asset found with FAR ID "${data.farId}".`;
+            } else if (check[0]!.date_of_disposal !== null) {
+              message = `Asset "${data.farId}" has already been disposed.`;
+            } else {
+              message = `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(check[0]!.date_acquired)}).`;
+            }
+            errors.push({ row, farId: data.farId, message });
             continue;
           }
           processed++;

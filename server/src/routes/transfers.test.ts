@@ -6,14 +6,14 @@ import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 
-async function insertAsset(farId: string, description = "Transfer History Asset") {
+async function insertAsset(farId: string, description = "Transfer History Asset", dateAcquired = "2020-01-01") {
   const db = await getPool();
   await db.query(
     `INSERT INTO assets (
        far_id, sub_classification, asset_description, status, date_acquired, location,
        useful_life_c1_years, useful_life_c2_years
-     ) VALUES ($1, 'Test-Sub', $2, 'Active', '2020-01-01', 'Center-A', 5, 5)`,
-    [farId, description]
+     ) VALUES ($1, 'Test-Sub', $2, 'Active', $3, 'Center-A', 5, 5)`,
+    [farId, description, dateAcquired]
   );
 }
 
@@ -57,6 +57,51 @@ describe("Transfers", () => {
     const db = await getPool();
     const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-1'`);
     expect(rows[0].revised_location).toBe("Center-B");
+  });
+
+  it("rejects a transfer dated before the asset's capitalization date", async () => {
+    await insertAsset("XFER-EARLY", "Transfer History Asset", "2026-04-01");
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-EARLY"], toLocation: "Center-B", transactionDate: "2026-03-15" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Transfer date cannot be before the asset's capitalization date/);
+    expect(res.json().error).toMatch(/01-04-2026/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-EARLY'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
+  it("allows a transfer dated exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
+    await insertAsset("XFER-BOUNDARY", "Transfer History Asset", "2026-04-01");
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-BOUNDARY"], toLocation: "Center-B", transactionDate: "2026-04-01" }
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects the whole batch if any selected asset's transfer date is before its capitalization date", async () => {
+    await insertAsset("XFER-BATCH-OK", "Transfer History Asset", "2020-01-01");
+    await insertAsset("XFER-BATCH-BAD", "Transfer History Asset", "2026-04-01");
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-BATCH-OK", "XFER-BATCH-BAD"], toLocation: "Center-B", transactionDate: "2026-03-15" }
+    });
+    expect(res.statusCode).toBe(400);
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT far_id, revised_location FROM assets WHERE far_id IN ('XFER-BATCH-OK', 'XFER-BATCH-BAD')`
+    );
+    // Neither asset was moved — the whole transaction was rejected up front, not just
+    // the offending row.
+    expect(rows.every((r) => r.revised_location === null)).toBe(true);
   });
 
   it("rejects a toLocation that isn't an active Masters center", async () => {

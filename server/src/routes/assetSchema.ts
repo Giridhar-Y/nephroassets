@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { bulkDate } from "./bulkParse.js";
+import { bulkDate, isoToDDMMYYYY } from "./bulkParse.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -130,6 +130,17 @@ export const bulkAssetRowSchema = assetCreateShape
         code: z.ZodIssueCode.custom,
         path: ["dateOfDisposal"],
         message: `status is "Disposed" but dateOfDisposal is not set.`
+      });
+    }
+    // An asset can't have been written off before it existed on the books. The
+    // Capitalization form never sends dateOfDisposal (a new asset is never created
+    // pre-disposed), so this only applies to bulk-uploaded rows carrying a historical
+    // disposal already on record.
+    if (hasDisposalDate && data.dateOfDisposal! < data.dateAcquired) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dateOfDisposal"],
+        message: `Disposal date cannot be before the capitalization date (${isoToDDMMYYYY(data.dateAcquired)}).`
       });
     }
   });

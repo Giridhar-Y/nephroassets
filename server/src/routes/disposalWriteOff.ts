@@ -7,9 +7,12 @@ import type pg from "pg";
  * version, so there's exactly one place that knows what "dispose an asset" writes,
  * instead of the same UPDATE duplicated in both.
  *
- * Returns true if the asset was found and not already disposed (and so was just
- * written), false otherwise — callers distinguish "not found" from "already disposed"
- * themselves via a follow-up SELECT, same as before this was extracted.
+ * Returns true if the asset was found, not already disposed, and dateOfDisposal wasn't
+ * before its capitalization date (and so was just written), false otherwise — callers
+ * distinguish which of those three reasons via a follow-up SELECT, same as before this
+ * was extracted. An asset can't have moved locations/been written off before it existed
+ * on the books, so `date_acquired <= $1` is gated here rather than duplicated at every
+ * caller.
  */
 export async function applyFullDisposal(
   client: Pick<pg.Pool | pg.PoolClient, "query">,
@@ -24,7 +27,7 @@ export async function applyFullDisposal(
          deletions_c2 = c2_opening_cost + additions_c2,
          sale_value = $2,
          status = 'Disposed'
-     WHERE far_id = $3 AND date_of_disposal IS NULL
+     WHERE far_id = $3 AND date_of_disposal IS NULL AND date_acquired <= $1
      RETURNING far_id`,
     [dateOfDisposal, saleValue, farId]
   );

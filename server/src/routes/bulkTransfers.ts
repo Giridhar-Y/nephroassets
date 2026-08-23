@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { bulkDate, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, isoToDDMMYYYY, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { requireEditor } from "../auth/middleware.js";
 
 const transferRowSchema = z.object({
@@ -55,21 +55,32 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       validRows = stillValid;
     }
 
-    // Preview mode: same FAR-ID-exists check the commit loop below does, read-only.
+    // Preview mode: same FAR-ID-exists / not-before-capitalization checks the commit loop
+    // below does, read-only.
     if ((req.query as Record<string, string>).preview === "true") {
       const db = await getPool();
       const farIds = validRows.map(({ data }) => data.farId);
-      const existing = new Set(
+      const dateAcquiredByFarId = new Map<string, string>(
         farIds.length > 0
-          ? (await db.query<{ far_id: string }>(`SELECT far_id FROM assets WHERE far_id = ANY($1)`, [farIds])).rows.map(
-              (r) => r.far_id
-            )
+          ? (
+              await db.query<{ far_id: string; date_acquired: string }>(
+                `SELECT far_id, date_acquired FROM assets WHERE far_id = ANY($1)`,
+                [farIds]
+              )
+            ).rows.map((r) => [r.far_id, r.date_acquired])
           : []
       );
       const classified: Array<{ row: number; farId: string; status: "update" }> = [];
       for (const { row, data } of validRows) {
-        if (!existing.has(data.farId)) {
+        const dateAcquired = dateAcquiredByFarId.get(data.farId);
+        if (dateAcquired === undefined) {
           errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+        } else if (data.transactionDate < dateAcquired) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(dateAcquired)}).`
+          });
         } else {
           classified.push({ row, farId: data.farId, status: "update" });
         }
@@ -85,9 +96,20 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       try {
         await client.query("BEGIN");
         for (const { row, data } of validRows) {
-          const { rows: exists } = await client.query(`SELECT 1 FROM assets WHERE far_id = $1`, [data.farId]);
+          const { rows: exists } = await client.query<{ date_acquired: string }>(
+            `SELECT date_acquired FROM assets WHERE far_id = $1`,
+            [data.farId]
+          );
           if (exists.length === 0) {
             errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+            continue;
+          }
+          if (data.transactionDate < exists[0]!.date_acquired) {
+            errors.push({
+              row,
+              farId: data.farId,
+              message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(exists[0]!.date_acquired)}).`
+            });
             continue;
           }
           await client.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`, [

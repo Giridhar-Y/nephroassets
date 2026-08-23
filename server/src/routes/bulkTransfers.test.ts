@@ -8,14 +8,14 @@ import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
-async function insertAsset(farId: string) {
+async function insertAsset(farId: string, dateAcquired = "2020-01-01") {
   const db = await getPool();
   await db.query(
     `INSERT INTO assets (
        far_id, sub_classification, asset_description, status, date_acquired, location,
        useful_life_c1_years, useful_life_c2_years
-     ) VALUES ($1, 'Test-Sub', 'Bulk transfer test asset', 'Active', '2020-01-01', 'Center-A', 5, 5)`,
-    [farId]
+     ) VALUES ($1, 'Test-Sub', 'Bulk transfer test asset', 'Active', $2, 'Center-A', 5, 5)`,
+    [farId, dateAcquired]
   );
 }
 
@@ -102,6 +102,36 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     expect(rows[0].revised_location).toBeNull();
     const { rows: history } = await db.query(`SELECT * FROM transfers`);
     expect(history).toHaveLength(0);
+  });
+
+  it("rejects a row transferred before the asset's capitalization date, and reports it in preview too", async () => {
+    await insertAsset("BXFER-EARLY", "2026-04-01");
+
+    const csv = [HEADER, "BXFER-EARLY,Center-B,2026-03-15"].join("\n");
+    const preview = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers/bulk-upload?preview=true",
+      ...csvPayload(csv)
+    });
+    const previewBody = preview.json();
+    expect(previewBody.rows[0].status).toBe("error");
+    expect(previewBody.rows[0].message).toMatch(/Transfer date cannot be before the asset's capitalization date \(01-04-2026\)/);
+
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Transfer date cannot be before the asset's capitalization date \(01-04-2026\)/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-EARLY'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
+  it("allows a row transferred exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
+    await insertAsset("BXFER-BOUNDARY", "2026-04-01");
+    const csv = [HEADER, "BXFER-BOUNDARY,Center-B,2026-04-01"].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    expect(res.json().processed).toBe(1);
   });
 
   it("rejects a toLocation that isn't an active Masters center", async () => {

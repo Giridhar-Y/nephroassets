@@ -5,7 +5,7 @@ import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
-import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { applyFullDisposal } from "./disposalWriteOff.js";
 import { requireEditor } from "../auth/middleware.js";
 
@@ -327,6 +327,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: `Asset "${farId}" has already been disposed.` };
     }
+    if (dateOfDisposal < asset.dateAcquired) {
+      reply.code(400);
+      return {
+        error: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(asset.dateAcquired)}).`
+      };
+    }
 
     const { rows: settingsRows } = await db.query<SettingsRow>(
       `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
@@ -371,13 +377,22 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const db = await getPool();
     const written = await applyFullDisposal(db, farId, dateOfDisposal, saleValue);
     if (!written) {
-      const { rows: check } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = $1`, [farId]);
+      const { rows: check } = await db.query<{ date_of_disposal: string | null; date_acquired: string }>(
+        `SELECT date_of_disposal, date_acquired FROM assets WHERE far_id = $1`,
+        [farId]
+      );
       if (check.length === 0) {
         reply.code(404);
         return { error: `No asset found with FAR ID "${farId}".` };
       }
-      reply.code(409);
-      return { error: `Asset "${farId}" has already been disposed.` };
+      if (check[0]!.date_of_disposal !== null) {
+        reply.code(409);
+        return { error: `Asset "${farId}" has already been disposed.` };
+      }
+      reply.code(400);
+      return {
+        error: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(check[0]!.date_acquired)}).`
+      };
     }
     return { farId, disposed: true };
   });

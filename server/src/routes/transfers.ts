@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { requireEditor } from "../auth/middleware.js";
 
 const createTransferSchema = z.object({
@@ -47,6 +47,30 @@ export default async function transfersRoutes(app: FastifyInstance) {
       return { error: `Location "${parsed.data.toLocation}" not recognized — see Masters for valid values.` };
     }
     const { farIds, transactionDate } = parsed.data;
+
+    // An asset can't have moved locations before it existed on the books — reject the
+    // whole batch (matching the all-or-nothing transaction below) if the transfer date
+    // is before any selected asset's capitalization date.
+    const { rows: assetRows } = await db.query<{ far_id: string; date_acquired: string }>(
+      `SELECT far_id, date_acquired FROM assets WHERE far_id = ANY($1)`,
+      [farIds]
+    );
+    const dateAcquiredByFarId = new Map(assetRows.map((r) => [r.far_id, r.date_acquired]));
+    const missing = farIds.filter((id) => !dateAcquiredByFarId.has(id));
+    if (missing.length > 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID ${missing.map((id) => `"${id}"`).join(", ")}.` };
+    }
+    const tooEarly = farIds.filter((id) => transactionDate < dateAcquiredByFarId.get(id)!);
+    if (tooEarly.length > 0) {
+      reply.code(400);
+      return {
+        error: `Transfer date cannot be before the asset's capitalization date — ${tooEarly
+          .map((id) => `${id} was capitalized on ${isoToDDMMYYYY(dateAcquiredByFarId.get(id)!)}`)
+          .join("; ")}.`
+      };
+    }
+
     const client = await db.connect();
     try {
       await client.query("BEGIN");

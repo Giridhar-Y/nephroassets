@@ -27,6 +27,10 @@ export function DisposalModal({
   const [previewing, setPreviewing] = useState(false);
   const [previews, setPreviews] = useState<Map<string, DisposalPreview>>(new Map());
 
+  // The disposal date must be on or after every selected asset's capitalization date —
+  // the binding constraint across a multi-select batch is whichever is latest.
+  const minDate = assets.reduce((max, a) => (a.asset.dateAcquired > max ? a.asset.dateAcquired : max), "");
+
   // Dismissing the confirmation step (Esc, click outside) returns to the form with
   // entered values intact — it must never silently submit or discard anything.
   useEffect(() => {
@@ -39,6 +43,10 @@ export function DisposalModal({
   }, [step]);
 
   async function handleReview() {
+    if (dateOfDisposal < minDate) {
+      setError(`Disposal date cannot be before the asset's capitalization date (${formatDate(minDate)}).`);
+      return;
+    }
     setError(null);
     setPreviewing(true);
     setStep("confirm");
@@ -96,6 +104,7 @@ export function DisposalModal({
               <input
                 id="disposal-modal-date"
                 type="date"
+                min={minDate}
                 className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                 value={dateOfDisposal}
                 onChange={(e) => setDateOfDisposal(e.target.value)}

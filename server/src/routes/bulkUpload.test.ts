@@ -120,6 +120,28 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(body.errors[0].message).toMatch(/status is "Disposed" but dateOfDisposal is not set/);
   });
 
+  it("rejects a dateOfDisposal before dateAcquired within the same row", async () => {
+    const withDisposalHeader = HEADER + ",dateOfDisposal";
+    const csv = [
+      withDisposalHeader,
+      "BULK-EARLY-DISPOSAL,Test-Sub,Bad Dates,Disposed,01-04-2026,Center-A,5,5,1000,1000,15-03-2026"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Disposal date cannot be before the capitalization date \(01-04-2026\)/);
+  });
+
+  it("allows a dateOfDisposal exactly on dateAcquired within the same row (boundary is >=, not >)", async () => {
+    const withDisposalHeader = HEADER + ",dateOfDisposal";
+    const csv = [
+      withDisposalHeader,
+      "BULK-BOUNDARY-DISPOSAL,Test-Sub,Same-Day Disposal,Disposed,01-04-2026,Center-A,5,5,1000,1000,01-04-2026"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    expect(res.json().processed).toBe(1);
+  });
+
   it("rejects a subClassification/status/location that isn't in the active Masters lists", async () => {
     const csv = [HEADER, "BULK-UNKNOWN,Not A Real Sub,Bad Combo,Not A Real Status,2020-01-01,Not-A-Real-Center,5,5,1000,1000"].join(
       "\n"

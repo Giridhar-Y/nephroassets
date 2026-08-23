@@ -28,6 +28,14 @@ function ddmmyyyyToIso(value: string): string {
   return `${y}-${m}-${d}`;
 }
 
+// Reverse of ddmmyyyyToIso above — for rendering an ISO date back into an error message
+// in the app's day-first display convention. A plain string rearrangement, no Date
+// object and no timezone risk.
+export function isoToDDMMYYYY(value: string): string {
+  const [y, m, d] = value.split("-");
+  return `${d}-${m}-${y}`;
+}
+
 // Bulk upload's date columns are DD-MM-YYYY, matching the rest of the app's day-first
 // display convention — parsed positionally (day, then month) rather than via `Date` or
 // any locale-dependent parsing, so "01-02-2026" always means 1 February, never 2 January.

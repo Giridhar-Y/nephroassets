@@ -26,6 +26,10 @@ export function TransferModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The transfer date must be on or after every selected asset's capitalization date —
+  // the binding constraint across a multi-select batch is whichever is latest.
+  const minDate = assets.reduce((max, a) => (a.asset.dateAcquired > max ? a.asset.dateAcquired : max), "");
+
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
   }, []);
@@ -44,6 +48,10 @@ export function TransferModal({
   function handleReview() {
     if (!toLocation) {
       setError("Choose a destination center.");
+      return;
+    }
+    if (transactionDate < minDate) {
+      setError(`Transfer date cannot be before the asset's capitalization date (${formatDate(minDate)}).`);
       return;
     }
     setError(null);
@@ -109,6 +117,7 @@ export function TransferModal({
               <input
                 id="transfer-date"
                 type="date"
+                min={minDate}
                 className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                 value={transactionDate}
                 onChange={(e) => setTransactionDate(e.target.value)}

@@ -177,6 +177,30 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     expect(rows[0].status).toBe("Disposed");
   });
 
+  it("rejects a disposal dated before the asset's capitalization date", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/disposal",
+      payload: { dateOfDisposal: "2025-12-31", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Disposal date cannot be before the asset's capitalization date \(01-01-2026\)/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT date_of_disposal, status FROM assets WHERE far_id = 'DISP-TEST-1'`);
+    expect(rows[0].date_of_disposal).toBeNull();
+    expect(rows[0].status).toBe("Active");
+  });
+
+  it("allows a disposal dated exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-01-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("rejects disposing the same asset twice", async () => {
     await authedInject(app, {
       method: "PATCH",
@@ -250,6 +274,25 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
     expect(rows[0].date_of_disposal).toBeNull();
     expect(Number(rows[0].deletions_c1)).toBe(0);
     expect(rows[0].status).toBe("Active");
+  });
+
+  it("rejects a preview dated before the asset's capitalization date", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2025-12-31", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Disposal date cannot be before the asset's capitalization date \(01-01-2026\)/);
+  });
+
+  it("allows a preview dated exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-01-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("matches what actually confirming the disposal on that same date produces", async () => {
