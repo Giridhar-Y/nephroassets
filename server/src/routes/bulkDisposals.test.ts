@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 async function insertAsset(farId: string, overrides: Record<string, unknown> = {}) {
@@ -53,7 +54,7 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     await insertAsset("BDISP-2", { status: "Disposed", date_of_disposal: "2026-01-01" });
 
     const csv = [HEADER, "BDISP-1,2026-08-01,500", "BDISP-2,2026-08-01,100", "BDISP-3,2026-08-01,0"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.totalRows).toBe(3);
@@ -72,7 +73,7 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
   });
 
   it("400s when no file is uploaded", async () => {
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-dispose", ...emptyMultipartPayload() });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...emptyMultipartPayload() });
     expect(res.statusCode).toBe(400);
   });
 
@@ -81,7 +82,7 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     await insertAsset("BDISP-2", { status: "Disposed", date_of_disposal: "2026-01-01" });
 
     const csv = [HEADER, "BDISP-1,2026-08-01,500", "BDISP-2,2026-08-01,100", "BDISP-3,2026-08-01,0"].join("\n");
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets/bulk-dispose?preview=true",
       ...csvPayload(csv)
@@ -103,7 +104,7 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     await insertAsset("BDISP-BAD");
 
     const csv = [HEADER, "BDISP-DMY,01-08-2026,500", "BDISP-BAD,32-01-2026,0"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(1);
     expect(body.errors[0].message).toMatch(/Invalid date '32-01-2026' — expected DD-MM-YYYY/);

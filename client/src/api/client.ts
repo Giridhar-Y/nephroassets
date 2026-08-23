@@ -9,20 +9,40 @@ import type {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** Machine-readable error kind from the server (e.g. "UNAUTHENTICATED",
+   *  "MUST_CHANGE_PASSWORD", "FORBIDDEN") — present on auth-related errors so callers
+   *  can branch on it instead of matching the human-readable message text. */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers }
+    // Only declare a JSON content-type when there's actually a body — Fastify's default
+    // JSON body parser rejects an empty body outright (FST_ERR_CTP_EMPTY_JSON_BODY) if
+    // told to expect one, which every no-body POST (logout, reset-password) hit.
+    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers }
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
+    const err = new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status, body.code);
+    // A session can die mid-use — 12-hour expiry while a tab stays open overnight, or an
+    // admin disabling the account (auth/middleware.ts reads status fresh on every
+    // request, so that takes effect immediately, not next login). Without this, only the
+    // one component whose fetch happened to fail shows a "Not signed in" error while the
+    // rest of the app (sidebar, nav) keeps rendering as if still signed in. AuthContext
+    // listens for this and clears its user state, which sends RequireAuth to /login.
+    // Skip it for the login endpoint itself — a wrong-password 401 there is normal,
+    // expected input validation, not a dead session to react to.
+    if (err.code === "UNAUTHENTICATED" && path !== "/api/auth/login") {
+      window.dispatchEvent(new Event("auth:unauthenticated"));
+    }
+    throw err;
   }
   return res.json() as Promise<T>;
 }
@@ -382,4 +402,78 @@ export function updateMasterStatus(
   payload: Partial<{ name: string; active: boolean }>
 ): Promise<MasterStatus & { assetsUpdated?: number }> {
   return request(`/api/masters/statuses/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+// --- Auth ------------------------------------------------------------------------
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  email: string;
+  isAdmin: boolean;
+  mustChangePassword: boolean;
+}
+
+export function login(username: string, password: string): Promise<{ user: AuthUser }> {
+  return request("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
+}
+
+export function logout(): Promise<{ ok: true }> {
+  return request("/api/auth/logout", { method: "POST" });
+}
+
+/** Returns null for a genuinely-not-signed-in visitor (401) rather than throwing —
+ *  that's the expected state on first load, not an error. Rethrows anything else. */
+export async function fetchCurrentUser(): Promise<AuthUser | null> {
+  try {
+    const { user } = await request<{ user: AuthUser }>("/api/auth/me");
+    return user;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
+}
+
+export function changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {
+  return request("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, newPassword })
+  });
+}
+
+// --- Admin: user management -------------------------------------------------------
+
+export interface AdminUser {
+  id: number;
+  username: string;
+  email: string;
+  isAdmin: boolean;
+  status: "active" | "disabled";
+  mustChangePassword: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+export function fetchAdminUsers(): Promise<AdminUser[]> {
+  return request("/api/admin/users");
+}
+
+export function createAdminUser(payload: {
+  username: string;
+  email: string;
+  password: string;
+  isAdmin: boolean;
+}): Promise<AdminUser> {
+  return request("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateAdminUser(
+  id: number,
+  payload: Partial<{ email: string; isAdmin: boolean; status: "active" | "disabled" }>
+): Promise<AdminUser> {
+  return request(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function resetAdminUserPassword(id: number): Promise<{ user: AdminUser; tempPassword: string }> {
+  return request(`/api/admin/users/${id}/reset-password`, { method: "POST" });
 }

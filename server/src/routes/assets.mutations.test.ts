@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 const NEW_ASSET = {
   farId: "CAP-TEST-1",
@@ -53,23 +54,23 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("creates a new asset and it appears in the register", async () => {
-    const create = await app.inject({ method: "POST", url: "/api/assets", payload: NEW_ASSET });
+    const create = await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
     expect(create.statusCode).toBe(200);
     expect(create.json()).toEqual({ farId: "CAP-TEST-1", created: true });
 
-    const list = await app.inject({ method: "GET", url: "/api/assets?asAt=2026-08-17" });
+    const list = await authedInject(app, { method: "GET", url: "/api/assets?asAt=2026-08-17" });
     const items = list.json().items;
     expect(items.some((i: { asset: { farId: string } }) => i.asset.farId === "CAP-TEST-1")).toBe(true);
   });
 
   it("rejects a duplicate FAR ID", async () => {
-    await app.inject({ method: "POST", url: "/api/assets", payload: NEW_ASSET });
-    const dup = await app.inject({ method: "POST", url: "/api/assets", payload: NEW_ASSET });
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+    const dup = await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
     expect(dup.statusCode).toBe(409);
   });
 
   it("rejects a payload missing required fields", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { farId: "CAP-BAD-1" }
@@ -78,7 +79,7 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("rejects a status/subClassification/location that isn't in the active Masters lists", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { ...NEW_ASSET, farId: "CAP-UNKNOWN", subClassification: "Not A Real Sub" }
@@ -88,7 +89,7 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("rejects capitalizing a brand-new asset directly as a system-managed status (Disposed)", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { ...NEW_ASSET, farId: "CAP-DISPOSED", status: "Disposed" }
@@ -98,7 +99,7 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("matches a master value case-insensitively but stores the canonical casing", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { ...NEW_ASSET, farId: "CAP-CASING", subClassification: "test-sub", status: "active", location: "center-test" }
@@ -111,7 +112,7 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("rejects additions with no dateOfAddition (would silently never depreciate)", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { ...NEW_ASSET, farId: "CAP-BAD-2", additionsC1: 5000 }
@@ -120,7 +121,7 @@ describe("Capitalization: POST /api/assets", () => {
   });
 
   it("rejects a dateOfAddition with zero additions", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
       payload: { ...NEW_ASSET, farId: "CAP-BAD-3", dateOfAddition: "2026-05-01" }
@@ -147,11 +148,11 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
     await seedMasters();
-    await app.inject({ method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-TEST-1" } });
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-TEST-1" } });
   });
 
   it("fully disposes an asset: deletions become the full capitalized cost", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/DISP-TEST-1/disposal",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
@@ -169,12 +170,12 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
   });
 
   it("rejects disposing the same asset twice", async () => {
-    await app.inject({
+    await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/DISP-TEST-1/disposal",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
     });
-    const second = await app.inject({
+    const second = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/DISP-TEST-1/disposal",
       payload: { dateOfDisposal: "2026-08-05", saleValue: 100 }
@@ -183,7 +184,7 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
   });
 
   it("404s for an unknown FAR ID", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/DOES-NOT-EXIST/disposal",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 0 }
@@ -210,11 +211,11 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
     await seedMasters();
-    await app.inject({ method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "PREV-TEST-1" } });
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "PREV-TEST-1" } });
   });
 
   it("computes real WDV/Profit-Loss for the chosen Disposal Date without writing anything", async () => {
-    const preview = await app.inject({
+    const preview = await authedInject(app, {
       method: "POST",
       url: "/api/assets/PREV-TEST-1/disposal/preview",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
@@ -241,19 +242,19 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
   });
 
   it("matches what actually confirming the disposal on that same date produces", async () => {
-    const preview = await app.inject({
+    const preview = await authedInject(app, {
       method: "POST",
       url: "/api/assets/PREV-TEST-1/disposal/preview",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
     });
     const previewBody = preview.json();
 
-    await app.inject({
+    await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/PREV-TEST-1/disposal",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 9000 }
     });
-    const detail = await app.inject({ method: "GET", url: "/api/assets/PREV-TEST-1?asAt=2026-08-01" });
+    const detail = await authedInject(app, { method: "GET", url: "/api/assets/PREV-TEST-1?asAt=2026-08-01" });
     const result = detail.json().result;
 
     expect(previewBody.c1Wdv).toBeCloseTo(result.c1.wdvAtDisposal, 6);
@@ -262,7 +263,7 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
   });
 
   it("404s for an unknown FAR ID", async () => {
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets/DOES-NOT-EXIST/disposal/preview",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 0 }
@@ -271,12 +272,12 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
   });
 
   it("409s for an asset that's already disposed", async () => {
-    await app.inject({
+    await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/PREV-TEST-1/disposal",
       payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
     });
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets/PREV-TEST-1/disposal/preview",
       payload: { dateOfDisposal: "2026-08-05", saleValue: 0 }

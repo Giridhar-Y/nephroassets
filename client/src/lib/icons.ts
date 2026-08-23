@@ -35,5 +35,7 @@ export {
   FullScreenMinimizeRegular as CollapseExpandIcon,
   PanelLeftContractRegular as PanelCollapseIcon,
   PanelLeftExpandRegular as PanelExpandIcon,
-  BookDatabaseRegular as BookDatabaseIcon
+  BookDatabaseRegular as BookDatabaseIcon,
+  PeopleRegular as AdminIcon,
+  KeyRegular as KeyIcon
 } from "@fluentui/react-icons";

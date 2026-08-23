@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mastersRoutes from "./masters.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 async function insertAsset(farId: string, overrides: Record<string, unknown> = {}) {
   const db = await getPool();
@@ -46,27 +47,27 @@ describe("Masters", () => {
   describe("Centers", () => {
     it("creates a center and lists it with a usage count", async () => {
       await insertAsset("CTR-1", { location: "Center-X" });
-      const create = await app.inject({
+      const create = await authedInject(app, {
         method: "POST",
         url: "/api/masters/centers",
         payload: { code: "Center-X", description: "Main building" }
       });
       expect(create.statusCode).toBe(200);
 
-      const list = await app.inject({ method: "GET", url: "/api/masters/centers" });
+      const list = await authedInject(app, { method: "GET", url: "/api/masters/centers" });
       const body = list.json();
       expect(body).toHaveLength(1);
       expect(body[0].usageCount).toBe(1);
     });
 
     it("rejects a case-insensitive duplicate code", async () => {
-      await app.inject({ method: "POST", url: "/api/masters/centers", payload: { code: "Center-Y" } });
-      const dup = await app.inject({ method: "POST", url: "/api/masters/centers", payload: { code: "center-y" } });
+      await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-Y" } });
+      const dup = await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "center-y" } });
       expect(dup.statusCode).toBe(409);
     });
 
     it("renaming a code cascades to assets.location, assets.revised_location, and transfers.location", async () => {
-      const created = await app.inject({ method: "POST", url: "/api/masters/centers", payload: { code: "Center-OLD" } });
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-OLD" } });
       const { id } = created.json();
 
       await insertAsset("CTR-2", { location: "Center-OLD" });
@@ -76,7 +77,7 @@ describe("Masters", () => {
         "CTR-2"
       ]);
 
-      const patch = await app.inject({
+      const patch = await authedInject(app, {
         method: "PATCH",
         url: `/api/masters/centers/${id}`,
         payload: { code: "Center-NEW" }
@@ -96,11 +97,11 @@ describe("Masters", () => {
     });
 
     it("deactivating never touches existing assets", async () => {
-      const created = await app.inject({ method: "POST", url: "/api/masters/centers", payload: { code: "Center-Z" } });
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-Z" } });
       const { id } = created.json();
       await insertAsset("CTR-4", { location: "Center-Z" });
 
-      const patch = await app.inject({ method: "PATCH", url: `/api/masters/centers/${id}`, payload: { active: false } });
+      const patch = await authedInject(app, { method: "PATCH", url: `/api/masters/centers/${id}`, payload: { active: false } });
       expect(patch.statusCode).toBe(200);
       expect(patch.json().active).toBe(false);
 
@@ -112,7 +113,7 @@ describe("Masters", () => {
 
   describe("Sub Classifications", () => {
     it("creates one with optional default useful-life fields and round-trips them", async () => {
-      const res = await app.inject({
+      const res = await authedInject(app, {
         method: "POST",
         url: "/api/masters/sub-classifications",
         payload: { name: "Dialysis Machines", defaultUsefulLifeC1Years: 10, defaultUsefulLifeC2Years: 5 }
@@ -124,15 +125,15 @@ describe("Masters", () => {
     });
 
     it("rejects a duplicate name", async () => {
-      await app.inject({ method: "POST", url: "/api/masters/sub-classifications", payload: { name: "RO Plants" } });
-      const dup = await app.inject({ method: "POST", url: "/api/masters/sub-classifications", payload: { name: "RO Plants" } });
+      await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "RO Plants" } });
+      const dup = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "RO Plants" } });
       expect(dup.statusCode).toBe(409);
     });
 
     it("PATCH also round-trips the default useful-life fields as numbers, not raw DB strings", async () => {
-      const created = await app.inject({ method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Vehicles" } });
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Vehicles" } });
       const { id } = created.json();
-      const patch = await app.inject({
+      const patch = await authedInject(app, {
         method: "PATCH",
         url: `/api/masters/sub-classifications/${id}`,
         payload: { defaultUsefulLifeC1Years: 8, defaultUsefulLifeC2Years: 4 }
@@ -143,13 +144,13 @@ describe("Masters", () => {
     });
 
     it("renaming cascades to every asset using the old name", async () => {
-      const created = await app.inject({ method: "POST", url: "/api/masters/sub-classifications", payload: { name: "IT Equipment" } });
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "IT Equipment" } });
       const { id } = created.json();
       await insertAsset("SUB-1", { sub_classification: "IT Equipment" });
       await insertAsset("SUB-2", { sub_classification: "IT Equipment" });
       await insertAsset("SUB-3", { sub_classification: "Vehicles" });
 
-      const patch = await app.inject({
+      const patch = await authedInject(app, {
         method: "PATCH",
         url: `/api/masters/sub-classifications/${id}`,
         payload: { name: "IT & Computer Equipment" }
@@ -168,23 +169,23 @@ describe("Masters", () => {
 
   describe("Statuses", () => {
     it("creates a non-system-managed status", async () => {
-      const res = await app.inject({ method: "POST", url: "/api/masters/statuses", payload: { name: "Loaned Out" } });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/statuses", payload: { name: "Loaned Out" } });
       expect(res.statusCode).toBe(200);
       expect(res.json().systemManaged).toBe(false);
     });
 
     it("rejects a duplicate name", async () => {
-      await app.inject({ method: "POST", url: "/api/masters/statuses", payload: { name: "Active" } });
-      const dup = await app.inject({ method: "POST", url: "/api/masters/statuses", payload: { name: "active" } });
+      await authedInject(app, { method: "POST", url: "/api/masters/statuses", payload: { name: "Active" } });
+      const dup = await authedInject(app, { method: "POST", url: "/api/masters/statuses", payload: { name: "active" } });
       expect(dup.statusCode).toBe(409);
     });
 
     it("renaming cascades to every asset using the old name", async () => {
-      const created = await app.inject({ method: "POST", url: "/api/masters/statuses", payload: { name: "Under Repair" } });
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/statuses", payload: { name: "Under Repair" } });
       const { id } = created.json();
       await insertAsset("STA-1", { status: "Under Repair" });
 
-      const patch = await app.inject({
+      const patch = await authedInject(app, {
         method: "PATCH",
         url: `/api/masters/statuses/${id}`,
         payload: { name: "Under Maintenance" }
@@ -203,10 +204,10 @@ describe("Masters", () => {
       );
       const id = rows[0].id;
 
-      const rename = await app.inject({ method: "PATCH", url: `/api/masters/statuses/${id}`, payload: { name: "Sold" } });
+      const rename = await authedInject(app, { method: "PATCH", url: `/api/masters/statuses/${id}`, payload: { name: "Sold" } });
       expect(rename.statusCode).toBe(409);
 
-      const deactivate = await app.inject({ method: "PATCH", url: `/api/masters/statuses/${id}`, payload: { active: false } });
+      const deactivate = await authedInject(app, { method: "PATCH", url: `/api/masters/statuses/${id}`, payload: { active: false } });
       expect(deactivate.statusCode).toBe(409);
     });
   });

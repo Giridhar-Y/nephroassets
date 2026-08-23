@@ -14,7 +14,10 @@ export default defineConfig({
     // Points db/pool.ts's getPool() at the test Postgres instance (testGlobalSetup.ts /
     // db/testPostgres.ts) instead of trying to boot its own dev instance.
     env: {
-      DATABASE_URL: "postgres://postgres:postgres@localhost:55433/nephroassets_test"
+      DATABASE_URL: "postgres://postgres:postgres@localhost:55433/nephroassets_test",
+      // auth/session.ts requires this unconditionally (no fallback, by design — see its
+      // top-of-file comment) — set here the same way DATABASE_URL is, not in app code.
+      JWT_SECRET: "test-only-fixed-secret-never-used-outside-the-test-suite"
     }
   }
 });

@@ -58,7 +58,8 @@ export async function applySchema(): Promise<void> {
   // migration system, so new tables get their own `IF NOT EXISTS` bootstrap here instead —
   // safe to call every boot, and keeps schema.sql itself as the source of truth for what a
   // brand-new database gets. Must be kept in sync with the `centers`/`sub_classifications`/
-  // `statuses` definitions in schema.sql if either ever changes.
+  // `statuses`/`users`/`login_attempts`/`user_audit_log` definitions in schema.sql if any
+  // of them ever change.
   await db.query(`
     CREATE TABLE IF NOT EXISTS centers (
       id            BIGSERIAL PRIMARY KEY,
@@ -84,5 +85,39 @@ export async function applySchema(): Promise<void> {
       system_managed   BOOLEAN NOT NULL DEFAULT FALSE
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_statuses_name_ci ON statuses (LOWER(name));
+
+    CREATE TABLE IF NOT EXISTS users (
+      id                     BIGSERIAL PRIMARY KEY,
+      username               TEXT NOT NULL,
+      email                  TEXT NOT NULL,
+      password_hash          TEXT NOT NULL,
+      is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
+      status                 TEXT NOT NULL DEFAULT 'active',
+      must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_login_at          TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users (LOWER(username));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci ON users (LOWER(email));
+
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      id             BIGSERIAL PRIMARY KEY,
+      username       TEXT NOT NULL,
+      ip             TEXT,
+      success        BOOLEAN NOT NULL,
+      attempted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_login_attempts_username_time ON login_attempts (LOWER(username), attempted_at);
+    CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts (ip, attempted_at);
+
+    CREATE TABLE IF NOT EXISTS user_audit_log (
+      id               BIGSERIAL PRIMARY KEY,
+      actor_user_id    BIGINT REFERENCES users(id),
+      action           TEXT NOT NULL,
+      target_user_id   BIGINT REFERENCES users(id),
+      details          JSONB,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_audit_log_target ON user_audit_log (target_user_id, created_at);
   `);
 }

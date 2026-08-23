@@ -1,17 +1,17 @@
-// Brand mark: an "N" monogram with an isometric cube inlaid at its center — the cube
-// reads as the app's subject (a Fixed Asset Register), the N as its name. Solid #18181B
-// (the app's `ink` token) to match the sidebar wordmark it sits next to.
+// Brand mark: an "N"/"M" monogram with an isometric cube inlaid at its center — the
+// cube reads as the app's subject (a Fixed Asset Register), the letterform as its name.
+// Solid #18181B (the app's `ink` token). Traced (via OpenCV contour extraction, not
+// hand-drawn) from the source artwork at client/src/assets/logo.png, so the 5 polygons
+// below are exact — don't hand-edit the coordinates, re-trace from the source if the
+// mark ever changes.
 export function Logo({ size = 28, className }: { size?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" className={className} aria-hidden="true">
-      <rect x="10" y="14" width="17" height="72" fill="#18181B" />
-      <rect x="73" y="14" width="17" height="72" fill="#18181B" />
-      <polygon points="27,14 44,14 90,74 90,86 73,86 27,26" fill="#18181B" />
-      {/* White halo separates the cube from the diagonal band behind it */}
-      <polygon points="50,38 70,48 70,68 50,78 30,68 30,48" fill="#ffffff" />
-      <polygon points="50,40 66,48 50,56 34,48" fill="#18181B" stroke="#ffffff" strokeWidth="1.6" strokeLinejoin="round" />
-      <polygon points="34,48 50,56 50,72 34,64" fill="#18181B" stroke="#ffffff" strokeWidth="1.6" strokeLinejoin="round" />
-      <polygon points="50,56 66,48 66,64 50,72" fill="#18181B" stroke="#ffffff" strokeWidth="1.6" strokeLinejoin="round" />
+    <svg width={size} height={size} viewBox="0 0 819 819" className={className} aria-hidden="true">
+      <polygon points="1,0 0,818 163,818 163,258 312,168 158,1" fill="#18181B" />
+      <polygon points="656,0 656,560 507,650 658,819 819,819 819,1" fill="#18181B" />
+      <polygon points="408,159 221,271 410,383 598,271" fill="#18181B" />
+      <polygon points="205,309 205,538 388,647 388,418" fill="#18181B" />
+      <polygon points="614,309 431,418 431,647 614,537" fill="#18181B" />
     </svg>
   );
 }

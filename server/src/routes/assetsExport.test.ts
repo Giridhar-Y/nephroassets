@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsExportRoutes from "./assetsExport.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -68,7 +69,7 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-2");
     await insertAsset("EXP-3", { location: "Center-Other" });
 
-    const res = await app.inject({ method: "GET", url: "/api/assets/export" });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("spreadsheetml");
     expect(res.headers["content-disposition"]).toContain("attachment");
@@ -101,7 +102,7 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-4");
     await insertAsset("EXP-5", { location: "Center-Other" });
 
-    const res = await app.inject({ method: "GET", url: "/api/assets/export?center=Center-Export" });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
     expect(worksheet.rowCount).toBe(4);
     const dataRow = worksheet.getRow(4).values as unknown[];
@@ -112,7 +113,7 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-TOTALS-1", { qty: 2, c1_opening_cost: 10000 });
     await insertAsset("EXP-TOTALS-2", { qty: 3, c1_opening_cost: 25000, location: "Center-Other" });
 
-    const res = await app.inject({ method: "GET", url: "/api/assets/export?center=Center-Export" });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
     const totalsRow = worksheet.getRow(1);
     // Qty is column 10, C1 Opening Cost is column 13 (see EXPORT_COLUMNS order).
@@ -122,7 +123,7 @@ describe("Register Export: GET /api/assets/export", () => {
 
   it("blanks the totals row for non-numeric and non-totalable columns (Useful Life)", async () => {
     await insertAsset("EXP-BLANK-1", { useful_life_c1_years: 7 });
-    const res = await app.inject({ method: "GET", url: "/api/assets/export" });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
     const worksheet = await readWorkbook(res.rawPayload);
     const totalsRow = worksheet.getRow(1);
     expect(totalsRow.getCell(2).value).toBeNull(); // Sub Classification
@@ -132,7 +133,7 @@ describe("Register Export: GET /api/assets/export", () => {
   it("409s when financial year settings are missing", async () => {
     const db = await getPool();
     await db.query(`DELETE FROM settings`);
-    const res = await app.inject({ method: "GET", url: "/api/assets/export" });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
     expect(res.statusCode).toBe(409);
 
     await db.query(

@@ -16,7 +16,8 @@ import {
   LifecycleIcon,
   PanelCollapseIcon,
   PanelExpandIcon,
-  BookDatabaseIcon
+  BookDatabaseIcon,
+  AdminIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
@@ -33,6 +34,8 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
   { to: "/masters", label: "Masters", icon: BookDatabaseIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon }
 ];
+
+const ADMIN_NAV_ITEM = { to: "/admin", label: "Admin", icon: AdminIcon };
 
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();
@@ -85,9 +88,10 @@ function AsAtControl() {
 }
 
 export function Layout() {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+  const navItems = user?.isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
@@ -118,7 +122,7 @@ export function Layout() {
           </button>
         </div>
         <nav className="flex-1 space-y-1 px-3">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -141,8 +145,8 @@ export function Layout() {
             className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700 ${
               collapsed ? "justify-center px-0" : ""
             }`}
-            onClick={() => {
-              logout();
+            onClick={async () => {
+              await logout();
               navigate("/login", { replace: true });
             }}
           >

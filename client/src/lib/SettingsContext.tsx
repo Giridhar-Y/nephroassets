@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { fetchSettingsOrNull, updateSettings as updateSettingsApi } from "../api/client.js";
+import { useAuth } from "./AuthContext.js";
 import type { FySettings } from "./types.js";
 
 function todayIso(): string {
@@ -22,6 +23,7 @@ interface SettingsContextValue {
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [settings, setSettings] = useState<FySettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [notConfigured, setNotConfigured] = useState(false);
@@ -50,9 +52,22 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Every /api/* route needs a real session now (see server/src/auth/middleware.ts) —
+  // this Provider sits above <HashRouter> so it mounts on /login too, before there's
+  // any session to fetch settings with. Re-fetching whenever `user` changes (rather
+  // than once on mount) is what makes the settings load correctly right after signing
+  // in, instead of getting stuck on the 401 from that first, pre-login attempt; it also
+  // clears stale settings on sign-out.
   useEffect(() => {
+    if (!user) {
+      setSettings(null);
+      setNotConfigured(false);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     reload();
-  }, [reload]);
+  }, [user, reload]);
 
   const saveSettings = useCallback(async (next: FySettings) => {
     setError(null);

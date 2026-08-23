@@ -1,26 +1,30 @@
 import { useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { DEMO_PASSWORD, DEMO_USERNAME, useAuth } from "../lib/AuthContext.js";
-import { ErrorIcon, InfoIcon } from "../lib/icons.js";
+import { useAuth } from "../lib/AuthContext.js";
+import { ErrorIcon } from "../lib/icons.js";
 import { Logo } from "../components/Logo.js";
 
 export function LoginPage() {
-  const { isAuthenticated, login } = useAuth();
+  const { user, login } = useAuth();
   const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  if (isAuthenticated) {
+  if (user) {
+    if (user.mustChangePassword) return <Navigate to="/change-password" replace />;
     const from = (location.state as { from?: string } | null)?.from ?? "/register";
     return <Navigate to={from} replace />;
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!login(username, password)) {
-      setError("Incorrect username or password.");
-    }
+    setSubmitting(true);
+    setError(null);
+    const result = await login(username, password);
+    if (!result.ok) setError(result.error);
+    setSubmitting(false);
   }
 
   return (
@@ -30,7 +34,7 @@ export function LoginPage() {
           <Logo size={26} />
           <h1 className="text-lg font-bold tracking-tight text-ink">NephroAssets</h1>
         </div>
-        <p className="mt-1 text-sm text-gray-500">Sign in to preview the register.</p>
+        <p className="mt-1 text-sm text-gray-500">Sign in to your account.</p>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div className="flex flex-col gap-1">
@@ -41,6 +45,7 @@ export function LoginPage() {
               id="login-username"
               type="text"
               autoFocus
+              autoComplete="username"
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -54,6 +59,7 @@ export function LoginPage() {
             <input
               id="login-password"
               type="password"
+              autoComplete="current-password"
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -69,18 +75,12 @@ export function LoginPage() {
 
           <button
             type="submit"
-            className="w-full rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover"
+            disabled={submitting}
+            className="w-full rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
           >
-            Sign In
+            {submitting ? "Signing in…" : "Sign In"}
           </button>
         </form>
-
-        <p className="mt-6 flex items-start gap-1.5 rounded-md bg-accent-light px-3 py-2 text-xs text-accent-hover">
-          <InfoIcon fontSize={14} className="mt-0.5 shrink-0" />
-          <span>
-            Demo credentials — username <strong>{DEMO_USERNAME}</strong>, password <strong>{DEMO_PASSWORD}</strong>
-          </span>
-        </p>
       </div>
     </div>
   );

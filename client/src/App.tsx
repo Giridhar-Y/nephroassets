@@ -6,6 +6,8 @@ import { AuditReconciliationPage } from "./pages/AuditReconciliationPage.js";
 import { DepreciationPostingPage } from "./pages/DepreciationPostingPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
+import { ChangePasswordPage } from "./pages/ChangePasswordPage.js";
+import { AdminPage } from "./pages/AdminPage.js";
 import { TransfersPage } from "./pages/TransfersPage.js";
 import { CapitalizationPage } from "./pages/CapitalizationPage.js";
 import { DisposalPage } from "./pages/DisposalPage.js";
@@ -19,6 +21,7 @@ import { FiltersProvider } from "./lib/FiltersContext.js";
 import { AuthProvider } from "./lib/AuthContext.js";
 import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
+import { RequireAdmin } from "./components/RequireAdmin.js";
 import { ToastProvider } from "./components/Toast.js";
 
 export default function App() {
@@ -30,6 +33,7 @@ export default function App() {
           <HashRouter>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/change-password" element={<ChangePasswordPage />} />
               <Route
                 element={
                   <RequireAuth>
@@ -130,6 +134,14 @@ export default function App() {
                 <Route path="/settings" element={<SettingsPage />} />
                 {/* Also ungated — an admin should be able to set up master data before FY settings exist. */}
                 <Route path="/masters" element={<MastersPage />} />
+                <Route
+                  path="/admin"
+                  element={
+                    <RequireAdmin>
+                      <AdminPage />
+                    </RequireAdmin>
+                  }
+                />
               </Route>
             </Routes>
           </HashRouter>

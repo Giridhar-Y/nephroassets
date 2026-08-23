@@ -12,7 +12,8 @@ export default defineConfig({
     hookTimeout: 300_000,
     fileParallelism: false,
     env: {
-      DATABASE_URL: "postgres://postgres:postgres@localhost:55434/nephroassets_scale"
+      DATABASE_URL: "postgres://postgres:postgres@localhost:55434/nephroassets_scale",
+      JWT_SECRET: "test-only-fixed-secret-never-used-outside-the-test-suite"
     }
   }
 });

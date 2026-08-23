@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkUploadRoutes from "./bulkUpload.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 const HEADER =
@@ -45,7 +46,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       "BULK-2,,Bulk Asset Missing Sub,Active,2020-01-01,Center-A,5,5,1000,1000"
     ].join("\n");
 
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.processed).toBe(1);
@@ -59,14 +60,14 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   it("reports how many rows were added vs. updated", async () => {
     const first = [HEADER, "BULK-ADD,Test-Sub,First Asset,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
-    await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
+    await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
 
     const second = [
       HEADER,
       "BULK-ADD,Test-Sub,First Asset Updated,Active,2020-01-01,Center-A,5,5,1000,1000",
       "BULK-NEW,Test-Sub,Second Asset,Active,2020-01-01,Center-A,5,5,1000,1000"
     ].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
     const body = res.json();
     expect(body.processed).toBe(2);
     expect(body.added).toBe(1);
@@ -75,12 +76,12 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   it("re-uploading the same FAR ID updates the existing asset instead of erroring", async () => {
     const first = [HEADER, "BULK-3,Test-Sub,Original,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
-    await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
+    await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
 
     const second = [HEADER, "BULK-3,Test-Sub,Updated Description,Active,2020-01-01,Center-A,5,5,2000,2000"].join(
       "\n"
     );
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
     expect(res.json().processed).toBe(1);
 
     const db = await getPool();
@@ -91,7 +92,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
   });
 
   it("400s when no file is uploaded", async () => {
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...emptyMultipartPayload() });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...emptyMultipartPayload() });
     expect(res.statusCode).toBe(400);
   });
 
@@ -100,7 +101,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const csv = [withDisposalHeader, "BULK-MISMATCH-1,Test-Sub,Bad Combo,Under Repair,2020-01-01,Center-A,5,5,1000,1000,01-08-2026"].join(
       "\n"
     );
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/dateOfDisposal is set but status is "Under Repair"/);
@@ -108,7 +109,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   it('rejects status "Disposed" with no dateOfDisposal', async () => {
     const csv = [HEADER, "BULK-MISMATCH-2,Test-Sub,Bad Combo,Disposed,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/status is "Disposed" but dateOfDisposal is not set/);
@@ -118,7 +119,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const csv = [HEADER, "BULK-UNKNOWN,Not A Real Sub,Bad Combo,Not A Real Status,2020-01-01,Not-A-Real-Center,5,5,1000,1000"].join(
       "\n"
     );
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/Sub Classification "Not A Real Sub" not recognized/);
@@ -128,7 +129,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   it("matches a master value case-insensitively but stores the master list's own canonical casing", async () => {
     const csv = [HEADER, "BULK-CASING,test-sub,Casing Test,ACTIVE,2020-01-01,center-a,5,5,1000,1000"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     expect(res.json().processed).toBe(1);
 
     const db = await getPool();
@@ -143,7 +144,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const csv = [withAdditionsHeader, "BULK-MISMATCH-3,Test-Sub,Bad Combo,Active,2020-01-01,Center-A,5,5,1000,1000,5000"].join(
       "\n"
     );
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/dateOfAddition is required/);
@@ -155,7 +156,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       "BULK-DMY,Test-Sub,DD-MM-YYYY Asset,Active,25-12-2023,Center-A,5,5,1000,1000",
       "BULK-BAD,Test-Sub,Bad Date Asset,Active,31-13-2023,Center-A,5,5,1000,1000"
     ].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.processed).toBe(1);
@@ -169,7 +170,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   it("also accepts a plain ISO date (e.g. a real Date-typed .xlsx cell already normalized)", async () => {
     const csv = [HEADER, "BULK-ISO,Test-Sub,ISO Date Asset,Active,2023-12-25,Center-A,5,5,1000,1000"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     expect(res.json().processed).toBe(1);
 
     const db = await getPool();
@@ -183,14 +184,14 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       "BULK-1,Test-Sub,Bulk Asset One,Active,2020-01-01,Center-A,5,5,1000,1000",
       "BULK-2,,Bulk Asset Missing Sub,Active,2020-01-01,Center-A,5,5,1000,1000"
     ].join("\n");
-    await app.inject({ method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
 
     const second = [
       HEADER,
       "BULK-1,Test-Sub,Bulk Asset One Updated,Active,2020-01-01,Center-A,5,5,1000,1000",
       "BULK-4,Test-Sub,Bulk Asset Four,Active,2020-01-01,Center-A,5,5,1000,1000"
     ].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/assets/bulk-upload?preview=true", ...csvPayload(second) });
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload?preview=true", ...csvPayload(second) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.summary).toEqual({ new: 1, update: 1, error: 0 });

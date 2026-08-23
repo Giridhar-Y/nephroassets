@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkTransfersRoutes from "./bulkTransfers.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 async function insertAsset(farId: string) {
@@ -49,7 +50,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     const csv = [HEADER, "BXFER-1,Center-B,2026-05-01", "BXFER-2,Center-C,2026-06-01", "BXFER-9,Center-D,2026-05-01"].join(
       "\n"
     );
-    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.totalRows).toBe(3);
@@ -72,7 +73,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
   });
 
   it("400s when no file is uploaded", async () => {
-    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...emptyMultipartPayload() });
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...emptyMultipartPayload() });
     expect(res.statusCode).toBe(400);
   });
 
@@ -80,7 +81,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     await insertAsset("BXFER-1");
 
     const csv = [HEADER, "BXFER-1,Center-B,2026-05-01", "BXFER-9,Center-D,2026-05-01"].join("\n");
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/transfers/bulk-upload?preview=true",
       ...csvPayload(csv)
@@ -101,7 +102,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
   it("rejects a toLocation that isn't an active Masters center", async () => {
     await insertAsset("BXFER-BADCENTER");
     const csv = [HEADER, "BXFER-BADCENTER,Not-A-Real-Center,2026-05-01"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(0);
     expect(body.errors[0].message).toMatch(/Location "Not-A-Real-Center" not recognized/);
@@ -110,7 +111,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
   it("matches a center case-insensitively but stores the master list's own canonical casing", async () => {
     await insertAsset("BXFER-CASING");
     const csv = [HEADER, "BXFER-CASING,center-b,2026-05-01"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
     expect(res.json().processed).toBe(1);
 
     const db = await getPool();
@@ -123,7 +124,7 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     await insertAsset("BXFER-BAD");
 
     const csv = [HEADER, "BXFER-DMY,Center-B,05-05-2026", "BXFER-BAD,Center-B,05-13-2026"].join("\n");
-    const res = await app.inject({ method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
     expect(body.processed).toBe(1);
     expect(body.errors[0].message).toMatch(/Invalid date '05-13-2026' — expected DD-MM-YYYY/);

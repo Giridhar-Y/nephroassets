@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import transfersRoutes from "./transfers.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 async function insertAsset(farId: string, description = "Transfer History Asset") {
   const db = await getPool();
@@ -41,7 +42,7 @@ describe("Transfers", () => {
 
   it("creates a transfer and moves the asset's revised location", async () => {
     await insertAsset("XFER-1");
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-1"], toLocation: "Center-B", transactionDate: "2026-05-01" }
@@ -55,7 +56,7 @@ describe("Transfers", () => {
 
   it("rejects a toLocation that isn't an active Masters center", async () => {
     await insertAsset("XFER-BADCENTER");
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-BADCENTER"], toLocation: "Not-A-Real-Center", transactionDate: "2026-05-01" }
@@ -66,7 +67,7 @@ describe("Transfers", () => {
 
   it("matches a center case-insensitively but stores the master list's own canonical casing", async () => {
     await insertAsset("XFER-CASING");
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-CASING"], toLocation: "center-b", transactionDate: "2026-05-01" }
@@ -80,18 +81,18 @@ describe("Transfers", () => {
 
   it("GET /api/transfers lists history newest first, with asset description", async () => {
     await insertAsset("XFER-2");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-2"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-2"], toLocation: "Center-C", transactionDate: "2026-06-01" }
     });
 
-    const res = await app.inject({ method: "GET", url: "/api/transfers" });
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers" });
     expect(res.statusCode).toBe(200);
     const { items } = res.json();
     expect(items).toHaveLength(2);
@@ -103,18 +104,18 @@ describe("Transfers", () => {
   it("filters history by FAR ID search", async () => {
     await insertAsset("XFER-3");
     await insertAsset("OTHER-1");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-3"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["OTHER-1"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
 
-    const res = await app.inject({ method: "GET", url: "/api/transfers?search=XFER" });
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers?search=XFER" });
     const { items } = res.json();
     expect(items).toHaveLength(1);
     expect(items[0].farId).toBe("XFER-3");
@@ -122,18 +123,18 @@ describe("Transfers", () => {
 
   it("filters history by destination location (Moved To)", async () => {
     await insertAsset("XFER-5");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-5"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-5"], toLocation: "Center-C", transactionDate: "2026-06-01" }
     });
 
-    const res = await app.inject({ method: "GET", url: "/api/transfers?location=Center-B" });
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers?location=Center-B" });
     const { items } = res.json();
     expect(items).toHaveLength(1);
     expect(items[0].location).toBe("Center-B");
@@ -141,23 +142,23 @@ describe("Transfers", () => {
 
   it("filters history by multiple destination locations at once", async () => {
     await insertAsset("XFER-9");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-9"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-9"], toLocation: "Center-C", transactionDate: "2026-06-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-9"], toLocation: "Center-D", transactionDate: "2026-07-01" }
     });
 
-    const res = await app.inject({ method: "GET", url: "/api/transfers?location=Center-B,Center-D" });
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers?location=Center-B,Center-D" });
     const { items } = res.json();
     const locations = items.map((i: { location: string }) => i.location).sort();
     expect(locations).toEqual(["Center-B", "Center-D"]);
@@ -165,18 +166,18 @@ describe("Transfers", () => {
 
   it("filters history by transaction date range", async () => {
     await insertAsset("XFER-6");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-6"], toLocation: "Center-B", transactionDate: "2026-01-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-6"], toLocation: "Center-C", transactionDate: "2026-06-01" }
     });
 
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "GET",
       url: "/api/transfers?transactionDateFrom=2026-05-01&transactionDateTo=2026-07-01"
     });
@@ -188,18 +189,18 @@ describe("Transfers", () => {
   it("filters history by asset description search", async () => {
     await insertAsset("XFER-7", "Dialysis Machine");
     await insertAsset("XFER-8", "Office Chair");
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-7"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
-    await app.inject({
+    await authedInject(app, {
       method: "POST",
       url: "/api/transfers",
       payload: { farIds: ["XFER-8"], toLocation: "Center-B", transactionDate: "2026-05-01" }
     });
 
-    const res = await app.inject({ method: "GET", url: "/api/transfers?descriptionSearch=dialysis" });
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers?descriptionSearch=dialysis" });
     const { items } = res.json();
     expect(items).toHaveLength(1);
     expect(items[0].farId).toBe("XFER-7");
@@ -208,19 +209,19 @@ describe("Transfers", () => {
   it("paginates with a cursor", async () => {
     await insertAsset("XFER-4");
     for (let i = 1; i <= 3; i++) {
-      await app.inject({
+      await authedInject(app, {
         method: "POST",
         url: "/api/transfers",
         payload: { farIds: ["XFER-4"], toLocation: `Center-${i}`, transactionDate: "2026-05-01" }
       });
     }
 
-    const first = await app.inject({ method: "GET", url: "/api/transfers?limit=2" });
+    const first = await authedInject(app, { method: "GET", url: "/api/transfers?limit=2" });
     const firstBody = first.json();
     expect(firstBody.items).toHaveLength(2);
     expect(firstBody.nextCursor).not.toBeNull();
 
-    const second = await app.inject({ method: "GET", url: `/api/transfers?limit=2&cursor=${firstBody.nextCursor}` });
+    const second = await authedInject(app, { method: "GET", url: `/api/transfers?limit=2&cursor=${firstBody.nextCursor}` });
     const secondBody = second.json();
     expect(secondBody.items).toHaveLength(1);
     expect(secondBody.nextCursor).toBeNull();

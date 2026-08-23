@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkMastersRoutes from "./bulkMasters.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 describe("Bulk Masters", () => {
@@ -30,7 +31,7 @@ describe("Bulk Masters", () => {
 
   describe("Centers: /api/masters/centers/bulk-upload", () => {
     it("400s when no file is uploaded", async () => {
-      const res = await app.inject({ method: "POST", url: "/api/masters/centers/bulk-upload", ...emptyMultipartPayload() });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/centers/bulk-upload", ...emptyMultipartPayload() });
       expect(res.statusCode).toBe(400);
     });
 
@@ -39,7 +40,7 @@ describe("Bulk Masters", () => {
       await db.query(`INSERT INTO centers (code, description) VALUES ('Center-001', 'Old desc')`);
 
       const csv = ["code,description,active", "center-001,New desc,true", "Center-026,Fresh site,"].join("\n");
-      const res = await app.inject({ method: "POST", url: "/api/masters/centers/bulk-upload", ...csvPayload(csv) });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/centers/bulk-upload", ...csvPayload(csv) });
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body).toMatchObject({ totalRows: 2, processed: 2, added: 1, updated: 1, errors: [] });
@@ -53,7 +54,7 @@ describe("Bulk Masters", () => {
 
     it("rejects a duplicate code within the same file", async () => {
       const csv = ["code,description", "Center-050,First", "Center-050,Second"].join("\n");
-      const res = await app.inject({ method: "POST", url: "/api/masters/centers/bulk-upload?preview=true", ...csvPayload(csv) });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/centers/bulk-upload?preview=true", ...csvPayload(csv) });
       const body = res.json();
       expect(body.summary).toEqual({ new: 1, update: 0, error: 1 });
       expect(body.rows[1].message).toMatch(/Duplicate Code "Center-050"/);
@@ -68,12 +69,12 @@ describe("Bulk Masters", () => {
       );
 
       const csv = ["code,active", "Center-USED,false"].join("\n");
-      const preview = await app.inject({ method: "POST", url: "/api/masters/centers/bulk-upload?preview=true", ...csvPayload(csv) });
+      const preview = await authedInject(app, { method: "POST", url: "/api/masters/centers/bulk-upload?preview=true", ...csvPayload(csv) });
       const previewBody = preview.json();
       expect(previewBody.summary).toEqual({ new: 0, update: 1, error: 0 });
       expect(previewBody.rows[0].message).toMatch(/Will deactivate — currently used by 1 asset/);
 
-      const commit = await app.inject({ method: "POST", url: "/api/masters/centers/bulk-upload", ...csvPayload(csv) });
+      const commit = await authedInject(app, { method: "POST", url: "/api/masters/centers/bulk-upload", ...csvPayload(csv) });
       expect(commit.json()).toMatchObject({ processed: 1, updated: 1, errors: [] });
       const { rows } = await db.query(`SELECT active FROM centers WHERE code = 'Center-USED'`);
       expect(rows[0].active).toBe(false);
@@ -86,7 +87,7 @@ describe("Bulk Masters", () => {
       await db.query(`INSERT INTO sub_classifications (name) VALUES ('IT Equipment')`);
 
       const csv = ["name,active", "IT Equipment,false", "X-Ray Machines,"].join("\n");
-      const res = await app.inject({ method: "POST", url: "/api/masters/sub-classifications/bulk-upload", ...csvPayload(csv) });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications/bulk-upload", ...csvPayload(csv) });
       const body = res.json();
       expect(body).toMatchObject({ added: 1, updated: 1, errors: [] });
 
@@ -104,7 +105,7 @@ describe("Bulk Masters", () => {
       await db.query(`INSERT INTO statuses (name, system_managed) VALUES ('Disposed', TRUE)`);
 
       const csv = ["name,active", "Disposed,false"].join("\n");
-      const res = await app.inject({ method: "POST", url: "/api/masters/statuses/bulk-upload", ...csvPayload(csv) });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/statuses/bulk-upload", ...csvPayload(csv) });
       const body = res.json();
       expect(body.processed).toBe(0);
       expect(body.errors[0].message).toMatch(/'Disposed' is system-managed and cannot be modified via Bulk Upload/);
@@ -115,7 +116,7 @@ describe("Bulk Masters", () => {
 
     it("creates a new status", async () => {
       const csv = ["name", "Loaned Out"].join("\n");
-      const res = await app.inject({ method: "POST", url: "/api/masters/statuses/bulk-upload", ...csvPayload(csv) });
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/statuses/bulk-upload", ...csvPayload(csv) });
       expect(res.json()).toMatchObject({ added: 1, updated: 0, errors: [] });
     });
   });

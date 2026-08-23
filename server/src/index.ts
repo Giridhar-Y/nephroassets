@@ -1,3 +1,4 @@
+import "./localDevSecret.js"; // must stay first — see that file's comment
 import { buildApp } from "./app.js";
 import { applySchema } from "./db/pool.js";
 import { seed, seedMasters } from "./db/seed.js";

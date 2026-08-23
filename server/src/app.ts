@@ -2,8 +2,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
+import { authGateHook } from "./auth/middleware.js";
+import authRoutes from "./routes/auth.js";
+import adminUsersRoutes from "./routes/adminUsers.js";
 import assetsRoutes from "./routes/assets.js";
 import metaRoutes from "./routes/meta.js";
 import settingsRoutes from "./routes/settings.js";
@@ -23,8 +27,28 @@ import bulkMastersRoutes from "./routes/bulkMasters.js";
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
 
-  await app.register(cors, { origin: true });
+  // credentials:true is what makes the browser actually send/accept the session cookie
+  // on cross-origin requests — needed in local dev, where Vite's client dev server
+  // (5173) and this API (4000) are different origins even though Vite's own /api proxy
+  // makes most requests same-origin in practice; harmless in production, where Vercel's
+  // rewrites put both behind one origin anyway.
+  await app.register(cors, { origin: true, credentials: true });
+  await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
+
+  // Populated by authGateHook below for every authenticated request; stays null for the
+  // handful of public paths (login, health) that never reach a valid session.
+  app.decorateRequest("user", null);
+  // Registered globally rather than per-route: every /api/* route needs a valid session
+  // by default now (real auth replacing the old client-side-only demo gate), with a
+  // small, explicit allowlist (PUBLIC_PATHS in auth/middleware.ts) rather than opting
+  // each route in one at a time — the safer default for a data API, and it means a new
+  // route file added later is protected automatically instead of by remembering to add
+  // a guard to it.
+  app.addHook("preHandler", authGateHook);
+
+  await app.register(authRoutes);
+  await app.register(adminUsersRoutes);
   await app.register(assetsRoutes);
   await app.register(metaRoutes);
   await app.register(settingsRoutes);

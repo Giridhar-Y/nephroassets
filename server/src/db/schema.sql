@@ -85,6 +85,54 @@ CREATE TABLE statuses (
 );
 CREATE UNIQUE INDEX idx_statuses_name_ci ON statuses (LOWER(name));
 
+-- Real per-user auth (replaces the old client-side-only demo gate). must_change_password
+-- is set whenever an admin hands out a temporary password (new user, or a reset) — the
+-- user can log in with it, but every other API route is blocked until they change it
+-- (see routes/auth.ts's change-password route and app.ts's requireAuth hook).
+CREATE TABLE users (
+  id                     BIGSERIAL PRIMARY KEY,
+  username               TEXT NOT NULL,
+  email                  TEXT NOT NULL,
+  password_hash          TEXT NOT NULL,
+  is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at          TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_users_username_ci ON users (LOWER(username));
+CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
+
+-- Login lockout tracking. Keyed by the *submitted* username string, not a users.id FK —
+-- deliberately recorded even for a username that doesn't exist, so the lockout behavior
+-- (and response) is identical whether or not the account is real. Never records the
+-- attempted password. A DB table (not an in-memory counter) because production runs as
+-- Vercel serverless functions with no shared memory across invocations/instances.
+CREATE TABLE login_attempts (
+  id             BIGSERIAL PRIMARY KEY,
+  username       TEXT NOT NULL,
+  ip             TEXT,
+  success        BOOLEAN NOT NULL,
+  attempted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_login_attempts_username_time ON login_attempts (LOWER(username), attempted_at);
+-- Serves isIpLockedOut's query (rateLimit.ts) — the per-IP counterpart to the index above.
+CREATE INDEX idx_login_attempts_ip_time ON login_attempts (ip, attempted_at);
+
+-- Every admin action against the users table (create/disable/re-enable/reset
+-- password/role change) — see routes/adminUsers.ts. `details` is free-form JSON per
+-- action (e.g. { "from": false, "to": true } for a role change) rather than a fixed
+-- column set, since each action logs different fields.
+CREATE TABLE user_audit_log (
+  id               BIGSERIAL PRIMARY KEY,
+  actor_user_id    BIGINT REFERENCES users(id),
+  action           TEXT NOT NULL,
+  target_user_id   BIGINT REFERENCES users(id),
+  details          JSONB,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_user_audit_log_target ON user_audit_log (target_user_id, created_at);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

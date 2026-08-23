@@ -6,6 +6,7 @@ import { getPool } from "../db/pool.js";
 import { computeComponent } from "../calc/engine.js";
 import reportsRoutes from "../routes/reports.js";
 import assetsRoutes from "../routes/assets.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 const ASSET_COUNT = Number(process.env.LOADTEST_COUNT ?? 250_000);
 const AS_AT = "2026-08-17";
@@ -78,7 +79,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
       }
 
       const start = performance.now();
-      const res = await app.inject({ method: "GET", url: `/api/reports/depreciation-posting?asAt=${AS_AT}` });
+      const res = await authedInject(app, { method: "GET", url: `/api/reports/depreciation-posting?asAt=${AS_AT}` });
       const elapsedMs = performance.now() - start;
       console.log(`Depreciation Posting Summary: ${elapsedMs.toFixed(0)}ms`);
 
@@ -100,7 +101,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     ["some disposals not yet effective", "2026-06-01"]
   ])("Audit Reconciliation ties out at full scale (%s)", async (_label, asAt) => {
     const start = performance.now();
-    const res = await app.inject({ method: "GET", url: `/api/reports/audit-reconciliation?asAt=${asAt}` });
+    const res = await authedInject(app, { method: "GET", url: `/api/reports/audit-reconciliation?asAt=${asAt}` });
     const elapsedMs = performance.now() - start;
     console.log(`Audit Reconciliation (${asAt}): ${elapsedMs.toFixed(0)}ms, ${res.json().items.length} rows`);
 
@@ -138,7 +139,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     }
 
     const start = performance.now();
-    const res = await app.inject({
+    const res = await authedInject(app, {
       method: "GET",
       url: `/api/reports/location-summary?location=${center}&asAt=${AS_AT}`
     });
@@ -154,7 +155,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
 
   it("Register: first page and a center-filtered page both stay fast", async () => {
     const start1 = performance.now();
-    const page1 = await app.inject({ method: "GET", url: `/api/assets?asAt=${AS_AT}&limit=150` });
+    const page1 = await authedInject(app, { method: "GET", url: `/api/assets?asAt=${AS_AT}&limit=150` });
     const elapsed1 = performance.now() - start1;
     console.log(`Register first page: ${elapsed1.toFixed(0)}ms`);
     expect(page1.statusCode).toBe(200);
@@ -163,7 +164,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
 
     const center = CENTERS[42]!;
     const start2 = performance.now();
-    const page2 = await app.inject({
+    const page2 = await authedInject(app, {
       method: "GET",
       url: `/api/assets?asAt=${AS_AT}&center=${center}&limit=150`
     });
@@ -174,7 +175,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
 
     // Changing AS_AT must stay fast too — same page, different cut-off date.
     const start3 = performance.now();
-    const page3 = await app.inject({ method: "GET", url: `/api/assets?asAt=2026-06-01&limit=150` });
+    const page3 = await authedInject(app, { method: "GET", url: `/api/assets?asAt=2026-06-01&limit=150` });
     const elapsed3 = performance.now() - start3;
     console.log(`Register after AS_AT change: ${elapsed3.toFixed(0)}ms`);
     expect(page3.statusCode).toBe(200);

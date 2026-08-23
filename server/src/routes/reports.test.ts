@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
+import { authedInject } from "../testHelpers/authTestUtils.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -140,7 +141,7 @@ describe("Audit Reconciliation report", () => {
   });
 
   it("passes both checks for a clean sub classification", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/reports/audit-reconciliation" });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     const clean = body.items.find(
@@ -155,7 +156,7 @@ describe("Audit Reconciliation report", () => {
   });
 
   it("fails both checks for a broken sub classification, with the correct mismatch amount", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/reports/audit-reconciliation" });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const broken = body.items.find(
       (i: { subClassification: string; component: string }) =>
@@ -176,7 +177,7 @@ describe("Audit Reconciliation report", () => {
   });
 
   it("keeps C1 and C2 independent: Test-Broken's C2 side is untouched and passes", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/reports/audit-reconciliation" });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const brokenC2 = body.items.find(
       (i: { subClassification: string; component: string }) =>
@@ -188,7 +189,7 @@ describe("Audit Reconciliation report", () => {
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/reports/audit-reconciliation" });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const futureDisposal = body.items.find(
       (i: { subClassification: string; component: string }) =>
