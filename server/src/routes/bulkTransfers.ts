@@ -93,8 +93,15 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     if (validRows.length > 0) {
       const db = await getPool();
       const client = await db.connect();
+      // Each row writes two statements (the transfer history row, then the asset's
+      // denormalized current-location columns) that must land together or not at all —
+      // so each row gets its own BEGIN...COMMIT/ROLLBACK, rather than one transaction for
+      // the whole loop as this used to be. That isolates a DB-level failure on one row to
+      // just that row (reported as an error, already-succeeded rows stand) while still
+      // keeping each row's own two writes atomic. Mirrors bulkMasters.ts's per-row
+      // isolation, adapted for the one route here whose row-level write isn't a single
+      // statement.
       try {
-        await client.query("BEGIN");
         for (const { row, data } of validRows) {
           const { rows: exists } = await client.query<{ date_acquired: string }>(
             `SELECT date_acquired FROM assets WHERE far_id = $1`,
@@ -112,22 +119,25 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             });
             continue;
           }
-          await client.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`, [
-            data.farId,
-            data.transactionDate,
-            data.toLocation
-          ]);
-          await client.query(`UPDATE assets SET revised_location = $1, last_date_of_transaction = $2 WHERE far_id = $3`, [
-            data.toLocation,
-            data.transactionDate,
-            data.farId
-          ]);
-          processed++;
+          try {
+            await client.query("BEGIN");
+            await client.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`, [
+              data.farId,
+              data.transactionDate,
+              data.toLocation
+            ]);
+            await client.query(`UPDATE assets SET revised_location = $1, last_date_of_transaction = $2 WHERE far_id = $3`, [
+              data.toLocation,
+              data.transactionDate,
+              data.farId
+            ]);
+            await client.query("COMMIT");
+            processed++;
+          } catch (err) {
+            await client.query("ROLLBACK");
+            errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
+          }
         }
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
       } finally {
         client.release();
       }

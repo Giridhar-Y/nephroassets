@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import cookie from "@fastify/cookie";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import bulkUploadRoutes from "./bulkUpload.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
@@ -203,6 +203,83 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const db = await getPool();
     const { rows } = await db.query(`SELECT date_acquired FROM assets WHERE far_id = 'BULK-ISO'`);
     expect(String(rows[0].date_acquired)).toMatch(/^2023-12-25/);
+  });
+
+  it("rejects a duplicate FAR ID within the same file, keeping the first row's values", async () => {
+    const csv = [
+      HEADER,
+      "BULK-DUP,Test-Sub,First Occurrence,Active,2020-01-01,Center-A,5,5,1000,1000",
+      "BULK-DUP,Test-Sub,Second Occurrence,Active,2020-01-01,Center-A,5,5,9999,9999"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.processed).toBe(1);
+    expect(body.added).toBe(1);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors[0].message).toMatch(/Duplicate FAR ID "BULK-DUP" — already appears earlier in this file/);
+
+    // The first occurrence's values are what actually got written, not silently
+    // overwritten by the (rejected) second one.
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT asset_description, c1_opening_cost FROM assets WHERE far_id = 'BULK-DUP'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].asset_description).toBe("First Occurrence");
+    expect(rows[0].c1_opening_cost).toBe("1000");
+  });
+
+  it("preview mode also catches a duplicate FAR ID within the file, with accurate new/update counts", async () => {
+    const csv = [
+      HEADER,
+      "BULK-DUP-PREVIEW,Test-Sub,First Occurrence,Active,2020-01-01,Center-A,5,5,1000,1000",
+      "BULK-DUP-PREVIEW,Test-Sub,Second Occurrence,Active,2020-01-01,Center-A,5,5,9999,9999"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload?preview=true", ...csvPayload(csv) });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // Exactly one "new" row (not two, which would misleadingly imply two independent
+    // assets are about to be created), plus the duplicate reported as an error.
+    expect(body.summary).toEqual({ new: 1, update: 0, error: 1 });
+    const errorRow = body.rows.find((r: { status: string }) => r.status === "error");
+    expect(errorRow.message).toMatch(/Duplicate FAR ID "BULK-DUP-PREVIEW" — already appears earlier in this file/);
+  });
+
+  it("isolates a DB-level failure on one row: earlier successful rows in the same file survive, and the failing row is reported individually — not a schema-validation failure, the row is schema-valid but its DB write throws", async () => {
+    const db = await getPool();
+    const originalQuery = db.query.bind(db);
+    const spy = vi.spyOn(db, "query").mockImplementation((...args: unknown[]) => {
+      const sql = args[0];
+      const params = args[1] as unknown[] | undefined;
+      if (typeof sql === "string" && sql.includes("INSERT INTO assets") && params?.[0] === "BULK-DB-FAIL") {
+        return Promise.reject(new Error("simulated DB-level failure"));
+      }
+      return (originalQuery as (...a: unknown[]) => unknown)(...args);
+    });
+
+    try {
+      const csv = [
+        HEADER,
+        "BULK-DB-OK-1,Test-Sub,Before The Failure,Active,2020-01-01,Center-A,5,5,1000,1000",
+        "BULK-DB-FAIL,Test-Sub,Fails At The DB,Active,2020-01-01,Center-A,5,5,1000,1000",
+        "BULK-DB-OK-2,Test-Sub,After The Failure,Active,2020-01-01,Center-A,5,5,1000,1000"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.totalRows).toBe(3);
+      expect(body.processed).toBe(2);
+      expect(body.added).toBe(2);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].farId).toBe("BULK-DB-FAIL");
+      expect(body.errors[0].message).toMatch(/simulated DB-level failure/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Both rows on either side of the failing one actually made it into the database —
+    // the old whole-transaction-rollback behavior would have discarded BULK-DB-OK-1 too.
+    const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id LIKE 'BULK-DB-%' ORDER BY far_id`);
+    expect(rows.map((r: { far_id: string }) => r.far_id)).toEqual(["BULK-DB-OK-1", "BULK-DB-OK-2"]);
   });
 
   it("preview mode classifies new vs. update rows without writing anything", async () => {

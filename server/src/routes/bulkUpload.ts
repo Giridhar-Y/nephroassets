@@ -34,6 +34,31 @@ async function validateAgainstMasters(
   return { validRows: stillValid, errors: allErrors };
 }
 
+// Rejects the second and later occurrence of the same FAR ID within one uploaded file.
+// Without this, two rows for the same FAR ID both pass schema/Masters validation, and the
+// commit loop's INSERT ... ON CONFLICT DO UPDATE lets the last one silently win — the
+// first row's values vanish with no error, and Preview mode would misleadingly count both
+// as separate "new" rows even though only one asset ever ends up existing. Same seenKeys
+// pattern bulkMasters.ts already uses for Centers/Sub Classifications/Statuses.
+function rejectDuplicateFarIds(
+  validRows: Array<{ row: number; data: BulkAssetRowInput }>,
+  errors: RowError[]
+): { validRows: Array<{ row: number; data: BulkAssetRowInput }>; errors: RowError[] } {
+  const seen = new Set<string>();
+  const stillValid: Array<{ row: number; data: BulkAssetRowInput }> = [];
+  const allErrors = [...errors];
+  for (const { row, data } of validRows) {
+    const key = data.farId.toLowerCase();
+    if (seen.has(key)) {
+      allErrors.push({ row, farId: data.farId, message: `Duplicate FAR ID "${data.farId}" — already appears earlier in this file.` });
+      continue;
+    }
+    seen.add(key);
+    stillValid.push({ row, data });
+  }
+  return { validRows: stillValid, errors: allErrors };
+}
+
 export default async function bulkUploadRoutes(app: FastifyInstance) {
   // Bulk Uploads: parse a CSV/XLSX of assets (columns named after the shared AssetInput
   // fields, e.g. farId, subClassification, c1OpeningCost…), validate every row, and
@@ -62,6 +87,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
+    ({ validRows, errors } = rejectDuplicateFarIds(validRows, errors));
     ({ validRows, errors } = await validateAgainstMasters(validRows, errors));
 
     // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID
@@ -85,22 +111,31 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       return mergePreviewRows(classified, errors);
     }
 
+    // Captured before the commit loop below can push more entries into `errors`, so a
+    // row that fails at the DB-write step isn't double-counted (once as a valid row,
+    // once as an error) — same pattern bulkTransfers.ts/bulkDisposals.ts already use.
+    const totalRows = validRows.length + errors.length;
     let processed = 0;
     let added = 0;
     let updated = 0;
     if (validRows.length > 0) {
       const db = await getPool();
-      const client = await db.connect();
       const updateAssignments = ASSET_UPSERT_COLUMNS.filter((c) => c !== "far_id")
         .map((c) => `${c} = EXCLUDED.${c}`)
         .join(", ");
-      try {
-        await client.query("BEGIN");
-        for (const { data } of validRows) {
+      // Each row's write is its own statement (a single INSERT ... ON CONFLICT), so it's
+      // already atomic on its own — no explicit transaction needed. Isolating the
+      // try/catch per row (rather than wrapping the whole loop in one BEGIN...COMMIT,
+      // as this used to) means a DB-level failure on one row reports just that row as an
+      // error and leaves every already-succeeded row standing, matching this route's own
+      // "rows that fail validation are reported but don't block the valid rows" contract
+      // for DB-level failures too, not just schema ones. Mirrors bulkMasters.ts's commit
+      // loop, which never had this gap.
+      for (const { row, data } of validRows) {
+        try {
           // `xmax = 0` on the returned row is Postgres's own way of telling an INSERT
-          // from an ON CONFLICT UPDATE — reused here (rather than a pre-check SELECT) so
-          // two rows in the same file with the same FAR ID are still each counted right.
-          const { rows: written } = await client.query<{ inserted: boolean }>(
+          // from an ON CONFLICT UPDATE.
+          const { rows: written } = await db.query<{ inserted: boolean }>(
             `INSERT INTO assets (${ASSET_UPSERT_COLUMNS.join(", ")})
              VALUES (${ASSET_UPSERT_COLUMNS.map((_, i) => `$${i + 1}`).join(", ")})
              ON CONFLICT (far_id) DO UPDATE SET ${updateAssignments}
@@ -110,16 +145,12 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
           if (written[0]?.inserted) added++;
           else updated++;
           processed++;
+        } catch (err) {
+          errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
         }
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
       }
     }
 
-    return { totalRows: validRows.length + errors.length, processed, added, updated, errors };
+    return { totalRows, processed, added, updated, errors };
   });
 }

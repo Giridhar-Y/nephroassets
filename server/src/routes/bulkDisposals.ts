@@ -77,13 +77,16 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
     let processed = 0;
     if (validRows.length > 0) {
       const db = await getPool();
-      const client = await db.connect();
-      try {
-        await client.query("BEGIN");
-        for (const { row, data } of validRows) {
-          const written = await applyFullDisposal(client, data.farId, data.dateOfDisposal, data.saleValue);
+      // Each row's write (applyFullDisposal) is a single UPDATE statement, already atomic
+      // on its own — no explicit transaction needed. try/catch is per row (rather than
+      // wrapping the whole loop in one BEGIN...COMMIT, as this used to be) so a DB-level
+      // failure on one row reports just that row as an error and leaves every
+      // already-succeeded row standing. Mirrors bulkMasters.ts's commit loop.
+      for (const { row, data } of validRows) {
+        try {
+          const written = await applyFullDisposal(db, data.farId, data.dateOfDisposal, data.saleValue);
           if (!written) {
-            const { rows: check } = await client.query<{ date_of_disposal: string | null; date_acquired: string }>(
+            const { rows: check } = await db.query<{ date_of_disposal: string | null; date_acquired: string }>(
               `SELECT date_of_disposal, date_acquired FROM assets WHERE far_id = $1`,
               [data.farId]
             );
@@ -99,13 +102,9 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             continue;
           }
           processed++;
+        } catch (err) {
+          errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
         }
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
       }
     }
 
