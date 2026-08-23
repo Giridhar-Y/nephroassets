@@ -6,6 +6,7 @@ import {
   logout as apiLogout,
   type AuthUser
 } from "../api/client.js";
+import { clearPersistedUiState } from "./persistedUiState.js";
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -40,7 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // /login, instead of leaving the sidebar rendered as if still signed in while every
   // data fetch quietly fails underneath it.
   useEffect(() => {
-    const onUnauthenticated = () => setUser(null);
+    const onUnauthenticated = () => {
+      setUser(null);
+      clearPersistedUiState();
+    };
     window.addEventListener("auth:unauthenticated", onUnauthenticated);
     return () => window.removeEventListener("auth:unauthenticated", onUnauthenticated);
   }, []);
@@ -66,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // ignored
     } finally {
       setUser(null);
+      clearPersistedUiState();
     }
   };
 

@@ -1,7 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "./AuthContext.js";
+import { AuthProvider, useAuth } from "./AuthContext.js";
 import { RequireAuth } from "../components/RequireAuth.js";
 import { fetchAdminUsers, login } from "../api/client.js";
 
@@ -100,5 +100,100 @@ describe("AuthContext: session dies mid-use (no page reload)", () => {
     // catches this) — the point here is only whether request() dispatched the event.
     await expect(login("someone", "wrong-password")).rejects.toThrow();
     expect(dispatched).toBe(false);
+  });
+});
+
+// Covers the fix in persistedUiState.ts + AuthContext.tsx: client-only UI state (Register
+// filters, column layout, sidebar collapsed, and anything added later that follows the
+// same "nephroassets."-prefixed naming convention) must not survive a logout on a shared/
+// kiosk browser — otherwise the next person to sign in sees the previous user's filters.
+// Seeds both storages with a mix of prefixed and unrelated keys so these tests also prove
+// the sweep doesn't overreach.
+describe("AuthContext: clears persisted client UI state on logout", () => {
+  function seedStorage() {
+    localStorage.setItem("nephroassets.register.myView", "{}");
+    localStorage.setItem("nephroassets.sidebarCollapsed", "true");
+    sessionStorage.setItem("nephroassets.filters", '{"search":"FAR-1"}');
+    // Unrelated keys some other library/browser feature might set — must survive.
+    localStorage.setItem("some-other-lib.setting", "keep-me");
+    sessionStorage.setItem("unrelated", "keep-me-too");
+  }
+
+  afterEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  function SignOutButton() {
+    const { logout } = useAuth();
+    return (
+      <button type="button" onClick={() => logout()}>
+        Sign Out
+      </button>
+    );
+  }
+
+  it("sweeps nephroassets.*-prefixed keys from both storages on an explicit Sign Out, leaving unrelated keys alone", async () => {
+    seedStorage();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ user: mockUser })) // initial /me
+      .mockResolvedValueOnce(jsonResponse({ ok: true })); // POST /api/auth/logout
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <AuthProvider>
+        <SignOutButton />
+      </AuthProvider>
+    );
+
+    fireEvent.click(await screen.findByText("Sign Out"));
+    // fetchMock's call count ticks up the instant fetch() is invoked, not once its
+    // promise resolves — waiting on it would race ahead of logout()'s `finally` block
+    // (which awaits apiLogout() first). Wait on the actual end-state instead.
+    await vi.waitFor(() => expect(localStorage.getItem("nephroassets.register.myView")).toBeNull());
+
+    expect(localStorage.getItem("nephroassets.register.myView")).toBeNull();
+    expect(localStorage.getItem("nephroassets.sidebarCollapsed")).toBeNull();
+    expect(sessionStorage.getItem("nephroassets.filters")).toBeNull();
+    expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
+    expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
+  });
+
+  it("also sweeps on a forced logout (session dies mid-use)", async () => {
+    seedStorage();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ user: mockUser })) // initial /me
+      .mockResolvedValueOnce(jsonResponse({ error: "Not signed in.", code: "UNAUTHENTICATED" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/protected"]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<div>Login Page</div>} />
+            <Route
+              path="/protected"
+              element={
+                <RequireAuth>
+                  <div>Protected Content</div>
+                </RequireAuth>
+              }
+            />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await screen.findByText("Protected Content");
+    await expect(fetchAdminUsers()).rejects.toThrow();
+    await screen.findByText("Login Page");
+
+    expect(localStorage.getItem("nephroassets.register.myView")).toBeNull();
+    expect(localStorage.getItem("nephroassets.sidebarCollapsed")).toBeNull();
+    expect(sessionStorage.getItem("nephroassets.filters")).toBeNull();
+    expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
+    expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
   });
 });
