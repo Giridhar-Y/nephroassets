@@ -32,10 +32,10 @@ describe("Admin: user management", () => {
     await db.query(`DELETE FROM user_audit_log`);
     await db.query(`DELETE FROM login_attempts`);
     await db.query(`DELETE FROM users`);
-    const admin = await createTestUser({ username: "admin-user", isAdmin: true });
+    const admin = await createTestUser({ username: "admin-user", role: "admin" });
     adminId = admin.id;
     adminCookie = authHeaderFor(admin.id, admin.username);
-    const nonAdmin = await createTestUser({ username: "regular-user", isAdmin: false });
+    const nonAdmin = await createTestUser({ username: "regular-user", role: "editor" });
     nonAdminCookie = authHeaderFor(nonAdmin.id, nonAdmin.username);
   });
 
@@ -62,12 +62,12 @@ describe("Admin: user management", () => {
       method: "POST",
       url: "/api/admin/users",
       headers: { cookie: adminCookie },
-      payload: { username: "new-hire", email: "new-hire@example.com", password: "temp-password-123", isAdmin: false }
+      payload: { username: "new-hire", email: "new-hire@example.com", password: "temp-password-123", role: "editor" }
     });
     expect(res.statusCode).toBe(200);
     const created = res.json();
     expect(created.mustChangePassword).toBe(true);
-    expect(created.isAdmin).toBe(false);
+    expect(created.role).toBe("editor");
 
     const login = await app.inject({
       method: "POST",
@@ -85,6 +85,17 @@ describe("Admin: user management", () => {
     // actor_user_id/target_user_id are BIGINT — node-postgres returns them as strings.
     expect(Number(rows[0].actor_user_id)).toBe(adminId);
     expect(Number(rows[0].target_user_id)).toBe(created.id);
+  });
+
+  it("defaults a new user to the viewer role when none is specified", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: { username: "no-role-given", email: "no-role-given@example.com", password: "temp-password-123" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().role).toBe("viewer");
   });
 
   it("rejects creating a user as a non-admin", async () => {
@@ -152,33 +163,41 @@ describe("Admin: user management", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("toggles the admin flag and logs it as 'role_change'", async () => {
-    const target = await createTestUser({ username: "future-admin", isAdmin: false });
+  it("changes a user's role and logs it as 'role_change'", async () => {
+    const target = await createTestUser({ username: "future-admin", role: "editor" });
     const res = await app.inject({
       method: "PATCH",
       url: `/api/admin/users/${target.id}`,
       headers: { cookie: adminCookie },
-      payload: { isAdmin: true }
+      payload: { role: "admin" }
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().isAdmin).toBe(true);
+    expect(res.json().role).toBe("admin");
     const db = await getPool();
     const { rows } = await db.query(
       `SELECT action, details FROM user_audit_log WHERE action = 'role_change' AND target_user_id = $1`,
       [target.id]
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].details).toEqual({ from: false, to: true });
+    expect(rows[0].details).toEqual({ from: "editor", to: "admin" });
   });
 
-  it("an admin can't remove their own admin access or disable themselves", async () => {
-    const removeOwnAdmin = await app.inject({
+  it("an admin can't demote themselves away from admin, in any direction, or disable themselves", async () => {
+    const toEditor = await app.inject({
       method: "PATCH",
       url: `/api/admin/users/${adminId}`,
       headers: { cookie: adminCookie },
-      payload: { isAdmin: false }
+      payload: { role: "editor" }
     });
-    expect(removeOwnAdmin.statusCode).toBe(400);
+    expect(toEditor.statusCode).toBe(400);
+
+    const toViewer = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${adminId}`,
+      headers: { cookie: adminCookie },
+      payload: { role: "viewer" }
+    });
+    expect(toViewer.statusCode).toBe(400);
 
     const disableSelf = await app.inject({
       method: "PATCH",

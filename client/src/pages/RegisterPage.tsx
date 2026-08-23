@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useAuth } from "../lib/AuthContext.js";
 import { useFilters } from "../lib/FiltersContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useColumnPrefs } from "../lib/useColumnPrefs.js";
@@ -13,6 +14,7 @@ import { ExportIcon, SearchIcon } from "../lib/icons.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
 
 export function RegisterPage() {
+  const { user } = useAuth();
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
   const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
@@ -168,11 +170,13 @@ export function RegisterPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <RecordMovementControl
-            selectedCount={selected.size}
-            onTransfer={() => setTransferOpen(true)}
-            onDispose={() => setDisposeOpen(true)}
-          />
+          {user?.role !== "viewer" && (
+            <RecordMovementControl
+              selectedCount={selected.size}
+              onTransfer={() => setTransferOpen(true)}
+              onDispose={() => setDisposeOpen(true)}
+            />
+          )}
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
             aria-disabled={!asAt}

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { bulkDate, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { applyFullDisposal } from "./disposalWriteOff.js";
+import { requireEditor } from "../auth/middleware.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
@@ -14,7 +15,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
   // Bulk Disposals: same full-disposal semantics as PATCH /api/assets/:farId/disposal
   // (deletions = the asset's entire capitalized cost, status forced to Disposed),
   // applied to every row in a CSV/XLSX instead of one asset at a time.
-  app.post("/api/assets/bulk-dispose", async (req, reply) => {
+  app.post("/api/assets/bulk-dispose", { preHandler: requireEditor }, async (req, reply) => {
     const file = await req.file();
     if (!file) {
       reply.code(400);

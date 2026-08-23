@@ -4,6 +4,7 @@ import { getPool } from "../db/pool.js";
 import { sessionCookieOptions, SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
 import { hashPassword, verifyPassword } from "../auth/password.js";
 import { isIpLockedOut, isLockedOut, LOCKOUT_WINDOW_MINUTES, recordLoginAttempt } from "../auth/rateLimit.js";
+import type { Role } from "../auth/middleware.js";
 
 const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 const changePasswordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8) });
@@ -37,11 +38,11 @@ export default async function authRoutes(app: FastifyInstance) {
       username: string;
       email: string;
       password_hash: string;
-      is_admin: boolean;
+      role: Role;
       must_change_password: boolean;
       status: string;
     }>(
-      `SELECT id, username, email, password_hash, is_admin, must_change_password, status FROM users WHERE LOWER(username) = LOWER($1)`,
+      `SELECT id, username, email, password_hash, role, must_change_password, status FROM users WHERE LOWER(username) = LOWER($1)`,
       [username]
     );
     const row = rows[0];
@@ -74,7 +75,7 @@ export default async function authRoutes(app: FastifyInstance) {
         id: Number(row!.id),
         username: row!.username,
         email: row!.email,
-        isAdmin: row!.is_admin,
+        role: row!.role,
         mustChangePassword: row!.must_change_password
       }
     };

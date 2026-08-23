@@ -30,9 +30,9 @@ await applySchema();
 const db = await getPool();
 const passwordHash = await hashPassword(password);
 const { rows } = await db.query(
-  `INSERT INTO users (username, email, password_hash, is_admin, must_change_password)
-   VALUES ($1, $2, $3, TRUE, FALSE)
-   ON CONFLICT (LOWER(username)) DO UPDATE SET email = $2, password_hash = $3, is_admin = TRUE, status = 'active'
+  `INSERT INTO users (username, email, password_hash, role, must_change_password)
+   VALUES ($1, $2, $3, 'admin', FALSE)
+   ON CONFLICT (LOWER(username)) DO UPDATE SET email = $2, password_hash = $3, role = 'admin', status = 'active'
    RETURNING id, username, email`,
   [username, email, passwordHash]
 );

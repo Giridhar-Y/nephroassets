@@ -2,11 +2,16 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, verifySession } from "./session.js";
 
+/** viewer: read/export only. editor: viewer's access + full FAR-module CRUD
+ *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management. */
+export type Role = "viewer" | "editor" | "admin";
+const EDITOR_ROLES: ReadonlySet<Role> = new Set(["editor", "admin"]);
+
 export interface AuthedUser {
   id: number;
   username: string;
   email: string;
-  isAdmin: boolean;
+  role: Role;
   mustChangePassword: boolean;
 }
 
@@ -57,10 +62,10 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     id: string;
     username: string;
     email: string;
-    is_admin: boolean;
+    role: Role;
     status: string;
     must_change_password: boolean;
-  }>(`SELECT id, username, email, is_admin, status, must_change_password FROM users WHERE id = $1`, [payload.sub]);
+  }>(`SELECT id, username, email, role, status, must_change_password FROM users WHERE id = $1`, [payload.sub]);
   const row = rows[0];
   if (!row || row.status !== "active") return null;
 
@@ -68,7 +73,7 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     id: Number(row.id),
     username: row.username,
     email: row.email,
-    isAdmin: row.is_admin,
+    role: row.role,
     mustChangePassword: row.must_change_password
   };
 }
@@ -97,7 +102,17 @@ export async function authGateHook(req: FastifyRequest, reply: FastifyReply): Pr
 /** Route-level preHandler for admin-only endpoints — layered on top of the global auth
  *  gate above, which has already populated `req.user` by the time this runs. */
 export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (!req.user?.isAdmin) {
+  if (req.user?.role !== "admin") {
     reply.code(403).send({ error: "Admin access required.", code: "FORBIDDEN" });
+  }
+}
+
+/** Route-level preHandler for editor+ endpoints (every FAR-module write action —
+ *  Capitalization, Transfers, Disposals, Bulk Upload — plus the Transfers history view,
+ *  which viewers have no access to at all, not just its write side). A viewer is
+ *  rejected; editor and admin both pass. */
+export async function requireEditor(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!req.user || !EDITOR_ROLES.has(req.user.role)) {
+    reply.code(403).send({ error: "You don't have permission to make changes here.", code: "FORBIDDEN" });
   }
 }

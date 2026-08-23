@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 async function insertAsset(farId: string, overrides: Record<string, unknown> = {}) {
@@ -34,6 +36,9 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(multipart);
     await app.register(bulkDisposalsRoutes);
     await app.ready();

@@ -37,6 +37,10 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
 
 const ADMIN_NAV_ITEM = { to: "/admin", label: "Admin", icon: AdminIcon };
 
+// Editor-only screens — a viewer has no access to these at all (server-enforced by
+// requireEditor on their API routes; this is just the client-side nav/UX mirror).
+const EDITOR_ONLY_PATHS = new Set(["/transfers", "/capitalization", "/disposals", "/bulk-upload"]);
+
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();
   const [pending, setPending] = useState(false);
@@ -91,7 +95,9 @@ export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
-  const navItems = user?.isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
+  const visibleItems =
+    user?.role === "viewer" ? NAV_ITEMS.filter((item) => !EDITOR_ONLY_PATHS.has(item.to)) : NAV_ITEMS;
+  const navItems = user?.role === "admin" ? [...visibleItems, ADMIN_NAV_ITEM] : visibleItems;
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));

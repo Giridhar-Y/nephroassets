@@ -1,8 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 const NEW_ASSET = {
   farId: "CAP-TEST-1",
@@ -34,6 +36,9 @@ describe("Capitalization: POST /api/assets", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
   });
@@ -135,6 +140,9 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
   });
@@ -198,6 +206,9 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
   });

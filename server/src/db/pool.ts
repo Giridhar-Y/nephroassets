@@ -91,7 +91,7 @@ export async function applySchema(): Promise<void> {
       username               TEXT NOT NULL,
       email                  TEXT NOT NULL,
       password_hash          TEXT NOT NULL,
-      is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
+      role                   TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor', 'admin')),
       status                 TEXT NOT NULL DEFAULT 'active',
       must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
       created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -99,6 +99,22 @@ export async function applySchema(): Promise<void> {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users (LOWER(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci ON users (LOWER(email));
+
+    -- One-time migration for a database created before role replaced is_admin: add role
+    -- (defaulting new/untouched rows to 'viewer'), then backfill every existing row from
+    -- is_admin before dropping it — an existing real user must keep at least 'editor'
+    -- access, not silently lose it to the new column's low-privilege default. The
+    -- is_admin-exists check makes this a no-op on every boot after the first (it's
+    -- already gone by then) and on a brand-new database (schema.sql above never created
+    -- it in the first place).
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'viewer';
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_admin') THEN
+        UPDATE users SET role = CASE WHEN is_admin THEN 'admin' ELSE 'editor' END;
+        ALTER TABLE users DROP COLUMN is_admin;
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS login_attempts (
       id             BIGSERIAL PRIMARY KEY,

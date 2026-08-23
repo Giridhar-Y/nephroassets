@@ -5,7 +5,8 @@ import {
   fetchAdminUsers,
   resetAdminUserPassword,
   updateAdminUser,
-  type AdminUser
+  type AdminUser,
+  type Role
 } from "../api/client.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { AdminIcon, KeyIcon } from "../lib/icons.js";
@@ -16,6 +17,13 @@ const INPUT_CLASS =
 const TH_CLASS = "px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600";
 const TD_CLASS = "px-3 py-2 text-sm text-ink";
 
+const ROLE_LABELS: Record<Role, string> = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
+const ROLE_BADGE_CLASS: Record<Role, string> = {
+  viewer: "bg-gray-100 text-gray-600",
+  editor: "bg-blue-100 text-blue-800",
+  admin: "bg-ink text-white"
+};
+
 function StatusBadge({ status }: { status: AdminUser["status"] }) {
   return (
     <span
@@ -25,6 +33,36 @@ function StatusBadge({ status }: { status: AdminUser["status"] }) {
     >
       {status === "active" ? "Active" : "Disabled"}
     </span>
+  );
+}
+
+function RoleBadge({ role }: { role: Role }) {
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${ROLE_BADGE_CLASS[role]}`}>{ROLE_LABELS[role]}</span>;
+}
+
+function RoleSelect({
+  value,
+  onChange,
+  disabled,
+  title
+}: {
+  value: Role;
+  onChange: (role: Role) => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <select
+      className={INPUT_CLASS}
+      value={value}
+      disabled={disabled}
+      title={title}
+      onChange={(e) => onChange(e.target.value as Role)}
+    >
+      <option value="viewer">Viewer</option>
+      <option value="editor">Editor</option>
+      <option value="admin">Admin</option>
+    </select>
   );
 }
 
@@ -93,11 +131,11 @@ export function AdminPage() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [role, setRole] = useState<Role>("viewer");
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editEmail, setEditEmail] = useState("");
-  const [editIsAdmin, setEditIsAdmin] = useState(false);
+  const [editRole, setEditRole] = useState<Role>("viewer");
 
   const [reveal, setReveal] = useState<{ username: string; password: string } | null>(null);
 
@@ -113,12 +151,12 @@ export function AdminPage() {
     if (!username.trim() || !email.trim() || password.length < 8) return;
     setBusy(true);
     try {
-      await createAdminUser({ username: username.trim(), email: email.trim(), password, isAdmin });
+      await createAdminUser({ username: username.trim(), email: email.trim(), password, role });
       setReveal({ username: username.trim(), password });
       setUsername("");
       setEmail("");
       setPassword("");
-      setIsAdmin(false);
+      setRole("viewer");
       load();
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Could not create user.", "error");
@@ -130,13 +168,13 @@ export function AdminPage() {
   function startEdit(row: AdminUser) {
     setEditingId(row.id);
     setEditEmail(row.email);
-    setEditIsAdmin(row.isAdmin);
+    setEditRole(row.role);
   }
 
   async function saveEdit(row: AdminUser) {
     setBusy(true);
     try {
-      await updateAdminUser(row.id, { email: editEmail.trim(), isAdmin: editIsAdmin });
+      await updateAdminUser(row.id, { email: editEmail.trim(), role: editRole });
       showToast(`${row.username} updated.`);
       setEditingId(null);
       load();
@@ -209,10 +247,10 @@ export function AdminPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
-          <label className="flex items-center gap-1.5 pb-1.5 text-sm text-gray-600">
-            <input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
-            Admin
-          </label>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Role</label>
+            <RoleSelect value={role} onChange={setRole} />
+          </div>
           <button
             type="button"
             className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
@@ -229,7 +267,7 @@ export function AdminPage() {
               <th className={TH_CLASS}>Username</th>
               <th className={TH_CLASS}>Email</th>
               <th className={TH_CLASS}>Status</th>
-              <th className={TH_CLASS}>Admin</th>
+              <th className={TH_CLASS}>Role</th>
               <th className={TH_CLASS}>Last Login</th>
               <th className={TH_CLASS}></th>
             </tr>
@@ -249,12 +287,11 @@ export function AdminPage() {
                         <StatusBadge status={row.status} />
                       </td>
                       <td className={TD_CLASS}>
-                        <input
-                          type="checkbox"
-                          checked={editIsAdmin}
+                        <RoleSelect
+                          value={editRole}
+                          onChange={setEditRole}
                           disabled={isSelf}
-                          title={isSelf ? "You can't remove your own admin access." : undefined}
-                          onChange={(e) => setEditIsAdmin(e.target.checked)}
+                          title={isSelf ? "You can't change your own role." : undefined}
                         />
                       </td>
                       <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
@@ -286,7 +323,9 @@ export function AdminPage() {
                       <td className={TD_CLASS}>
                         <StatusBadge status={row.status} />
                       </td>
-                      <td className={TD_CLASS}>{row.isAdmin ? "Yes" : "—"}</td>
+                      <td className={TD_CLASS}>
+                        <RoleBadge role={row.role} />
+                      </td>
                       <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
                       <td className={`${TD_CLASS} space-x-2 text-right`}>
                         <button type="button" className="font-medium text-accent hover:underline" onClick={() => startEdit(row)}>

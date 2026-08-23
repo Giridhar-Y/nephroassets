@@ -5,7 +5,7 @@ import { AuthProvider } from "./AuthContext.js";
 import { RequireAuth } from "../components/RequireAuth.js";
 import { fetchAdminUsers, login } from "../api/client.js";
 
-const mockUser = { id: 1, username: "admin", email: "admin@example.com", isAdmin: true, mustChangePassword: false };
+const mockUser = { id: 1, username: "admin", email: "admin@example.com", role: "admin", mustChangePassword: false };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {

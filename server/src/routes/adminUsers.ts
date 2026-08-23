@@ -4,7 +4,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { hashPassword } from "../auth/password.js";
-import { requireAdmin } from "../auth/middleware.js";
+import { requireAdmin, type Role } from "../auth/middleware.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -26,7 +26,7 @@ export interface AdminUserRow {
   id: number;
   username: string;
   email: string;
-  isAdmin: boolean;
+  role: Role;
   status: string;
   mustChangePassword: boolean;
   createdAt: string;
@@ -37,7 +37,7 @@ function mapUserRow(r: {
   id: string; // BIGSERIAL — node-postgres returns it as a string, not a number
   username: string;
   email: string;
-  is_admin: boolean;
+  role: Role;
   status: string;
   must_change_password: boolean;
   created_at: Date | string;
@@ -47,7 +47,7 @@ function mapUserRow(r: {
     id: Number(r.id),
     username: r.username,
     email: r.email,
-    isAdmin: r.is_admin,
+    role: r.role,
     status: r.status,
     mustChangePassword: r.must_change_password,
     createdAt: new Date(r.created_at).toISOString(),
@@ -78,7 +78,7 @@ function generateTempPassword(): string {
 
 export async function fetchUsers(db: pg.Pool): Promise<AdminUserRow[]> {
   const { rows } = await db.query(
-    `SELECT id, username, email, is_admin, status, must_change_password, created_at, last_login_at
+    `SELECT id, username, email, role, status, must_change_password, created_at, last_login_at
      FROM users ORDER BY username`
   );
   return rows.map(mapUserRow);
@@ -87,18 +87,18 @@ export async function fetchUsers(db: pg.Pool): Promise<AdminUserRow[]> {
 export async function createUser(
   db: pg.Pool,
   actorUserId: number,
-  data: { username: string; email: string; password: string; isAdmin: boolean }
+  data: { username: string; email: string; password: string; role: Role }
 ): Promise<AdminUserRow> {
   const passwordHash = await hashPassword(data.password);
   try {
     const { rows } = await db.query(
-      `INSERT INTO users (username, email, password_hash, is_admin, must_change_password)
+      `INSERT INTO users (username, email, password_hash, role, must_change_password)
        VALUES ($1, $2, $3, $4, TRUE)
-       RETURNING id, username, email, is_admin, status, must_change_password, created_at, last_login_at`,
-      [data.username, data.email, passwordHash, data.isAdmin]
+       RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
+      [data.username, data.email, passwordHash, data.role]
     );
     const user = mapUserRow(rows[0]);
-    await logAudit(db, actorUserId, "create", user.id, { username: user.username, email: user.email, isAdmin: user.isAdmin });
+    await logAudit(db, actorUserId, "create", user.id, { username: user.username, email: user.email, role: user.role });
     return user;
   } catch (err) {
     if (isUniqueViolation(err)) throw new UserError(409, `A user with that username or email already exists.`);
@@ -110,12 +110,12 @@ export async function updateUser(
   db: pg.Pool,
   actorUserId: number,
   targetId: number,
-  patch: { email?: string; isAdmin?: boolean; status?: "active" | "disabled" }
+  patch: { email?: string; role?: Role; status?: "active" | "disabled" }
 ): Promise<AdminUserRow> {
-  const { rows: existingRows } = await db.query(`SELECT email, is_admin, status FROM users WHERE id = $1`, [targetId]);
+  const { rows: existingRows } = await db.query(`SELECT email, role, status FROM users WHERE id = $1`, [targetId]);
   const existing = existingRows[0];
   if (!existing) throw new UserError(404, "No user found with that id.");
-  if (targetId === actorUserId && patch.isAdmin === false) {
+  if (targetId === actorUserId && existing.role === "admin" && patch.role !== undefined && patch.role !== "admin") {
     throw new UserError(400, "You can't remove your own admin access.");
   }
   if (targetId === actorUserId && patch.status === "disabled") {
@@ -128,9 +128,9 @@ export async function updateUser(
     values.push(patch.email);
     sets.push(`email = $${values.length}`);
   }
-  if (patch.isAdmin !== undefined) {
-    values.push(patch.isAdmin);
-    sets.push(`is_admin = $${values.length}`);
+  if (patch.role !== undefined) {
+    values.push(patch.role);
+    sets.push(`role = $${values.length}`);
   }
   if (patch.status !== undefined) {
     values.push(patch.status);
@@ -143,7 +143,7 @@ export async function updateUser(
   try {
     ({ rows } = await db.query(
       `UPDATE users SET ${sets.join(", ")} WHERE id = $${values.length}
-       RETURNING id, username, email, is_admin, status, must_change_password, created_at, last_login_at`,
+       RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
       values
     ));
   } catch (err) {
@@ -153,8 +153,8 @@ export async function updateUser(
 
   // Logged as separate, precisely-named actions (rather than one generic "update") so
   // the audit trail reads the way the spec asks for it: create/disable/reset/role-change.
-  if (patch.isAdmin !== undefined && patch.isAdmin !== existing.is_admin) {
-    await logAudit(db, actorUserId, "role_change", targetId, { from: existing.is_admin, to: patch.isAdmin });
+  if (patch.role !== undefined && patch.role !== existing.role) {
+    await logAudit(db, actorUserId, "role_change", targetId, { from: existing.role, to: patch.role });
   }
   if (patch.status !== undefined && patch.status !== existing.status) {
     await logAudit(db, actorUserId, patch.status === "disabled" ? "disable" : "enable", targetId, {
@@ -178,7 +178,7 @@ export async function resetPassword(
   const passwordHash = await hashPassword(tempPassword);
   const { rows } = await db.query(
     `UPDATE users SET password_hash = $1, must_change_password = TRUE WHERE id = $2
-     RETURNING id, username, email, is_admin, status, must_change_password, created_at, last_login_at`,
+     RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
     [passwordHash, targetId]
   );
   if (!rows[0]) throw new UserError(404, "No user found with that id.");
@@ -188,15 +188,16 @@ export async function resetPassword(
 
 // --- HTTP routes ---------------------------------------------------------------------
 
+const roleSchema = z.enum(["viewer", "editor", "admin"]);
 const createUserSchema = z.object({
   username: z.string().min(3),
   email: z.string().email(),
   password: z.string().min(8),
-  isAdmin: z.boolean().optional().default(false)
+  role: roleSchema.optional().default("viewer")
 });
 const patchUserSchema = z.object({
   email: z.string().email().optional(),
-  isAdmin: z.boolean().optional(),
+  role: roleSchema.optional(),
   status: z.enum(["active", "disabled"]).optional()
 });
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });

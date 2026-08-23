@@ -8,7 +8,7 @@ import { useAuth } from "../lib/AuthContext.js";
  *  of the same check, not a substitute for it. */
 export function RequireAdmin({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (!user?.isAdmin) {
+  if (user?.role !== "admin") {
     return <Navigate to="/register" replace />;
   }
   return <>{children}</>;

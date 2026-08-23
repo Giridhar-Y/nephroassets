@@ -88,13 +88,16 @@ CREATE UNIQUE INDEX idx_statuses_name_ci ON statuses (LOWER(name));
 -- Real per-user auth (replaces the old client-side-only demo gate). must_change_password
 -- is set whenever an admin hands out a temporary password (new user, or a reset) — the
 -- user can log in with it, but every other API route is blocked until they change it
--- (see routes/auth.ts's change-password route and app.ts's requireAuth hook).
+-- (see routes/auth.ts's change-password route and app.ts's requireAuth hook). role
+-- replaces an earlier is_admin boolean — viewer (read/export only), editor (full FAR-
+-- module CRUD), admin (also user management) — see auth/middleware.ts's requireAdmin/
+-- requireEditor preHandlers, the single source of truth for what each tier can reach.
 CREATE TABLE users (
   id                     BIGSERIAL PRIMARY KEY,
   username               TEXT NOT NULL,
   email                  TEXT NOT NULL,
   password_hash          TEXT NOT NULL,
-  is_admin               BOOLEAN NOT NULL DEFAULT FALSE,
+  role                   TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor', 'admin')),
   status                 TEXT NOT NULL DEFAULT 'active',
   must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { bulkDate, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { requireEditor } from "../auth/middleware.js";
 
 const transferRowSchema = z.object({
   farId: z.string().min(1),
@@ -13,7 +14,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
   // Bulk Transfers: same effect as POST /api/transfers (one transfer history row plus a
   // denormalized location update per asset), but each row can move to a different
   // center/date — the single endpoint only supports one shared destination per batch.
-  app.post("/api/transfers/bulk-upload", async (req, reply) => {
+  app.post("/api/transfers/bulk-upload", { preHandler: requireEditor }, async (req, reply) => {
     const file = await req.file();
     if (!file) {
       reply.code(400);

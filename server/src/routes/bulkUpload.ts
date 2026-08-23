@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { getPool } from "../db/pool.js";
 import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
 import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
+import { requireEditor } from "../auth/middleware.js";
 
 // Rejects (rather than silently accepting) a status/subClassification/location that
 // doesn't match an active Masters entry (routes/masters.ts) — case-insensitively, but the
@@ -38,7 +39,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
   // fields, e.g. farId, subClassification, c1OpeningCost…), validate every row, and
   // upsert by FAR ID so the same file can both import new assets and correct existing
   // ones. Rows that fail validation are reported but don't block the valid rows.
-  app.post("/api/assets/bulk-upload", async (req, reply) => {
+  app.post("/api/assets/bulk-upload", { preHandler: requireEditor }, async (req, reply) => {
     const file = await req.file();
     if (!file) {
       reply.code(400);

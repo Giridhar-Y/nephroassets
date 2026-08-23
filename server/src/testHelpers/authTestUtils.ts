@@ -2,6 +2,7 @@ import type { FastifyInstance, InjectOptions } from "fastify";
 import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
 import { hashPassword } from "../auth/password.js";
+import type { Role } from "../auth/middleware.js";
 
 const TEST_ADMIN_USERNAME = "test-harness-admin";
 const TEST_ADMIN_ID_PLACEHOLDER = -1; // overwritten by ensureTestAdminUser's real id
@@ -20,9 +21,9 @@ export async function getSharedAuthHeader(): Promise<string> {
   const passwordHash = await hashPassword("test-harness-password-unused");
   // id is BIGSERIAL — comes back as a string, not a number (see auth/middleware.ts).
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (username, email, password_hash, is_admin, must_change_password)
-     VALUES ($1, $2, $3, TRUE, FALSE)
-     ON CONFLICT (LOWER(username)) DO UPDATE SET status = 'active', is_admin = TRUE, must_change_password = FALSE
+    `INSERT INTO users (username, email, password_hash, role, must_change_password)
+     VALUES ($1, $2, $3, 'admin', FALSE)
+     ON CONFLICT (LOWER(username)) DO UPDATE SET status = 'active', role = 'admin', must_change_password = FALSE
      RETURNING id`,
     [TEST_ADMIN_USERNAME, "test-harness@example.invalid", passwordHash]
   );
@@ -54,7 +55,7 @@ export async function createTestUser(overrides: {
   username: string;
   email?: string;
   password?: string;
-  isAdmin?: boolean;
+  role?: Role;
   status?: "active" | "disabled";
   mustChangePassword?: boolean;
 }): Promise<{ id: number; username: string; password: string }> {
@@ -62,14 +63,14 @@ export async function createTestUser(overrides: {
   const password = overrides.password ?? "correct-horse-battery-staple";
   const passwordHash = await hashPassword(password);
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (username, email, password_hash, is_admin, status, must_change_password)
+    `INSERT INTO users (username, email, password_hash, role, status, must_change_password)
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
     [
       overrides.username,
       overrides.email ?? `${overrides.username}@example.invalid`,
       passwordHash,
-      overrides.isAdmin ?? false,
+      overrides.role ?? "editor",
       overrides.status ?? "active",
       overrides.mustChangePassword ?? false
     ]

@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkUploadRoutes from "./bulkUpload.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
 const HEADER =
@@ -14,6 +16,9 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(multipart);
     await app.register(bulkUploadRoutes);
     await app.ready();

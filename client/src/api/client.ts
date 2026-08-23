@@ -406,11 +406,15 @@ export function updateMasterStatus(
 
 // --- Auth ------------------------------------------------------------------------
 
+/** viewer: read/export only. editor: viewer's access + full FAR-module CRUD
+ *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management. */
+export type Role = "viewer" | "editor" | "admin";
+
 export interface AuthUser {
   id: number;
   username: string;
   email: string;
-  isAdmin: boolean;
+  role: Role;
   mustChangePassword: boolean;
 }
 
@@ -447,7 +451,7 @@ export interface AdminUser {
   id: number;
   username: string;
   email: string;
-  isAdmin: boolean;
+  role: Role;
   status: "active" | "disabled";
   mustChangePassword: boolean;
   createdAt: string;
@@ -462,14 +466,14 @@ export function createAdminUser(payload: {
   username: string;
   email: string;
   password: string;
-  isAdmin: boolean;
+  role: Role;
 }): Promise<AdminUser> {
   return request("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function updateAdminUser(
   id: number,
-  payload: Partial<{ email: string; isAdmin: boolean; status: "active" | "disabled" }>
+  payload: Partial<{ email: string; role: Role; status: "active" | "disabled" }>
 ): Promise<AdminUser> {
   return request(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 }

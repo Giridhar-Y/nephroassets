@@ -27,7 +27,7 @@ platform) and fill in real values:
   uses that fallback — a real deploy must set this for real.
 
 See `server/.env.example` for the full list, including optional vars and the one-off
-scripts (`seedAdmin.ts`, `migrateToSupabase.ts`).
+scripts (`seedAdmin.ts`, `seedDemoUsers.ts`, `migrateToSupabase.ts`).
 
 ### Local development
 
@@ -45,6 +45,13 @@ First admin user:
 cd server
 ADMIN_USERNAME=... ADMIN_EMAIL=... ADMIN_PASSWORD=... npx tsx src/scripts/seedAdmin.ts
 ```
+
+Users have one of three roles — `viewer` (read/export only), `editor` (also
+Capitalization/Transfers/Disposals/Bulk Upload), `admin` (also user management), managed
+from the Admin screen. To seed a demo viewer and a demo editor (e.g. for a client demo),
+point `DATABASE_URL` at the target database and run `npm run seed:demo` — it generates a
+fresh temporary password for each and prints them once; nothing is hardcoded in the
+script.
 
 ### Tests
 

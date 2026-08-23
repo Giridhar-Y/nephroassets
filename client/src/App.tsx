@@ -22,6 +22,7 @@ import { AuthProvider } from "./lib/AuthContext.js";
 import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
 import { RequireAdmin } from "./components/RequireAdmin.js";
+import { RequireEditor } from "./components/RequireEditor.js";
 import { ToastProvider } from "./components/Toast.js";
 
 export default function App() {
@@ -101,33 +102,41 @@ export default function App() {
                 <Route
                   path="/transfers"
                   element={
-                    <SettingsGate>
-                      <TransfersPage />
-                    </SettingsGate>
+                    <RequireEditor>
+                      <SettingsGate>
+                        <TransfersPage />
+                      </SettingsGate>
+                    </RequireEditor>
                   }
                 />
                 <Route
                   path="/capitalization"
                   element={
-                    <SettingsGate>
-                      <CapitalizationPage />
-                    </SettingsGate>
+                    <RequireEditor>
+                      <SettingsGate>
+                        <CapitalizationPage />
+                      </SettingsGate>
+                    </RequireEditor>
                   }
                 />
                 <Route
                   path="/disposals"
                   element={
-                    <SettingsGate>
-                      <DisposalPage />
-                    </SettingsGate>
+                    <RequireEditor>
+                      <SettingsGate>
+                        <DisposalPage />
+                      </SettingsGate>
+                    </RequireEditor>
                   }
                 />
                 <Route
                   path="/bulk-upload"
                   element={
-                    <SettingsGate>
-                      <BulkUploadPage />
-                    </SettingsGate>
+                    <RequireEditor>
+                      <SettingsGate>
+                        <BulkUploadPage />
+                      </SettingsGate>
+                    </RequireEditor>
                   }
                 />
                 {/* Not gated by SettingsGate: this is where a first-run user configures settings. */}

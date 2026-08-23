@@ -7,6 +7,7 @@ import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { applyFullDisposal } from "./disposalWriteOff.js";
+import { requireEditor } from "../auth/middleware.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -249,7 +250,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
   // Capitalization: register a brand-new asset. Disposal fields are left at their
   // column defaults (null / 0) — an asset is never created pre-disposed.
-  app.post("/api/assets", async (req, reply) => {
+  app.post("/api/assets", { preHandler: requireEditor }, async (req, reply) => {
     const parsed = assetCreateSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -304,7 +305,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // chosen Disposal Date itself (not whatever the app's global "Figures as of" is set
   // to) so depreciation accrues up to exactly that date, matching what disposing on it
   // for real would produce.
-  app.post("/api/assets/:farId/disposal/preview", async (req, reply) => {
+  app.post("/api/assets/:farId/disposal/preview", { preHandler: requireEditor }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = disposalSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -358,7 +359,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
   // Disposal: full disposal only, so Deletions is always the asset's entire capitalized
   // cost (opening + additions) rather than a user-entered partial amount.
-  app.patch("/api/assets/:farId/disposal", async (req, reply) => {
+  app.patch("/api/assets/:farId/disposal", { preHandler: requireEditor }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = disposalSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {

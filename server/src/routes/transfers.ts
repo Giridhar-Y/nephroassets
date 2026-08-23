@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { requireEditor } from "../auth/middleware.js";
 
 const createTransferSchema = z.object({
   farIds: z.array(z.string().min(1)).min(1),
@@ -28,7 +29,7 @@ const historyQuerySchema = z.object({
 export default async function transfersRoutes(app: FastifyInstance) {
   // Center-first transfer: move one or more assets (already narrowed to a source
   // center in the UI) to a different center/location.
-  app.post("/api/transfers", async (req, reply) => {
+  app.post("/api/transfers", { preHandler: requireEditor }, async (req, reply) => {
     const parsed = createTransferSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -75,7 +76,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
 
   // Transfers screen: a read-only history log, newest first. Not a separate workflow —
   // initiating a transfer still only happens via the center-first picker in Register.
-  app.get("/api/transfers", async (req, reply) => {
+  app.get("/api/transfers", { preHandler: requireEditor }, async (req, reply) => {
     const parsed = historyQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
