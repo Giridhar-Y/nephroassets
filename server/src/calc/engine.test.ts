@@ -458,16 +458,16 @@ describe("NBV as at FY start (openingNbv)", () => {
 // ---------------------------------------------------------------------------
 // Opening vs Addition reclassification (FY-rollover fix) — the two cost tranches
 // (openingCost @ dateAcquired, additions @ dateOfAddition) are classified live against
-// the *current* fyStart, not by which field they were entered into. Numbers chosen so
-// days-held divides cleanly (dateAcquired/dateOfAddition landing exactly on fyStart, and
-// asAt equal to fyStart too — 1 day held, same precedent as the existing "addition date
-// equals AS_AT" boundary test — so every expected figure below is hand-checkable.
+// the *current* fyStart, not by which field they were entered into. A tranche dated on
+// or before fyStart is Opening (an asset capitalized exactly on FY Start day was on the
+// books the whole year); strictly after is an Addition. Numbers chosen so days-held
+// divides cleanly, so every expected figure below is hand-checkable.
 // ---------------------------------------------------------------------------
 describe("Opening vs Addition reclassification (cost-side FY-rollover fix)", () => {
-  it("an asset acquired mid-FY (on FY Start) has its cost classified as an Addition, not Opening", () => {
+  it("an asset acquired exactly on FY Start is classified as Opening, not an Addition", () => {
     const r = computeComponent(
       {
-        dateAcquired: "2025-04-01", // == fyStart: not *before* it, so this is an Addition
+        dateAcquired: "2025-04-01", // == fyStart: on or before it, so this is Opening
         openingCost: 36500,
         additions: 0,
         dateOfAddition: null,
@@ -478,6 +478,29 @@ describe("Opening vs Addition reclassification (cost-side FY-rollover fix)", () 
         accDepOpening: 0
       },
       fy({ asAt: "2025-04-01" })
+    );
+    expect(r.openingGrossBlock).toBe(36500);
+    expect(r.additionsGrossBlock).toBe(0);
+    expect(r.depOnOpening).toBeCloseTo(10, 6); // 36500/10 * 1/365
+    expect(r.depOnAdditions).toBe(0);
+    expect(r.grossBlock).toBe(36500);
+    expect(r.openingNbv).toBe(36500);
+  });
+
+  it("an asset acquired one day after FY Start is still classified as an Addition", () => {
+    const r = computeComponent(
+      {
+        dateAcquired: "2025-04-02", // one day after fyStart -> Addition
+        openingCost: 36500,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 0
+      },
+      fy({ asAt: "2025-04-02" })
     );
     expect(r.openingGrossBlock).toBe(0);
     expect(r.additionsGrossBlock).toBe(36500);
@@ -512,7 +535,7 @@ describe("Opening vs Addition reclassification (cost-side FY-rollover fix)", () 
   it("mixed: opening cost and addition each reclassify to the opposite side of FY Start", () => {
     const r = computeComponent(
       {
-        dateAcquired: "2025-04-01", // == fyStart -> Addition
+        dateAcquired: "2025-04-02", // one day after fyStart -> Addition
         openingCost: 36500,
         additions: 73000,
         dateOfAddition: "2024-01-01", // well before fyStart -> Opening
@@ -522,11 +545,11 @@ describe("Opening vs Addition reclassification (cost-side FY-rollover fix)", () 
         saleValue: 0,
         accDepOpening: 0
       },
-      fy({ asAt: "2025-04-01" })
+      fy({ asAt: "2025-04-02" })
     );
     expect(r.openingGrossBlock).toBe(73000); // from the "additions" field
     expect(r.additionsGrossBlock).toBe(36500); // from the "opening cost" field
-    expect(r.depOnOpening).toBeCloseTo(20, 6); // 73000/10 * 1/365
+    expect(r.depOnOpening).toBeCloseTo(40, 6); // 73000/10 * 2/365 (fyStart to asAt, inclusive)
     expect(r.depOnAdditions).toBeCloseTo(10, 6); // 36500/10 * 1/365
     expect(r.grossBlock).toBe(109500);
     expect(r.openingNbv).toBe(73000);

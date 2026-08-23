@@ -181,6 +181,21 @@ const fixtures: Fixture[] = [
       accDepOpening: 3000
     },
     fy: { ...FY, asAt: "2025-12-31" }
+  },
+  {
+    name: "boundary: an asset acquired exactly on FY Start is Opening, not an Addition",
+    input: {
+      dateAcquired: "2025-04-01", // == FY Start, not after it -> Opening
+      openingCost: 36500,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 10,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 0
+    },
+    fy: { ...FY, asAt: "2025-04-01" }
   }
 ];
 

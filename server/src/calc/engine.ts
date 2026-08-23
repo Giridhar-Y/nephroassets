@@ -35,16 +35,17 @@ const ZERO_SPLIT: TrancheSplit = { openingAmount: 0, additionAmount: 0, openingD
  * Classifies one dated cost tranche — an asset's original acquisition cost
  * (openingCost @ dateAcquired) or its one mid-life addition (additions @
  * dateOfAddition) — against the *current* FY Start, live, every time this runs. A
- * tranche dated before FY Start is Opening; on/after FY Start (and on/before
- * `viewEnd`) is an Addition "during FY"; after `viewEnd` it hasn't happened yet as of
- * this view and contributes nothing at all (matching how Deletions/disposal are
- * already date-gated below).
+ * tranche dated on or before FY Start is Opening (an asset capitalized exactly on
+ * FY Start day was on the books for the whole year, same as one acquired earlier);
+ * strictly after FY Start (and on/before `viewEnd`) is an Addition "during FY"; after
+ * `viewEnd` it hasn't happened yet as of this view and contributes nothing at all
+ * (matching how Deletions/disposal are already date-gated below).
  *
  * This is the actual fix for the FY-rollover bug: nothing here trusts which form
  * field an amount was typed into. Capitalizing an asset mid-year correctly shows it
  * as an Addition this year; the moment FY Start advances (Settings), the exact same
- * dateAcquired now falls before the new FY Start, so it reclassifies as Opening on
- * its own — no manual re-entry, no "close year" migration step required.
+ * dateAcquired now falls on or before the new FY Start, so it reclassifies as Opening
+ * on its own — no manual re-entry, no "close year" migration step required.
  */
 function splitTranche(
   amount: number,
@@ -55,7 +56,7 @@ function splitTranche(
   daysInFy: number
 ): TrancheSplit {
   if (amount === 0 || date === null || isAfter(date, viewEnd)) return ZERO_SPLIT;
-  const isOpening = isAfter(fyStart, date); // date < fyStart
+  const isOpening = isOnOrBefore(date, fyStart); // date <= fyStart
   const daysHeld = Math.max(0, daysHeldInclusive(isOpening ? fyStart : date, viewEnd));
   const dep = usefulLife > 0 ? (amount / usefulLife) * (daysHeld / daysInFy) : 0;
   return isOpening
@@ -63,12 +64,12 @@ function splitTranche(
     : { openingAmount: 0, additionAmount: amount, openingDep: 0, additionDep: dep, additionDaysHeld: daysHeld };
 }
 
-/** Whether a tranche's date falls before FY Start — used only for the FY-Start
+/** Whether a tranche's date falls on or before FY Start — used only for the FY-Start
  *  snapshot (openingGrossBlock/openingNbv), which is deliberately independent of
  *  AS_AT or a later disposal: what the asset was worth the moment the year began,
  *  not "as of today" and not "before it was sold off." */
 function isOpeningTranche(amount: number, date: IsoDate | null, fyStart: IsoDate): boolean {
-  return amount !== 0 && date !== null && isAfter(fyStart, date);
+  return amount !== 0 && date !== null && isOnOrBefore(date, fyStart);
 }
 
 /**

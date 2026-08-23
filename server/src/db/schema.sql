@@ -140,10 +140,11 @@ CREATE TYPE far_component_result AS (
 -- Opening vs Addition is a *live* classification of two dated cost tranches — the
 -- acquisition cost (p_opening_cost @ p_date_acquired) and the one mid-life addition
 -- (p_additions @ p_date_of_addition) — against the current p_fy_start, not a fixed
--- label. A tranche dated before FY Start is Opening; on/after FY Start (and on/before
--- the relevant view-end date) is an Addition "during FY"; after that view-end date it
--- hasn't happened yet and contributes nothing. See engine.ts's `splitTranche` — this
--- function is its exact SQL mirror, kept in lock-step by sqlParity.test.ts.
+-- label. A tranche dated on or before FY Start is Opening; strictly after FY Start
+-- (and on/before the relevant view-end date) is an Addition "during FY"; after that
+-- view-end date it hasn't happened yet and contributes nothing. See engine.ts's
+-- `splitTranche` — this function is its exact SQL mirror, kept in lock-step by
+-- sqlParity.test.ts.
 CREATE OR REPLACE FUNCTION far_calc_component(
   p_opening_cost numeric,
   p_additions numeric,
@@ -223,15 +224,15 @@ BEGIN
   effective_end_date := CASE WHEN disposal_effective THEN p_date_of_disposal ELSE p_as_at END;
 
   -- Opening Gross Block / NBV as at FY Start (fixed snapshot, no AS_AT/disposal dependency)
-  acq_is_opening := p_opening_cost <> 0 AND p_date_acquired IS NOT NULL AND p_date_acquired < p_fy_start;
+  acq_is_opening := p_opening_cost <> 0 AND p_date_acquired IS NOT NULL AND p_date_acquired <= p_fy_start;
   opening_gross_block := CASE WHEN acq_is_opening THEN p_opening_cost ELSE 0 END
-    + CASE WHEN p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition < p_fy_start
+    + CASE WHEN p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_fy_start
            THEN p_additions ELSE 0 END;
   opening_nbv := opening_gross_block - p_acc_dep_opening;
 
   -- Steps 2-4: per-tranche days held / depreciation, live-classified against FY Start
   -- as of effective_end_date.
-  acq_is_opening := p_date_acquired < p_fy_start; -- p_date_acquired is always present, unlike additions
+  acq_is_opening := p_date_acquired <= p_fy_start; -- p_date_acquired is always present, unlike additions
   days_held_opening := GREATEST(0, (effective_end_date - p_fy_start) + 1);
   IF p_date_acquired > effective_end_date THEN
     acq_opening_amount := 0; acq_addition_amount := 0; acq_opening_dep := 0; acq_addition_dep := 0;
@@ -249,7 +250,7 @@ BEGIN
   END IF;
 
   add_applies := p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition <= effective_end_date;
-  add_is_opening := add_applies AND p_date_of_addition < p_fy_start;
+  add_is_opening := add_applies AND p_date_of_addition <= p_fy_start;
   days_held_addition := 0;
   add_opening_amount := 0; add_addition_amount := 0; add_opening_dep := 0; add_addition_dep := 0;
   IF add_applies AND add_is_opening THEN
@@ -281,7 +282,7 @@ BEGIN
     acq_opening_dep_at_disposal := 0;
     acq_addition_dep_at_disposal := 0;
     IF p_date_acquired <= p_date_of_disposal THEN
-      acq_is_opening_at_disposal := p_date_acquired < p_fy_start;
+      acq_is_opening_at_disposal := p_date_acquired <= p_fy_start;
       IF acq_is_opening_at_disposal THEN
         acq_opening_dep_at_disposal := (p_opening_cost / p_useful_life_years)
           * (GREATEST(0, (p_date_of_disposal - p_fy_start) + 1)::numeric / p_days_in_fy);
@@ -295,7 +296,7 @@ BEGIN
     add_addition_dep_at_disposal := 0;
     add_applies_at_disposal := p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_date_of_disposal;
     IF add_applies_at_disposal THEN
-      add_is_opening_at_disposal := p_date_of_addition < p_fy_start;
+      add_is_opening_at_disposal := p_date_of_addition <= p_fy_start;
       IF add_is_opening_at_disposal THEN
         add_opening_dep_at_disposal := (p_additions / p_useful_life_years)
           * (GREATEST(0, (p_date_of_disposal - p_fy_start) + 1)::numeric / p_days_in_fy);
