@@ -30,6 +30,7 @@ export {
   FilterRegular as FilterIcon,
   PulseRegular as LifecycleIcon,
   EyeRegular as ViewIcon,
+  EyeOffRegular as HideIcon,
   PrintRegular as PrintIcon,
   FullScreenMaximizeRegular as ExpandIcon,
   FullScreenMinimizeRegular as CollapseExpandIcon,
