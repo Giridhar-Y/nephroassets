@@ -32,6 +32,12 @@ export async function startTestPostgres(): Promise<void> {
   const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
   const sql = readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8");
   await pool.query(sql);
+  // far_component_result / far_calc_component live in their own file, applied separately
+  // from the rest of schema.sql — see calcFunction.sql's header comment and pool.ts's
+  // applySchema() for why. This test bootstrap doesn't go through applySchema(), so it
+  // needs the same two-file sequence explicitly.
+  const calcSql = readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8");
+  await pool.query(calcSql);
   await pool.end();
 }
 

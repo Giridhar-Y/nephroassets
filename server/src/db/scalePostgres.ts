@@ -34,6 +34,10 @@ export async function startScalePostgres(): Promise<void> {
   const pool = new pg.Pool({ connectionString: SCALE_DATABASE_URL });
   const sql = readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8");
   await pool.query(sql);
+  // far_component_result / far_calc_component live in their own file — see
+  // calcFunction.sql's header comment and pool.ts's applySchema() for why.
+  const calcSql = readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8");
+  await pool.query(calcSql);
   await pool.end();
 }
 

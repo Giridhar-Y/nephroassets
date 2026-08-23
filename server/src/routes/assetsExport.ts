@@ -481,9 +481,9 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       `WITH calc AS (
          SELECT qty, acc_dep_c1_opening, acc_dep_c2_opening,
            far_calc_component(c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}, date_acquired) AS c1,
+             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $${asAtPh}::date, $${fyStartPh}::date, $${daysPh}::integer, date_acquired) AS c1,
            far_calc_component(c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $${asAtPh}, $${fyStartPh}, $${daysPh}, date_acquired) AS c2,
+             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $${asAtPh}::date, $${fyStartPh}::date, $${daysPh}::integer, date_acquired) AS c2,
            deletions_c1, deletions_c2, sale_value
          FROM assets ${whereClause}
        )

@@ -44,7 +44,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
          COUNT(*) AS asset_count,
          COALESCE(SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2, $3, $4, date_acquired
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2::date, $3::date, $4::integer, date_acquired
          )).gross_block), 0) AS total_c1_gross_block
        FROM assets
        WHERE COALESCE(revised_location, location) = $1`,
@@ -96,11 +96,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
            deletions_c2, acc_dep_c2_opening,
            far_calc_component(
              c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3, date_acquired
+             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $3::integer, date_acquired
            ) AS c1,
            far_calc_component(
              c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3, date_acquired
+             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $3::integer, date_acquired
            ) AS c2,
            (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
          FROM assets
@@ -193,11 +193,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
          sub_classification,
          SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1, $2, $3, date_acquired
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $3::integer, date_acquired
          )).period_depreciation) AS c1_period_dep,
          SUM((far_calc_component(
            c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1, $2, $3, date_acquired
+           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $3::integer, date_acquired
          )).period_depreciation) AS c2_period_dep
        FROM assets
        GROUP BY sub_classification

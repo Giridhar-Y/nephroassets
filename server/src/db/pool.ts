@@ -52,6 +52,12 @@ export async function applySchema(): Promise<void> {
     const sql = readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8");
     await db.query(sql);
   }
+  // far_component_result / far_calc_component (calcFunction.sql) are re-applied on every
+  // boot, unlike the rest of schema.sql above — see that file's own header comment for
+  // why: a function signature/body change here must reach an already-running production
+  // database, not just a brand-new one, and DROP+CREATE is what makes that safe to redo
+  // every time regardless of whatever stale signature a database is currently carrying.
+  await db.query(readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8"));
   // schema.sql only ever runs in full, once, against a truly empty database — an already-
   // migrated database (like every one this app has had until now) never re-runs it, so a
   // table added to schema.sql later never appears there on its own. This app has no real

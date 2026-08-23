@@ -64,6 +64,13 @@ async function main() {
   } else {
     console.log("  schema already exists, skipping (tables will just get more rows inserted).");
   }
+  // far_component_result / far_calc_component live in their own file and are applied
+  // unconditionally, unlike the rest of schema.sql above — see calcFunction.sql's header
+  // comment and pool.ts's applySchema() for why (this mirrors that same two-step
+  // sequence for a one-off migration run).
+  const calcSql = readFileSync(path.resolve(import.meta.dirname, "../db/calcFunction.sql"), "utf-8");
+  await dest.query(calcSql);
+  console.log("  calc function applied.");
 
   console.log("Copying settings...");
   await copyTable(source, dest, "settings");

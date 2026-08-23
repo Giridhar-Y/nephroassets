@@ -5,7 +5,7 @@
   "regions": ["sin1"],
   "functions": {
     "api/index.ts": {
-      "includeFiles": "server/src/db/schema.sql"
+      "includeFiles": "server/src/db/*.sql"
     }
   },
   "rewrites": [
