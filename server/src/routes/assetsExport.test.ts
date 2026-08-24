@@ -98,6 +98,19 @@ describe("Register Export: GET /api/assets/export", () => {
     expect(worksheet.getColumn(13).numFmt).toBe("#,##0.00"); // C1 Opening (a numeric column)
   });
 
+  it("excludes an asset from the export when AS_AT is before its own capitalization date", async () => {
+    await insertAsset("EXP-OLD", { date_acquired: "2020-01-01" });
+    await insertAsset("EXP-NEW", { date_acquired: "2026-06-01" });
+
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?asAt=2026-03-31" });
+    const worksheet = await readWorkbook(res.rawPayload);
+    // totals + group band + header + only EXP-OLD (EXP-NEW isn't capitalized yet as at 2026-03-31)
+    expect(worksheet.rowCount).toBe(4);
+    const dataRow = worksheet.getRow(4).values as unknown[];
+    expect(dataRow).toContain("EXP-OLD");
+    expect(dataRow).not.toContain("EXP-NEW");
+  });
+
   it("applies filters (center) so only matching rows are exported", async () => {
     await insertAsset("EXP-4");
     await insertAsset("EXP-5", { location: "Center-Other" });

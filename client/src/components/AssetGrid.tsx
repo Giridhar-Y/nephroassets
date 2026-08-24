@@ -5,7 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import { COLUMN_GROUPS, type ColumnDef, type ColumnGroupId } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
-import { ChevronDownIcon, CollapseExpandIcon, EmptyIcon, ErrorIcon, ExpandIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
+import { ChevronDownIcon, CollapseExpandIcon, EditIcon, EmptyIcon, ErrorIcon, ExpandIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
 
 const ROW_HEIGHT = 40;
 const GROUP_BAND_HEIGHT = 26;
@@ -147,6 +147,9 @@ export interface AssetGridProps {
    *  navigation, so right-click/middle-click/Ctrl+click all behave as users expect and
    *  Register stays exactly where it was. Return the in-app path, e.g. `/assets/${farId}`. */
   getAssetHref?: (farId: string) => string;
+  /** Renders an "Edit" action alongside View Lifecycle when provided — opens whatever
+   *  the caller wants (typically EditAssetModal) for that row's FAR ID. */
+  onEditAsset?: (farId: string) => void;
   /** Drag-to-resize a column's header edge. Omit to disable resizing (e.g. pages using a
    *  fixed, non-persisted column set). */
   onResizeColumn?: (id: string, width: number) => void;
@@ -176,6 +179,7 @@ export function AssetGrid({
   onToggleAll,
   headerFilters,
   getAssetHref,
+  onEditAsset,
   onResizeColumn,
   onReorderColumn,
   showGroupBand = false
@@ -237,7 +241,7 @@ export function AssetGrid({
   }
 
   const checkboxWidth = selectable ? 40 : 0;
-  const actionWidth = getAssetHref ? 40 : 0;
+  const actionWidth = (getAssetHref ? 40 : 0) + (onEditAsset ? 40 : 0);
 
   // Left offset for each pinned column, so they stack correctly (checkbox, then FAR ID,
   // then Asset Description) instead of overlapping when horizontally scrolled. Collapsing
@@ -309,7 +313,7 @@ export function AssetGrid({
                   </div>
                 );
               })}
-              {getAssetHref && <div className="h-full w-10 shrink-0 bg-white" />}
+              {actionWidth > 0 && <div className="h-full shrink-0 bg-white" style={{ width: actionWidth }} />}
             </div>
           )}
           <div
@@ -387,7 +391,7 @@ export function AssetGrid({
                 </div>
               );
             })}
-            {getAssetHref && <div className="h-9 w-10 shrink-0" />}
+            {actionWidth > 0 && <div className="h-9 shrink-0" style={{ width: actionWidth }} />}
           </div>
 
           {loading ? (
@@ -404,7 +408,7 @@ export function AssetGrid({
                       {slot.kind === "column" && <div className="h-3 w-3/4 animate-pulse rounded bg-gray-100" />}
                     </div>
                   ))}
-                  {getAssetHref && <div className="w-10 shrink-0" />}
+                  {actionWidth > 0 && <div className="shrink-0" style={{ width: actionWidth }} />}
                 </div>
               ))}
             </div>
@@ -469,18 +473,31 @@ export function AssetGrid({
                         </div>
                       );
                     })}
-                    {getAssetHref && (
-                      <div className="flex w-10 shrink-0 items-center justify-center">
-                        <Link
-                          to={getAssetHref(item.asset.farId)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label={`View lifecycle for ${item.asset.farId} (opens in a new tab)`}
-                          title="View Lifecycle (opens in a new tab)"
-                          className="grid h-6 w-6 place-items-center rounded text-gray-400 hover:bg-gray-100 hover:text-accent"
-                        >
-                          <ViewIcon fontSize={15} />
-                        </Link>
+                    {actionWidth > 0 && (
+                      <div className="flex shrink-0 items-center justify-center gap-1" style={{ width: actionWidth }}>
+                        {onEditAsset && (
+                          <button
+                            type="button"
+                            aria-label={`Edit ${item.asset.farId}`}
+                            title="Edit"
+                            className="grid h-6 w-6 place-items-center rounded text-gray-400 hover:bg-gray-100 hover:text-accent"
+                            onClick={() => onEditAsset(item.asset.farId)}
+                          >
+                            <EditIcon fontSize={15} />
+                          </button>
+                        )}
+                        {getAssetHref && (
+                          <Link
+                            to={getAssetHref(item.asset.farId)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`View lifecycle for ${item.asset.farId} (opens in a new tab)`}
+                            title="View Lifecycle (opens in a new tab)"
+                            className="grid h-6 w-6 place-items-center rounded text-gray-400 hover:bg-gray-100 hover:text-accent"
+                          >
+                            <ViewIcon fontSize={15} />
+                          </Link>
+                        )}
                       </div>
                     )}
                   </div>

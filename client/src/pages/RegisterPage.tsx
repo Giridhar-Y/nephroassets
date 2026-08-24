@@ -7,6 +7,7 @@ import { useAssetList } from "../hooks/useAssetList.js";
 import { ColumnPicker } from "../components/ColumnPicker.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { DisposalModal } from "../components/DisposalModal.js";
+import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
@@ -35,6 +36,7 @@ export function RegisterPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [transferOpen, setTransferOpen] = useState(false);
   const [disposeOpen, setDisposeOpen] = useState(false);
+  const [editingFarId, setEditingFarId] = useState<string | null>(null);
 
   const toggleRow = (farId: string) => {
     setSelected((prev) => {
@@ -205,6 +207,7 @@ export function RegisterPage() {
         onToggleAll={toggleAllLoaded}
         headerFilters={headerFilters}
         getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+        onEditAsset={user?.role !== "viewer" ? (farId) => setEditingFarId(farId) : undefined}
         onResizeColumn={setColumnWidth}
         onReorderColumn={moveColumnTo}
         showGroupBand
@@ -235,6 +238,22 @@ export function RegisterPage() {
           }}
         />
       )}
+
+      {editingFarId &&
+        (() => {
+          const editingAsset = items.find((i) => i.asset.farId === editingFarId)?.asset;
+          if (!editingAsset) return null;
+          return (
+            <EditAssetModal
+              asset={editingAsset}
+              onClose={() => setEditingFarId(null)}
+              onDone={() => {
+                setEditingFarId(null);
+                reload();
+              }}
+            />
+          );
+        })()}
     </div>
   );
 }

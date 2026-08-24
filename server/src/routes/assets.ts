@@ -14,6 +14,42 @@ const disposalSchema = z.object({
   saleValue: z.coerce.number().min(0)
 });
 
+// The assets table has exactly one additionsC1/C2 + dateOfAddition pair per asset —
+// same columns Capitalization's own "Mid-Year Additions" section already writes. This
+// route lets that pair be set *after* capitalization instead of only during it, but the
+// one-tranche-per-asset limit is unchanged: an asset that already has an addition
+// recorded can't get a second one without overwriting (and losing) the first, so the
+// route rejects that case rather than silently doing it. Supporting more than one
+// addition per asset would need a real ledger table, not a bigger form.
+const additionSchema = z
+  .object({
+    additionsC1: z.coerce.number().min(0).default(0),
+    additionsC2: z.coerce.number().min(0).default(0),
+    dateOfAddition: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+  })
+  .refine((data) => data.additionsC1 !== 0 || data.additionsC2 !== 0, {
+    message: "At least one of Additions C1/C2 must be non-zero.",
+    path: ["additionsC1"]
+  });
+
+// Editable-after-capitalization: only fields that don't feed the calc engine's
+// historical Gross Block/Additions classification. FAR ID, Date Acquired, Location,
+// Status, Sub Classification, the cost fields (c1/c2OpeningCost), and
+// additionsC1/C2 + dateOfAddition are deliberately NOT editable here — changing any of
+// them after the fact would rewrite a fact the engine has already used to compute
+// historical figures (a correction to those belongs in Bulk Upload, which is explicit
+// about being an upsert; a new addition has its own dedicated flow). Useful Life and
+// Opening Acc Dep are NOT date-versioned anywhere in this engine (same as Capitalization
+// already allows) — editing them recomputes every AS_AT, past and future, same as
+// editing them would if entered wrong at Capitalization time.
+const editAssetSchema = z.object({
+  serialNo: z.string().optional().default(""),
+  usefulLifeC1Years: z.coerce.number().min(0),
+  usefulLifeC2Years: z.coerce.number().min(0),
+  accDepC1Opening: z.coerce.number().min(0),
+  accDepC2Opening: z.coerce.number().min(0)
+});
+
 const SORTABLE_COLUMNS: Record<string, string> = {
   farId: "far_id",
   dateAcquired: "date_acquired",
@@ -37,6 +73,11 @@ const querySchema = z.object({
   status: multiValue,
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Additions Log (the new single-asset addition flow) — assets carrying a recorded
+  // mid-year addition, regardless of Sub Classification/Status/etc. A plain string
+  // check against "true" rather than z.coerce.boolean(), which coerces the *string*
+  // "false" to `true` (JS's own Boolean("false") === true) — a real zod footgun.
+  hasAddition: z.string().optional(),
   search: z.string().optional(),
   descriptionSearch: z.string().optional(),
   globalSearch: z.string().optional(),
@@ -105,6 +146,14 @@ export default async function assetsRoutes(app: FastifyInstance) {
       params.push(q.status);
       conditions.push(`status = ANY($${params.length})`);
     }
+    // A fixed asset register as at a given date can never include an asset that wasn't
+    // capitalized yet — always applied, not just when the user opts into the Date
+    // Acquired filter, so viewing/exporting a prior period never lists an asset that
+    // doesn't exist as of that date. The calc engine already zeroes its Gross Block/NBV
+    // correctly for such a row (splitTranche gates on dateAcquired vs. AS_AT); the bug
+    // was the row appearing in this list at all.
+    params.push(asAt);
+    conditions.push(`date_acquired <= $${params.length}`);
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);
       conditions.push(`date_acquired >= $${params.length}`);
@@ -112,6 +161,9 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (q.dateAcquiredTo) {
       params.push(q.dateAcquiredTo);
       conditions.push(`date_acquired <= $${params.length}`);
+    }
+    if (q.hasAddition === "true") {
+      conditions.push(`(additions_c1 <> 0 OR additions_c2 <> 0)`);
     }
     if (q.search) {
       params.push(`${q.search.toUpperCase()}%`);
@@ -296,6 +348,100 @@ export default async function assetsRoutes(app: FastifyInstance) {
       assetCreateValues(input)
     );
     return { farId: input.farId, created: true };
+  });
+
+  // Edit: modify an already-capitalized asset's non-historical particulars (Serial No,
+  // Useful Life C1/C2, Opening Acc Dep C1/C2) without going through Bulk Upload. See
+  // editAssetSchema's comment for why this field list is deliberately short.
+  app.patch("/api/assets/:farId", { preHandler: requireEditor }, async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = editAssetSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "Invalid edit payload.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const input = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows: existing } = await db.query<{ status: string; date_of_disposal: string | null }>(
+      `SELECT status, date_of_disposal FROM assets WHERE far_id = $1`,
+      [farId]
+    );
+    if (existing.length === 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    // A disposed asset's WDV/Profit-Loss on disposal was computed from Opening Acc Dep
+    // at the time — editing it afterwards would silently rewrite an already-realized
+    // disposal figure. Editing is only for an asset still on the books.
+    if (existing[0]!.date_of_disposal !== null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has been disposed — its particulars can no longer be edited.` };
+    }
+
+    await db.query(
+      `UPDATE assets
+       SET serial_no = $1, useful_life_c1_years = $2, useful_life_c2_years = $3,
+           acc_dep_c1_opening = $4, acc_dep_c2_opening = $5
+       WHERE far_id = $6`,
+      [input.serialNo, input.usefulLifeC1Years, input.usefulLifeC2Years, input.accDepC1Opening, input.accDepC2Opening, farId]
+    );
+    return { farId, updated: true };
+  });
+
+  // Mid-Year Addition on an already-capitalized asset — writes the same
+  // additionsC1/C2 + dateOfAddition columns Capitalization's own "Mid-Year Additions"
+  // section uses, so the FY-rollover engine classifies it identically either way. See
+  // additionSchema's comment for the one-addition-per-asset limit.
+  app.patch("/api/assets/:farId/addition", { preHandler: requireEditor }, async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = additionSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "Invalid addition payload.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const input = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows: existing } = await db.query<{
+      date_acquired: string;
+      date_of_disposal: string | null;
+      additions_c1: string;
+      additions_c2: string;
+      date_of_addition: string | null;
+    }>(
+      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition FROM assets WHERE far_id = $1`,
+      [farId]
+    );
+    if (existing.length === 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    const row = existing[0]!;
+    if (row.date_of_disposal !== null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has been disposed — no further additions can be recorded.` };
+    }
+    if (Number(row.additions_c1) !== 0 || Number(row.additions_c2) !== 0 || row.date_of_addition !== null) {
+      reply.code(409);
+      return {
+        error: `Asset "${farId}" already has an addition recorded on ${isoToDDMMYYYY(row.date_of_addition!)} — a second addition isn't supported yet.`
+      };
+    }
+    if (input.dateOfAddition < row.date_acquired) {
+      reply.code(400);
+      return {
+        error: `Addition date cannot be before the asset's capitalization date (${isoToDDMMYYYY(row.date_acquired)}).`
+      };
+    }
+
+    await db.query(
+      `UPDATE assets SET additions_c1 = $1, additions_c2 = $2, date_of_addition = $3 WHERE far_id = $4`,
+      [input.additionsC1, input.additionsC2, input.dateOfAddition, farId]
+    );
+    return { farId, added: true };
   });
 
   // Disposal preview: exactly what the real disposal would compute (same full-cost

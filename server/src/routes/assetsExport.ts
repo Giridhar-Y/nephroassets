@@ -432,6 +432,10 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       params.push(q.status);
       conditions.push(`status = ANY($${params.length})`);
     }
+    // Same fix as GET /api/assets: an export as at a given date can never include an
+    // asset not yet capitalized as of that date — always applied.
+    params.push(asAt);
+    conditions.push(`date_acquired <= $${params.length}`);
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);
       conditions.push(`date_acquired >= $${params.length}`);

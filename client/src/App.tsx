@@ -10,6 +10,7 @@ import { ChangePasswordPage } from "./pages/ChangePasswordPage.js";
 import { AdminPage } from "./pages/AdminPage.js";
 import { TransfersPage } from "./pages/TransfersPage.js";
 import { CapitalizationPage } from "./pages/CapitalizationPage.js";
+import { AdditionsPage } from "./pages/AdditionsPage.js";
 import { DisposalPage } from "./pages/DisposalPage.js";
 import { ReportsPage } from "./pages/ReportsPage.js";
 import { BulkUploadPage } from "./pages/BulkUploadPage.js";
@@ -125,6 +126,16 @@ export default function App() {
                     <RequireEditor>
                       <SettingsGate>
                         <DisposalPage />
+                      </SettingsGate>
+                    </RequireEditor>
+                  }
+                />
+                <Route
+                  path="/additions"
+                  element={
+                    <RequireEditor>
+                      <SettingsGate>
+                        <AdditionsPage />
                       </SettingsGate>
                     </RequireEditor>
                   }

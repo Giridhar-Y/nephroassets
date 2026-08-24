@@ -10,6 +10,7 @@ import {
   CalendarIcon,
   HistoryIcon,
   AddCircleIcon,
+  AdditionIcon,
   DeleteIcon,
   ReportsIcon,
   UploadIcon,
@@ -28,6 +29,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
   { to: "/assets", label: "Asset History", icon: LifecycleIcon },
   { to: "/transfers", label: "Transfers", icon: HistoryIcon },
   { to: "/capitalization", label: "Capitalization", icon: AddCircleIcon },
+  { to: "/additions", label: "Additions", icon: AdditionIcon },
   { to: "/disposals", label: "Disposals", icon: DeleteIcon },
   { to: "/bulk-upload", label: "Bulk Upload", icon: UploadIcon },
   { to: "/reports", label: "Reports", icon: ReportsIcon },
@@ -39,7 +41,7 @@ const ADMIN_NAV_ITEM = { to: "/admin", label: "Admin", icon: AdminIcon };
 
 // Editor-only screens — a viewer has no access to these at all (server-enforced by
 // requireEditor on their API routes; this is just the client-side nav/UX mirror).
-const EDITOR_ONLY_PATHS = new Set(["/transfers", "/capitalization", "/disposals", "/bulk-upload"]);
+const EDITOR_ONLY_PATHS = new Set(["/transfers", "/capitalization", "/additions", "/disposals", "/bulk-upload"]);
 
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();

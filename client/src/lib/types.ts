@@ -104,6 +104,7 @@ export interface AssetFilters {
   status?: string[];
   dateAcquiredFrom?: string;
   dateAcquiredTo?: string;
+  hasAddition?: boolean;
   search?: string;
   descriptionSearch?: string;
   globalSearch?: string;

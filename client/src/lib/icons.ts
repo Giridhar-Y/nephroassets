@@ -25,6 +25,8 @@ export {
   AddCircleRegular as AddCircleIcon,
   DeleteRegular as DeleteIcon,
   DocumentBulletListRegular as ReportsIcon,
+  EditRegular as EditIcon,
+  AddSquareRegular as AdditionIcon,
   ArrowUploadRegular as UploadIcon,
   ArrowDownloadRegular as ExportIcon,
   FilterRegular as FilterIcon,

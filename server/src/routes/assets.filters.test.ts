@@ -24,6 +24,117 @@ async function insertAsset(
   );
 }
 
+describe("GET /api/assets: an asset never appears before its own capitalization date", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(assetsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    // Capitalized mid-way through the current FY (2026-04-01 to 2027-03-31).
+    await db.query(
+      `INSERT INTO assets (
+         far_id, sub_classification, asset_description, status, date_acquired, location,
+         useful_life_c1_years, useful_life_c2_years, c1_opening_cost
+       ) VALUES ('THIS-FY-ASSET', 'Test-Sub', 'Capitalized this FY', 'Active', '2026-06-01', 'Center-A', 5, 5, 100000)`
+    );
+  });
+
+  it("is excluded from the list when AS_AT is a prior-FY date, before it existed", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/assets?asAt=2026-03-31" });
+    const items = res.json().items;
+    expect(items.some((i: { asset: { farId: string } }) => i.asset.farId === "THIS-FY-ASSET")).toBe(false);
+  });
+
+  it("is included once AS_AT reaches its capitalization date", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/assets?asAt=2026-06-01" });
+    const items = res.json().items;
+    expect(items.some((i: { asset: { farId: string } }) => i.asset.farId === "THIS-FY-ASSET")).toBe(true);
+  });
+
+  it("is excluded the day before its capitalization date (boundary is exclusive)", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/assets?asAt=2026-05-31" });
+    const items = res.json().items;
+    expect(items.some((i: { asset: { farId: string } }) => i.asset.farId === "THIS-FY-ASSET")).toBe(false);
+  });
+
+  it("an explicit dateAcquiredTo filter still combines correctly with the always-on AS_AT gate", async () => {
+    // dateAcquiredTo alone would have let this asset through even at a prior AS_AT
+    // under the old bug — proves the two conditions are AND'd, not one replacing the other.
+    const res = await authedInject(app, {
+      method: "GET",
+      url: "/api/assets?asAt=2026-03-31&dateAcquiredTo=2026-12-31"
+    });
+    const items = res.json().items;
+    expect(items.some((i: { asset: { farId: string } }) => i.asset.farId === "THIS-FY-ASSET")).toBe(false);
+  });
+});
+
+describe("GET /api/assets: hasAddition filter (Additions Log)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(assetsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await db.query(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location, useful_life_c1_years, useful_life_c2_years, additions_c1, date_of_addition)
+       VALUES ('HAS-ADD-1', 'Test-Sub', 'Has an addition', 'Active', '2020-01-01', 'Center-A', 5, 5, 50000, '2026-05-01')`
+    );
+    await db.query(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location, useful_life_c1_years, useful_life_c2_years)
+       VALUES ('NO-ADD-1', 'Test-Sub', 'No addition', 'Active', '2020-01-01', 'Center-A', 5, 5)`
+    );
+  });
+
+  it("hasAddition=true returns only assets with a non-zero addition recorded", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/assets?hasAddition=true" });
+    const items = res.json().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].asset.farId).toBe("HAS-ADD-1");
+  });
+
+  it("omitting hasAddition returns every asset", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/assets" });
+    const items = res.json().items;
+    expect(items.map((i: { asset: { farId: string } }) => i.asset.farId).sort()).toEqual(["HAS-ADD-1", "NO-ADD-1"]);
+  });
+});
+
 describe("GET /api/assets: descriptionSearch filter", () => {
   let app: FastifyInstance;
 

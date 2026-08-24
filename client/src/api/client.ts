@@ -143,12 +143,41 @@ export function createAsset(payload: AssetCreateInput): Promise<{ farId: string;
   return request("/api/assets", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export interface AssetEditInput {
+  serialNo: string;
+  usefulLifeC1Years: number;
+  usefulLifeC2Years: number;
+  accDepC1Opening: number;
+  accDepC2Opening: number;
+}
+
+// Edit: modify an already-capitalized asset's non-historical particulars. Deliberately
+// a short field list — see the server's editAssetSchema for why FAR ID/Date Acquired/
+// cost/additions fields aren't included.
+export function updateAsset(farId: string, payload: AssetEditInput): Promise<{ farId: string; updated: boolean }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
 // Disposal: full disposal only — the server writes off the asset's entire capitalized cost.
 export function disposeAsset(
   farId: string,
   payload: { dateOfDisposal: string; saleValue: number }
 ): Promise<{ farId: string; disposed: boolean }> {
   return request(`/api/assets/${encodeURIComponent(farId)}/disposal`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+// Mid-Year Addition on an already-capitalized asset — writes the same
+// additionsC1/C2 + dateOfAddition columns Capitalization's own form uses. One addition
+// per asset, ever (see the server's additionSchema comment) — rejected with a 409 if
+// the asset already has one recorded.
+export function recordAddition(
+  farId: string,
+  payload: { additionsC1: number; additionsC2: number; dateOfAddition: string }
+): Promise<{ farId: string; added: boolean }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}/addition`, {
     method: "PATCH",
     body: JSON.stringify(payload)
   });

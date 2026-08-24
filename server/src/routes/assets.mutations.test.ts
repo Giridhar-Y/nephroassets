@@ -153,6 +153,213 @@ describe("Capitalization: POST /api/assets", () => {
   });
 });
 
+describe("Edit: PATCH /api/assets/:farId", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(assetsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await seedMasters();
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "EDIT-TEST-1" } });
+  });
+
+  it("updates Serial No, Useful Life, and Opening Acc Dep", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { serialNo: "SN-NEW-1", usefulLifeC1Years: 8, usefulLifeC2Years: 6, accDepC1Opening: 1500, accDepC2Opening: 500 }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ farId: "EDIT-TEST-1", updated: true });
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT serial_no, useful_life_c1_years, useful_life_c2_years, acc_dep_c1_opening, acc_dep_c2_opening FROM assets WHERE far_id = 'EDIT-TEST-1'`
+    );
+    expect(rows[0].serial_no).toBe("SN-NEW-1");
+    expect(Number(rows[0].useful_life_c1_years)).toBe(8);
+    expect(Number(rows[0].useful_life_c2_years)).toBe(6);
+    expect(Number(rows[0].acc_dep_c1_opening)).toBe(1500);
+    expect(Number(rows[0].acc_dep_c2_opening)).toBe(500);
+  });
+
+  it("does not touch FAR ID, Date Acquired, Location, Status, cost, or additions fields", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { serialNo: "SN-2", usefulLifeC1Years: 9, usefulLifeC2Years: 9, accDepC1Opening: 0, accDepC2Opening: 0 }
+    });
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT far_id, date_acquired, location, status, sub_classification, c1_opening_cost, c2_opening_cost, additions_c1, additions_c2
+       FROM assets WHERE far_id = 'EDIT-TEST-1'`
+    );
+    expect(rows[0].far_id).toBe("EDIT-TEST-1");
+    expect(String(rows[0].date_acquired)).toMatch(/^2026-01-01/);
+    expect(rows[0].location).toBe("Center-Test");
+    expect(rows[0].status).toBe("Active");
+    expect(rows[0].sub_classification).toBe("Test-Sub");
+    expect(Number(rows[0].c1_opening_cost)).toBe(10000);
+    expect(Number(rows[0].c2_opening_cost)).toBe(10000);
+    expect(Number(rows[0].additions_c1)).toBe(0);
+    expect(Number(rows[0].additions_c2)).toBe(0);
+  });
+
+  it("rejects negative Useful Life or Opening Acc Dep", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { serialNo: "", usefulLifeC1Years: -1, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("404s for an unknown FAR ID", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/NOT-REAL",
+      payload: { serialNo: "", usefulLifeC1Years: 5, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("409s for an already-disposed asset — historical figures stay locked", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-06-01", saleValue: 100 }
+    });
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { serialNo: "SN-3", usefulLifeC1Years: 5, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/disposed/);
+  });
+});
+
+describe("Addition: PATCH /api/assets/:farId/addition", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(assetsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await seedMasters();
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "ADD-TEST-1" } });
+  });
+
+  it("records an addition, matching the same columns Capitalization's own Mid-Year Additions section writes", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 400000, additionsC2: 100000, dateOfAddition: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ farId: "ADD-TEST-1", added: true });
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT additions_c1, additions_c2, date_of_addition FROM assets WHERE far_id = 'ADD-TEST-1'`
+    );
+    expect(Number(rows[0].additions_c1)).toBe(400000);
+    expect(Number(rows[0].additions_c2)).toBe(100000);
+    expect(String(rows[0].date_of_addition)).toMatch(/^2026-05-01/);
+  });
+
+  it("rejects a second addition on the same asset (one-addition-per-asset limit)", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 400000, additionsC2: 0, dateOfAddition: "2026-05-01" }
+    });
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 50000, additionsC2: 0, dateOfAddition: "2026-07-01" }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/already has an addition recorded/);
+
+    // The first addition's values are unchanged — the second request never wrote anything.
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT additions_c1 FROM assets WHERE far_id = 'ADD-TEST-1'`);
+    expect(Number(rows[0].additions_c1)).toBe(400000);
+  });
+
+  it("rejects both additionsC1 and additionsC2 being zero", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 0, additionsC2: 0, dateOfAddition: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects an addition dated before the asset's capitalization date", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2025-06-01" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/cannot be before the asset's capitalization date/);
+  });
+
+  it("rejects an addition on an already-disposed asset", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-06-01", saleValue: 100 }
+    });
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/ADD-TEST-1/addition",
+      payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-07-01" }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/disposed/);
+  });
+
+  it("404s for an unknown FAR ID", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/NOT-REAL/addition",
+      payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
   let app: FastifyInstance;
 
