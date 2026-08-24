@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchAuditReconciliation, getAuditReconciliationExportUrl, type ReconciliationItem } from "../api/client.js";
+import {
+  fetchAuditReconciliation,
+  getAuditReconciliationExportUrl,
+  type ReconciliationItem,
+  type ReconciliationPeriod
+} from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { formatCurrency } from "../lib/format.js";
-import { fySettingsKey } from "../lib/settingsKey.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
+
+const DATE_INPUT_CLASS =
+  "rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -27,29 +34,35 @@ function CheckBadge({ pass, message }: { pass: boolean; message: string }) {
 
 export function AuditReconciliationPage() {
   const { settings } = useSettings();
-  const asAt = settings?.asAt ?? null;
   const [items, setItems] = useState<ReconciliationItem[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const settingsKey = fySettingsKey(settings);
+  // Independent of the app-wide "Figures as of" setting — seeded from it once, on
+  // first load, but from then on only this page's own period selector drives what gets
+  // reconciled, so switching FY here doesn't touch Settings and vice versa.
+  const [period, setPeriod] = useState<ReconciliationPeriod | null>(null);
+  useEffect(() => {
+    if (settings && !period) {
+      setPeriod({ asAt: settings.asAt, fyStart: settings.fyStart, fyEnd: settings.fyEnd });
+    }
+  }, [settings, period]);
+
+  const isCustomPeriod = !!(settings && period && (period.fyStart !== settings.fyStart || period.fyEnd !== settings.fyEnd));
 
   const load = useCallback(() => {
-    if (!asAt) return;
+    if (!period) return;
     setLoading(true);
     setError(null);
-    fetchAuditReconciliation(asAt)
+    fetchAuditReconciliation(period)
       .then((res) => setItems(res.items))
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the reconciliation."))
       .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asAt]);
+  }, [period]);
 
   useEffect(() => {
     load();
-    // Refetch on any FY setting change, not just AS_AT.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsKey]);
+  }, [load]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
@@ -57,10 +70,10 @@ export function AuditReconciliationPage() {
         <div className="flex items-center justify-between">
           <h1 className="text-base font-semibold text-ink">Audit Reconciliation</h1>
           <a
-            href={asAt ? getAuditReconciliationExportUrl(asAt) : undefined}
-            aria-disabled={!asAt}
+            href={period ? getAuditReconciliationExportUrl(period) : undefined}
+            aria-disabled={!period}
             className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 ${
-              !asAt ? "pointer-events-none opacity-40" : ""
+              !period ? "pointer-events-none opacity-40" : ""
             }`}
           >
             <ExportIcon fontSize={14} />
@@ -73,6 +86,65 @@ export function AuditReconciliationPage() {
           Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
           Closing Depreciation should equal Closing NBV.
         </p>
+
+        {period && (
+          <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="recon-fy-start" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                FY Start
+              </label>
+              <input
+                id="recon-fy-start"
+                type="date"
+                className={DATE_INPUT_CLASS}
+                value={period.fyStart}
+                max={period.fyEnd}
+                onChange={(e) => setPeriod({ ...period, fyStart: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="recon-fy-end" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                FY End
+              </label>
+              <input
+                id="recon-fy-end"
+                type="date"
+                className={DATE_INPUT_CLASS}
+                value={period.fyEnd}
+                min={period.fyStart}
+                onChange={(e) => setPeriod({ ...period, fyEnd: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="recon-as-at" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+                As At
+              </label>
+              <input
+                id="recon-as-at"
+                type="date"
+                className={DATE_INPUT_CLASS}
+                value={period.asAt}
+                min={period.fyStart}
+                max={period.fyEnd}
+                onChange={(e) => setPeriod({ ...period, asAt: e.target.value })}
+              />
+            </div>
+            {isCustomPeriod && settings && (
+              <>
+                <span className="mb-0.5 rounded-full bg-ink px-2 py-0.5 text-[10px] font-semibold text-white">
+                  Custom period
+                </span>
+                <button
+                  type="button"
+                  className="mb-0.5 text-[11px] font-medium text-accent hover:underline"
+                  onClick={() => setPeriod({ asAt: settings.asAt, fyStart: settings.fyStart, fyEnd: settings.fyEnd })}
+                >
+                  Reset to current FY
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {error && (

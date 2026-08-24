@@ -338,14 +338,32 @@ export interface ReconciliationItem {
   nbvCheckMessage: string;
 }
 
-export function fetchAuditReconciliation(asAt: string): Promise<{ asAt: string; items: ReconciliationItem[] }> {
-  return request(`/api/reports/audit-reconciliation?${new URLSearchParams({ asAt })}`);
+export interface ReconciliationPeriod {
+  asAt: string;
+  /** fyStart/fyEnd let this report reconcile a genuinely different financial year, not
+   *  just a different date within the current one — omit both to use the app-wide
+   *  Settings FY (only asAt is then an independent override). */
+  fyStart?: string;
+  fyEnd?: string;
+}
+
+function reconciliationParams(period: ReconciliationPeriod): URLSearchParams {
+  const params: Record<string, string> = { asAt: period.asAt };
+  if (period.fyStart) params.fyStart = period.fyStart;
+  if (period.fyEnd) params.fyEnd = period.fyEnd;
+  return new URLSearchParams(params);
+}
+
+export function fetchAuditReconciliation(
+  period: ReconciliationPeriod
+): Promise<{ asAt: string; fyStart: string; items: ReconciliationItem[] }> {
+  return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`);
 }
 
 // Same pattern as the Register's getExportUrl — the browser downloads it directly via
 // the Content-Disposition header, this just builds the URL.
-export function getAuditReconciliationExportUrl(asAt: string): string {
-  return `/api/reports/audit-reconciliation/export?${new URLSearchParams({ asAt })}`;
+export function getAuditReconciliationExportUrl(period: ReconciliationPeriod): string {
+  return `/api/reports/audit-reconciliation/export?${reconciliationParams(period)}`;
 }
 
 export interface DepreciationPostingBreakdown {

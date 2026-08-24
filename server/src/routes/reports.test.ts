@@ -140,6 +140,34 @@ describe("Audit Reconciliation report", () => {
     await app.close();
   });
 
+  it("reconciles a different financial year entirely when fyStart/fyEnd are supplied, not just a different date in the current one", async () => {
+    // Default (no override): RECON-CLEAN-1's addition (dated 2026-05-01) is inside the
+    // current FY (2026-04-01 to 2027-03-31), so it counts as an Addition.
+    const current = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const currentClean = current.json().items.find(
+      (i: { subClassification: string; component: string }) => i.subClassification === "Test-Clean" && i.component === "C1"
+    );
+    expect(currentClean.additionsSum).toBe(20000);
+    // Opening sums RECON-CLEAN-1's 100000 and RECON-CLEAN-2's 50000 — both capitalized
+    // 2020-01-01, well before either FY, so both count as Opening regardless of period.
+    expect(currentClean.openingSum).toBe(150000);
+
+    // A prior FY (2025-04-01 to 2026-03-31): the same addition hasn't happened yet as of
+    // that period's own AS_AT, so it must NOT count — additionsSum drops to 0. Opening
+    // is unaffected (capitalized 2020-01-01, well before either FY).
+    const prior = await authedInject(app, {
+      method: "GET",
+      url: "/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=2026-03-31"
+    });
+    expect(prior.statusCode).toBe(200);
+    expect(prior.json().fyStart).toBe("2025-04-01");
+    const priorClean = prior.json().items.find(
+      (i: { subClassification: string; component: string }) => i.subClassification === "Test-Clean" && i.component === "C1"
+    );
+    expect(priorClean.additionsSum).toBe(0);
+    expect(priorClean.openingSum).toBe(150000);
+  });
+
   it("passes both checks for a clean sub classification", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     expect(res.statusCode).toBe(200);

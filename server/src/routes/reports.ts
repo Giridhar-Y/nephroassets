@@ -3,23 +3,48 @@ import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import type { SettingsRow } from "../db/mappers.js";
+import { daysHeldInclusive } from "../calc/dates.js";
 
 const EPSILON = 0.01; // one paisa — guards against currency-display rounding only
 
-async function requireFySettings(db: Awaited<ReturnType<typeof getPool>>, asAtOverride?: string) {
+async function requireFySettings(
+  db: Awaited<ReturnType<typeof getPool>>,
+  overrides?: { asAt?: string; fyStart?: string; fyEnd?: string }
+) {
   const { rows } = await db.query<SettingsRow>(
     `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
   );
   const settings = rows[0];
   if (!settings) return null;
+  // fyStart/fyEnd only ever come from Audit Reconciliation's period selector — every
+  // other report route calls this with just an asAt override, same as before, and gets
+  // the stored days_in_fy verbatim (not recomputed) so nothing about their totals can
+  // shift by a rounding/leap-year difference. Reconciling a genuinely different FY only
+  // makes sense with both fyStart AND fyEnd supplied together — the client always sends
+  // them as a pair.
+  const fyStart = overrides?.fyStart ?? settings.fy_start;
+  const fyEnd = overrides?.fyEnd ?? settings.fy_end;
+  const daysInFy =
+    overrides?.fyStart && overrides?.fyEnd ? daysHeldInclusive(fyStart, fyEnd) : settings.days_in_fy;
   return {
-    asAt: asAtOverride ?? settings.as_at,
-    fyStart: settings.fy_start,
-    daysInFy: settings.days_in_fy
+    asAt: overrides?.asAt ?? settings.as_at,
+    fyStart,
+    daysInFy
   };
 }
 
 const asAtQuerySchema = z.object({ asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
+
+// Audit Reconciliation's period selector: unlike every other report (which only lets
+// the global "Figures as of" date be overridden per-request), this one can reconcile a
+// genuinely different financial year — fyStart/fyEnd, not just a different date within
+// the current one — since Opening is fixed at FY Start and the reference workbook's own
+// methodology this report matches is inherently FY-scoped.
+const reconciliationPeriodQuerySchema = z.object({
+  asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  fyStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  fyEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
 
 type ReconciliationRow = {
   sub_classification: string;
@@ -371,7 +396,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "A location is required.", details: parsed.error.flatten() };
     }
     const db = await getPool();
-    const fy = await requireFySettings(db, parsed.data.asAt);
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
     if (!fy) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
@@ -399,20 +424,20 @@ export default async function reportsRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/reports/audit-reconciliation", async (req, reply) => {
-    const parsed = asAtQuerySchema.safeParse(req.query);
+    const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Invalid query.", details: parsed.error.flatten() };
     }
     const db = await getPool();
-    const fy = await requireFySettings(db, parsed.data.asAt);
+    const fy = await requireFySettings(db, parsed.data);
     if (!fy) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
 
     const items = await computeReconciliationItems(db, fy);
-    return { asAt: fy.asAt, items };
+    return { asAt: fy.asAt, fyStart: fy.fyStart, items };
   });
 
   // Audit Reconciliation — Export to Excel: same three-block (C1 / C2 / Combined)
@@ -424,13 +449,13 @@ export default async function reportsRoutes(app: FastifyInstance) {
   // styling rather than live Excel conditional-formatting rules — this is a point-in-
   // time snapshot, not a workbook meant to be edited and recalculated.
   app.get("/api/reports/audit-reconciliation/export", async (req, reply) => {
-    const parsed = asAtQuerySchema.safeParse(req.query);
+    const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Invalid query.", details: parsed.error.flatten() };
     }
     const db = await getPool();
-    const fy = await requireFySettings(db, parsed.data.asAt);
+    const fy = await requireFySettings(db, parsed.data);
     if (!fy) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
@@ -453,7 +478,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Invalid query.", details: parsed.error.flatten() };
     }
     const db = await getPool();
-    const fy = await requireFySettings(db, parsed.data.asAt);
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
     if (!fy) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
