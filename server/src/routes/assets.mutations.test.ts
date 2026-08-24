@@ -195,6 +195,53 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     expect(rows[0].status).toBe("Disposed");
   });
 
+  it("does not alter the permanent capitalization record: opening cost, additions, and opening acc dep are untouched by disposal", async () => {
+    // Deliberately non-zero/non-default values on every field a disposal must never
+    // write, so this test would actually fail if disposal started zeroing them —
+    // asserting "still 0" wouldn't prove anything.
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: {
+        ...NEW_ASSET,
+        farId: "DISP-HISTORY-1",
+        c1OpeningCost: 75000,
+        c2OpeningCost: 45000,
+        additionsC1: 8000,
+        additionsC2: 3000,
+        dateOfAddition: "2026-05-01",
+        accDepC1Opening: 12000,
+        accDepC2Opening: 6000
+      }
+    });
+
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-HISTORY-1/disposal",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 20000 }
+    });
+    expect(res.statusCode).toBe(200);
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT c1_opening_cost, c2_opening_cost, additions_c1, additions_c2, date_of_addition,
+              acc_dep_c1_opening, acc_dep_c2_opening, useful_life_c1_years, useful_life_c2_years,
+              date_acquired
+       FROM assets WHERE far_id = 'DISP-HISTORY-1'`
+    );
+    const row = rows[0];
+    expect(Number(row.c1_opening_cost)).toBe(75000);
+    expect(Number(row.c2_opening_cost)).toBe(45000);
+    expect(Number(row.additions_c1)).toBe(8000);
+    expect(Number(row.additions_c2)).toBe(3000);
+    expect(String(row.date_of_addition)).toMatch(/^2026-05-01/);
+    expect(Number(row.acc_dep_c1_opening)).toBe(12000);
+    expect(Number(row.acc_dep_c2_opening)).toBe(6000);
+    expect(Number(row.useful_life_c1_years)).toBe(NEW_ASSET.usefulLifeC1Years);
+    expect(Number(row.useful_life_c2_years)).toBe(NEW_ASSET.usefulLifeC2Years);
+    expect(String(row.date_acquired)).toMatch(new RegExp(`^${NEW_ASSET.dateAcquired}`));
+  });
+
   it("rejects a disposal dated before the asset's capitalization date", async () => {
     const res = await authedInject(app, {
       method: "PATCH",

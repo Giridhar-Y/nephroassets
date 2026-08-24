@@ -397,6 +397,54 @@ describe("Disposal accounting (steps 8-11)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Disposal must zero Gross Block/Acc Dep/NBV by computing them from AS_AT and the
+// stored Disposal Date — never by the caller mutating openingCost/additions/
+// accDepOpening. Same componentInput object reused across every assertion below
+// specifically to prove that: nothing about the input changes, only AS_AT does.
+// ---------------------------------------------------------------------------
+describe("Disposal zeroes closing figures via computation, not by erasing historical inputs", () => {
+  it("same asset, same inputs: full pre-disposal history stays correct before disposal, zeroes out at and after it, and the FY-start snapshot never changes", () => {
+    const input = {
+      dateAcquired: "2020-01-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 10,
+      dateOfDisposal: "2025-09-30",
+      deletionsCost: 100000,
+      saleValue: 30000,
+      accDepOpening: 20000
+    };
+
+    const before = computeComponent(input, fy({ asAt: "2025-08-01" }));
+    expect(before.disposalEffective).toBe(false);
+    expect(before.grossBlock).toBe(100000);
+    expect(before.nbv).toBeGreaterThan(0);
+    expect(before.wdvAtDisposal).toBeNull();
+
+    const atDisposal = computeComponent(input, fy({ asAt: "2025-09-30" }));
+    expect(atDisposal.disposalEffective).toBe(true);
+    expect(atDisposal.grossBlock).toBe(0);
+    expect(atDisposal.closingAccDep).toBeCloseTo(0, 6);
+    expect(atDisposal.nbv).toBeCloseTo(0, 6);
+
+    const wellAfter = computeComponent(input, fy({ asAt: "2026-03-31" }));
+    expect(wellAfter.disposalEffective).toBe(true);
+    expect(wellAfter.grossBlock).toBe(0);
+    expect(wellAfter.closingAccDep).toBeCloseTo(0, 6);
+    expect(wellAfter.nbv).toBeCloseTo(0, 6);
+
+    // The FY-start snapshot (openingGrossBlock/openingNbv) is disposal-independent —
+    // identical across all three AS_AT dates above, computed purely from the same
+    // unmodified openingCost/dateAcquired/accDepOpening inputs every time.
+    for (const r of [before, atDisposal, wellAfter]) {
+      expect(r.openingGrossBlock).toBe(100000);
+      expect(r.openingNbv).toBe(80000);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step 12: Effective Location
 // ---------------------------------------------------------------------------
 describe("NBV as at FY start (openingNbv)", () => {
