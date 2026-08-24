@@ -74,6 +74,24 @@ describe("Capitalization: POST /api/assets", () => {
     expect(dup.statusCode).toBe(409);
   });
 
+  it("rejects a FAR ID containing lowercase letters", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "Temp1234" }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("accepts a real-world FAR ID mixing letters, digits, and hyphens", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "616-PB-BTI-GNR-C" }
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("rejects a payload missing required fields", async () => {
     const res = await authedInject(app, {
       method: "POST",

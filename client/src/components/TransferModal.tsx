@@ -10,11 +10,17 @@ type Step = "form" | "confirm";
 export function TransferModal({
   assets,
   defaultDate,
+  excludeLocation,
   onClose,
   onDone
 }: {
   assets: AssetListItem[];
   defaultDate: string;
+  /** Drops one center from the destination dropdown — used by the single-asset New
+   *  Transfer form to exclude the asset's own current location. Register's multi-select
+   *  flow never passes this (assets there can already be at different locations, so
+   *  there's no one location to exclude). */
+  excludeLocation?: string;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -102,11 +108,13 @@ export function TransferModal({
                 onChange={(e) => setToLocation(e.target.value)}
               >
                 <option value="">Select a center…</option>
-                {centers.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
+                {centers
+                  .filter((c) => c !== excludeLocation)
+                  .map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
               </select>
             </div>
 

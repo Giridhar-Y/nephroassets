@@ -145,8 +145,21 @@ export default async function transfersRoutes(app: FastifyInstance) {
       asset_description: string;
       transaction_date: string;
       location: string;
+      from_location: string;
     }>(
-      `SELECT t.id, t.far_id, a.asset_description, t.transaction_date, t.location
+      // from_location is a correlated subquery (not a window function) deliberately —
+      // it must find the true immediately-prior transfer for this far_id regardless of
+      // whatever filters are narrowing the outer result set (e.g. filtering to "Moved To:
+      // Center-B" would make a window function's LAG skip right over an excluded
+      // in-between transfer and report the wrong prior location). Falls back to the
+      // asset's own capitalized location when there is no prior transfer.
+      `SELECT t.id, t.far_id, a.asset_description, t.transaction_date, t.location,
+         COALESCE(
+           (SELECT t2.location FROM transfers t2
+            WHERE t2.far_id = t.far_id AND (t2.transaction_date, t2.id) < (t.transaction_date, t.id)
+            ORDER BY t2.transaction_date DESC, t2.id DESC LIMIT 1),
+           a.location
+         ) AS from_location
        FROM transfers t
        JOIN assets a ON a.far_id = t.far_id
        ${whereClause}
@@ -160,6 +173,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
       farId: r.far_id,
       assetDescription: r.asset_description,
       transactionDate: r.transaction_date,
+      fromLocation: r.from_location,
       location: r.location
     }));
     const last = items[items.length - 1];

@@ -180,6 +180,7 @@ export interface TransferHistoryItem {
   farId: string;
   assetDescription: string;
   transactionDate: string;
+  fromLocation: string;
   location: string;
 }
 

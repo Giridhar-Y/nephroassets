@@ -151,6 +151,50 @@ describe("Transfers", () => {
     expect(items[1].location).toBe("Center-B");
   });
 
+  it("reports From Location as the capitalized location for a first transfer, and the prior transfer's destination for a later one", async () => {
+    await insertAsset("XFER-FROM", "Transfer History Asset", "2020-01-01"); // capitalized at Center-A
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-FROM"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-FROM"], toLocation: "Center-C", transactionDate: "2026-06-01" }
+    });
+
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers" });
+    const { items } = res.json();
+    const second = items.find((i: { location: string }) => i.location === "Center-C");
+    const first = items.find((i: { location: string }) => i.location === "Center-B");
+    expect(second.fromLocation).toBe("Center-B");
+    expect(first.fromLocation).toBe("Center-A");
+  });
+
+  it("From Location is unaffected by filters that exclude the prior transfer from the result set", async () => {
+    // A window-function (LAG) implementation would get this wrong: filtering the
+    // outer query down to just the Center-C leg would make LAG see no prior row within
+    // the filtered set and fall back incorrectly, instead of finding the true prior
+    // transfer (to Center-B) that a correlated subquery over the unfiltered table finds.
+    await insertAsset("XFER-FROM-FILTERED", "Transfer History Asset", "2020-01-01");
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-FROM-FILTERED"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-FROM-FILTERED"], toLocation: "Center-C", transactionDate: "2026-06-01" }
+    });
+
+    const res = await authedInject(app, { method: "GET", url: "/api/transfers?location=Center-C" });
+    const { items } = res.json();
+    expect(items).toHaveLength(1);
+    expect(items[0].fromLocation).toBe("Center-B");
+  });
+
   it("filters history by FAR ID search", async () => {
     await insertAsset("XFER-3");
     await insertAsset("OTHER-1");

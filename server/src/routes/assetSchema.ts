@@ -3,6 +3,17 @@ import { bulkDate, isoToDDMMYYYY } from "./bulkParse.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+// Real FAR IDs mix letters, digits, and hyphens (e.g. "616-PB-BTI-GNR-C", "MEDE252601159")
+// — not a fixed "FAR-000001" template, which is only this app's own seed-data
+// convention. Uppercase-only (not case-insensitive) is deliberate: a stable unique
+// identifier that gets typed, copied, and cross-referenced elsewhere shouldn't have two
+// visually-identical values differing only in case, and silently uppercasing whatever
+// was typed would make the stored ID surprise a user who typed lowercase on purpose.
+// Only gates new writes (Capitalization, Bulk Upload) — never applied retroactively to
+// rows already in the database.
+const FAR_ID_RE = /^[A-Z0-9-]+$/;
+const farId = z.string().min(1).regex(FAR_ID_RE, "FAR ID can only contain uppercase letters, numbers, and hyphens.");
+
 // The calc engine (engine.ts) only ever looks at dateOfAddition — not whether additions
 // are non-zero — to decide if an addition depreciates at all. A row with an addition
 // amount but no date silently costs Gross Block without ever charging depreciation on it,
@@ -31,7 +42,7 @@ function checkAdditionsPairing(
 // Shared with the Capitalization form (new-asset creation) and bulk upload's row
 // validation, so both paths agree on what a valid asset looks like.
 const assetCreateShape = z.object({
-  farId: z.string().min(1),
+  farId,
   subClassification: z.string().min(1),
   assetDescription: z.string().min(1),
   serialNo: z.string().optional().default(""),
