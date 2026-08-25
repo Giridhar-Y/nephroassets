@@ -64,20 +64,31 @@ function attachIdleErrorHandler(pool: pg.Pool): void {
 // block) against the SAME production database simultaneously. Postgres can genuinely
 // deadlock two such concurrent DDL batches against each other (error 40P01, seen in
 // production), which throws out of applySchema() uncaught and crashes that invocation
-// (FUNCTION_INVOCATION_FAILED) before the request handler ever runs. A session-scoped
-// advisory lock serializes this across instances — whichever instance runs it waits for
-// any other's DDL to finish first, then proceeds (safe to redo, per the comments below),
-// instead of two racing each other's lock acquisitions.
+// (FUNCTION_INVOCATION_FAILED) before the request handler ever runs.
+//
+// Serializing this needs a *transaction*-scoped advisory lock (pg_advisory_xact_lock),
+// not a session-scoped one (pg_advisory_lock/unlock) — DATABASE_URL here is Supabase's
+// transaction pooler (PgBouncer in transaction mode, see getPool() above), which does
+// not reliably support session-scoped Postgres features: it can hand different
+// statements from what looks like one client session to different real backends between
+// transactions. pg_advisory_xact_lock's lifetime is bounded to a single transaction,
+// which is exactly the one guarantee transaction-mode pooling *does* provide (a
+// transaction stays pinned to one backend for its duration), so wrap the whole thing in
+// one explicit BEGIN/COMMIT.
 const APPLY_SCHEMA_LOCK_ID = 727501;
 
 export async function applySchema(): Promise<void> {
   const db = await getPool();
   const client = await db.connect();
   try {
-    await client.query("SELECT pg_advisory_lock($1)", [APPLY_SCHEMA_LOCK_ID]);
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [APPLY_SCHEMA_LOCK_ID]);
     await applySchemaLocked(client);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
   } finally {
-    await client.query("SELECT pg_advisory_unlock($1)", [APPLY_SCHEMA_LOCK_ID]);
     client.release();
   }
 }
