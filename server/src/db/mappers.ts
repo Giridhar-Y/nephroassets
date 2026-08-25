@@ -11,6 +11,12 @@ export interface AssetRow {
   location: string;
   revised_location: string | null;
   last_date_of_transaction: string | null;
+  parent_far_id: string | null;
+  disposed_via_parent_far_id: string | null;
+  // Only present when the query opts in (Register's list route joins it); every other
+  // caller of mapAssetRow gets the ?? false default below, which is correct for them
+  // since they don't render a "has children" badge.
+  has_children?: boolean;
   useful_life_c1_years: string | number;
   useful_life_c2_years: string | number;
   c1_opening_cost: string | number;
@@ -51,6 +57,9 @@ export function mapAssetRow(row: AssetRow): AssetInput {
     location: row.location,
     revisedLocation: row.revised_location,
     lastDateOfTransaction: row.last_date_of_transaction,
+    parentFarId: row.parent_far_id,
+    disposedViaParentFarId: row.disposed_via_parent_far_id,
+    hasChildren: row.has_children ?? false,
     usefulLifeC1Years: Number(row.useful_life_c1_years),
     usefulLifeC2Years: Number(row.useful_life_c2_years),
     c1OpeningCost: Number(row.c1_opening_cost),

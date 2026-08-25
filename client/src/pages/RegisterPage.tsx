@@ -7,11 +7,13 @@ import { useAssetList } from "../hooks/useAssetList.js";
 import { ColumnPicker } from "../components/ColumnPicker.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { DisposalModal } from "../components/DisposalModal.js";
+import { MergeModal } from "../components/MergeModal.js";
 import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
 import { ExportIcon, SearchIcon } from "../lib/icons.js";
+import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
 
 export function RegisterPage() {
@@ -33,22 +35,30 @@ export function RegisterPage() {
   }, []);
 
   const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectionState, setSelectionState] = useState<SelectionState>({
+    selected: new Set(),
+    autoSelected: new Set()
+  });
+  const selected = selectionState.selected;
   const [transferOpen, setTransferOpen] = useState(false);
   const [disposeOpen, setDisposeOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [editingFarId, setEditingFarId] = useState<string | null>(null);
 
+  const clearSelection = () => setSelectionState({ selected: new Set(), autoSelected: new Set() });
+
+  // Checking a parent's row auto-checks its currently-loaded active children (and
+  // unchecking it drops only the ones it auto-added) — see registerSelection.ts.
   const toggleRow = (farId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(farId)) next.delete(farId);
-      else next.add(farId);
-      return next;
-    });
+    setSelectionState((prev) => toggleRegisterSelection(items, farId, prev));
   };
 
   const toggleAllLoaded = () => {
-    setSelected((prev) => (prev.size === items.length ? new Set() : new Set(items.map((i) => i.asset.farId))));
+    setSelectionState((prev) =>
+      prev.selected.size === items.length
+        ? { selected: new Set(), autoSelected: new Set() }
+        : { selected: new Set(items.map((i) => i.asset.farId)), autoSelected: new Set() }
+    );
   };
 
   const hasActiveFilters = Object.keys(filters).length > 0;
@@ -189,6 +199,7 @@ export function RegisterPage() {
               selectedCount={selected.size}
               onTransfer={() => setTransferOpen(true)}
               onDispose={() => setDisposeOpen(true)}
+              onMerge={() => setMergeOpen(true)}
             />
           )}
           <a
@@ -232,7 +243,7 @@ export function RegisterPage() {
           onClose={() => setTransferOpen(false)}
           onDone={() => {
             setTransferOpen(false);
-            setSelected(new Set());
+            clearSelection();
             reload();
           }}
         />
@@ -245,13 +256,26 @@ export function RegisterPage() {
           onClose={() => setDisposeOpen(false)}
           onDone={() => {
             setDisposeOpen(false);
-            setSelected(new Set());
+            clearSelection();
+            reload();
+          }}
+        />
+      )}
+
+      {mergeOpen && (
+        <MergeModal
+          assets={items.filter((i) => selected.has(i.asset.farId))}
+          onClose={() => setMergeOpen(false)}
+          onDone={() => {
+            setMergeOpen(false);
+            clearSelection();
             reload();
           }}
         />
       )}
 
       {editingFarId &&
+        asAt &&
         (() => {
           const editingAsset = items.find((i) => i.asset.farId === editingFarId)?.asset;
           if (!editingAsset) return null;
@@ -259,6 +283,7 @@ export function RegisterPage() {
             <EditAssetModal
               asset={editingAsset}
               subClassifications={subClassifications}
+              asAt={asAt}
               onClose={() => setEditingFarId(null)}
               onDone={() => {
                 setEditingFarId(null);

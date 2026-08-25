@@ -5,7 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import { COLUMN_GROUPS, type ColumnDef, type ColumnGroupId } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
-import { ChevronDownIcon, CollapseExpandIcon, EditIcon, EmptyIcon, ErrorIcon, ExpandIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
+import { ChevronDownIcon, CollapseExpandIcon, EditIcon, EmptyIcon, ErrorIcon, ExpandIcon, LinkIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
 
 const ROW_HEIGHT = 40;
 const GROUP_BAND_HEIGHT = 26;
@@ -469,7 +469,27 @@ export function AssetGrid({
                           style={{ width: col.width, left: pinnedOffset }}
                           title={col.render(item)}
                         >
-                          {col.render(item)}
+                          {col.id === "farId" ? (
+                            // Visual-only parent/child identification: a child row indents
+                            // (parentFarId set) and a parent row gets a link badge
+                            // (hasChildren) — no reordering, rows stay in whatever order
+                            // the grid's sort already produced.
+                            <span
+                              className="flex min-w-0 items-center gap-1"
+                              style={item.asset.parentFarId ? { paddingLeft: 14 } : undefined}
+                            >
+                              {item.asset.hasChildren && (
+                                <LinkIcon
+                                  fontSize={13}
+                                  className="shrink-0 text-gray-400"
+                                  aria-label="Has child assets"
+                                />
+                              )}
+                              <span className="truncate">{item.asset.farId}</span>
+                            </span>
+                          ) : (
+                            col.render(item)
+                          )}
                         </div>
                       );
                     })}

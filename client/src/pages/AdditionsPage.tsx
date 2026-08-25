@@ -72,6 +72,7 @@ function NewAdditionTab({ onDone }: { onDone: () => void }) {
         <AdditionModal
           asset={selected.asset}
           defaultDate={asAt}
+          asAt={asAt}
           onClose={() => setModalOpen(false)}
           onDone={() => {
             setModalOpen(false);

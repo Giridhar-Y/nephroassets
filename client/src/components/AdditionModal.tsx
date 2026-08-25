@@ -4,6 +4,7 @@ import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { AdditionIcon, ErrorIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
+import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
 
 type Step = "form" | "confirm";
 
@@ -13,11 +14,13 @@ type Step = "form" | "confirm";
 export function AdditionModal({
   asset,
   defaultDate,
+  asAt,
   onClose,
   onDone
 }: {
   asset: AssetListItem["asset"];
   defaultDate: string;
+  asAt: string;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -26,6 +29,11 @@ export function AdditionModal({
   const [additionsC1, setAdditionsC1] = useState(0);
   const [additionsC2, setAdditionsC2] = useState(0);
   const [dateOfAddition, setDateOfAddition] = useState(defaultDate);
+  // A smaller, separate affordance from Capitalization's own parent field — links this
+  // *already-existing* asset to a parent while recording the addition, instead of a
+  // second trip through Edit. Only offered when the asset isn't already linked (this
+  // endpoint can only set the link, not clear one — see the server's additionSchema).
+  const [linkParentFarId, setLinkParentFarId] = useState<string | undefined>(undefined);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,6 +55,10 @@ export function AdditionModal({
       setError(`Addition date cannot be before the asset's capitalization date (${formatDate(asset.dateAcquired)}).`);
       return;
     }
+    if (linkParentFarId === asset.farId) {
+      setError("An asset cannot be its own parent.");
+      return;
+    }
     setError(null);
     setStep("confirm");
   }
@@ -55,7 +67,7 @@ export function AdditionModal({
     setSubmitting(true);
     setError(null);
     try {
-      await recordAddition(asset.farId, { additionsC1, additionsC2, dateOfAddition });
+      await recordAddition(asset.farId, { additionsC1, additionsC2, dateOfAddition, parentFarId: linkParentFarId });
       showToast(`Addition recorded on ${asset.farId}.`);
       onDone();
     } catch (err) {
@@ -127,6 +139,36 @@ export function AdditionModal({
               />
             </div>
 
+            {asset.parentFarId ? (
+              <p className="mt-3 text-[11px] text-gray-400">
+                Already linked as a child of {asset.parentFarId} — manage this link via Edit.
+              </p>
+            ) : (
+              <div className="mt-3 flex flex-col gap-1">
+                <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                  Link to Parent (optional)
+                </label>
+                {linkParentFarId ? (
+                  <div className="flex items-center justify-between rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+                    <span className="font-medium text-ink">{linkParentFarId}</span>
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-accent hover:underline"
+                      onClick={() => setLinkParentFarId(undefined)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <FarIdAutocomplete
+                    asAt={asAt}
+                    placeholder="Search to link this as a child of another asset…"
+                    onSelect={(item) => setLinkParentFarId(item.asset.farId)}
+                  />
+                )}
+              </div>
+            )}
+
             {error && (
               <p className="mt-3 flex items-center gap-1.5 text-sm text-red-600">
                 <ErrorIcon fontSize={15} />
@@ -174,10 +216,16 @@ export function AdditionModal({
                     <td className="px-3 py-1.5 font-medium text-ink">Additions C2</td>
                     <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(additionsC2)}</td>
                   </tr>
-                  <tr>
+                  <tr className={linkParentFarId ? "border-b border-gray-100" : ""}>
                     <td className="px-3 py-1.5 font-medium text-ink">Date of Addition</td>
                     <td className="px-3 py-1.5 text-right text-gray-600">{formatDate(dateOfAddition)}</td>
                   </tr>
+                  {linkParentFarId && (
+                    <tr>
+                      <td className="px-3 py-1.5 font-medium text-ink">Link to Parent</td>
+                      <td className="px-3 py-1.5 text-right text-gray-600">{linkParentFarId}</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

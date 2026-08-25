@@ -4,22 +4,27 @@ import { formatCurrency } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { EditIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
+import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
 
 type Step = "form" | "confirm" | "success";
 
-// FAR ID, Sub Classification, Asset Description, Serial No, Useful Life C1/C2, and
-// Opening Acc Dep C1/C2 are editable — see the server's editAssetSchema for why FAR ID
-// (identity, not a calc input) and these other categorization fields are safe to correct
-// after capitalization, while Date Acquired, Location, Status, cost, and additions
-// fields are not.
+// FAR ID, Sub Classification, Asset Description, Serial No, Useful Life C1/C2, Opening
+// Acc Dep C1/C2, and Parent FAR ID are editable — see the server's editAssetSchema for
+// why FAR ID (identity, not a calc input) and these other categorization fields are safe
+// to correct after capitalization, while Date Acquired, Location, Status, cost, and
+// additions fields are not. Parent FAR ID links this asset to another as its child — a
+// child always moves/disposes together with its parent (Transfer/Disposal cascade to
+// it automatically) while still appearing as its own row everywhere, including here.
 export function EditAssetModal({
   asset,
   subClassifications,
+  asAt,
   onClose,
   onDone
 }: {
   asset: AssetListItem["asset"];
   subClassifications: string[];
+  asAt: string;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -33,7 +38,8 @@ export function EditAssetModal({
     usefulLifeC1Years: asset.usefulLifeC1Years,
     usefulLifeC2Years: asset.usefulLifeC2Years,
     accDepC1Opening: asset.accDepC1Opening,
-    accDepC2Opening: asset.accDepC2Opening
+    accDepC2Opening: asset.accDepC2Opening,
+    parentFarId: asset.parentFarId
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +82,10 @@ export function EditAssetModal({
       setError("Opening Acc Dep cannot be negative.");
       return;
     }
+    if (form.parentFarId === asset.farId || form.parentFarId === form.farId) {
+      setError("An asset cannot be its own parent.");
+      return;
+    }
     setError(null);
     setStep("confirm");
   }
@@ -111,7 +121,8 @@ export function EditAssetModal({
     { label: "Useful Life C1 (Yrs)", from: String(asset.usefulLifeC1Years), to: String(form.usefulLifeC1Years) },
     { label: "Useful Life C2 (Yrs)", from: String(asset.usefulLifeC2Years), to: String(form.usefulLifeC2Years) },
     { label: "Opening Acc Dep C1", from: formatCurrency(asset.accDepC1Opening), to: formatCurrency(form.accDepC1Opening) },
-    { label: "Opening Acc Dep C2", from: formatCurrency(asset.accDepC2Opening), to: formatCurrency(form.accDepC2Opening) }
+    { label: "Opening Acc Dep C2", from: formatCurrency(asset.accDepC2Opening), to: formatCurrency(form.accDepC2Opening) },
+    { label: "Parent FAR ID", from: asset.parentFarId ?? "—", to: form.parentFarId ?? "—" }
   ].filter((c) => c.from !== c.to);
 
   return (
@@ -179,6 +190,33 @@ export function EditAssetModal({
                 value={form.assetDescription}
                 onChange={(e) => update({ assetDescription: e.target.value })}
               />
+            </div>
+
+            <div className="mt-3 flex flex-col gap-1">
+              <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                Parent Asset
+              </label>
+              {form.parentFarId ? (
+                <div className="flex items-center justify-between rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+                  <span className="font-medium text-ink">{form.parentFarId}</span>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-accent hover:underline"
+                    onClick={() => update({ parentFarId: null })}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <FarIdAutocomplete
+                  asAt={asAt}
+                  placeholder="Search to link this as a child of another asset…"
+                  onSelect={(item) => update({ parentFarId: item.asset.farId })}
+                />
+              )}
+              <p className="text-[11px] text-gray-400">
+                A child asset always moves and disposes together with its parent.
+              </p>
             </div>
 
             <div className="mt-3 flex flex-col gap-1">

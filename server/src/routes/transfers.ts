@@ -46,7 +46,19 @@ export default async function transfersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: `Location "${parsed.data.toLocation}" not recognized — see Masters for valid values.` };
     }
-    const { farIds, transactionDate } = parsed.data;
+    const { transactionDate } = parsed.data;
+
+    // Every still-active child of a selected asset moves with it automatically — a
+    // parent/child pair (e.g. a machine and an accessory that must always be together)
+    // stays together without Finance having to remember to select both. A child that's
+    // already independently disposed is left alone. Deduped in case a child was also
+    // separately selected in the same batch.
+    const { rows: childRows } = await db.query<{ far_id: string; parent_far_id: string }>(
+      `SELECT far_id, parent_far_id FROM assets WHERE parent_far_id = ANY($1) AND date_of_disposal IS NULL`,
+      [parsed.data.farIds]
+    );
+    const childParentMap = new Map(childRows.map((r) => [r.far_id, r.parent_far_id]));
+    const farIds = Array.from(new Set([...parsed.data.farIds, ...childRows.map((r) => r.far_id)]));
 
     // An asset can't have moved locations before it existed on the books — reject the
     // whole batch (matching the all-or-nothing transaction below) if the transfer date
@@ -75,9 +87,16 @@ export default async function transfersRoutes(app: FastifyInstance) {
     try {
       await client.query("BEGIN");
       for (const farId of farIds) {
+        // Mechanical, not intent-based: this row is "cascaded from parent X" whenever
+        // its own parent_far_id is also moving in this same batch, whether the child's
+        // FAR ID reached this batch via the cascade-detection query above or was also
+        // literally present in the client's request (e.g. Register's checkbox
+        // auto-select already includes active children in what it sends) — either way
+        // the child moved because its parent did, on the same request.
+        const cascadedFrom = childParentMap.get(farId) ?? null;
         await client.query(
-          `INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`,
-          [farId, transactionDate, toLocation]
+          `INSERT INTO transfers (far_id, transaction_date, location, cascaded_from_parent_far_id) VALUES ($1, $2, $3, $4)`,
+          [farId, transactionDate, toLocation, cascadedFrom]
         );
         // Keep the denormalized "current" location in sync so center filtering stays a
         // plain indexed column lookup at scale. This reflects the *current* effective
@@ -95,7 +114,8 @@ export default async function transfersRoutes(app: FastifyInstance) {
     } finally {
       client.release();
     }
-    return { transferred: farIds.length, toLocation, transactionDate };
+    const childrenIncluded = childRows.map((r) => r.far_id).filter((id) => !parsed.data.farIds.includes(id));
+    return { transferred: farIds.length, toLocation, transactionDate, childrenIncluded };
   });
 
   // Transfers screen: a read-only history log, newest first. Not a separate workflow —

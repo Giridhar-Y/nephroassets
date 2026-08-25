@@ -11,6 +11,9 @@ export interface AssetInput {
   location: string;
   revisedLocation: string | null;
   lastDateOfTransaction: string | null;
+  parentFarId: string | null;
+  disposedViaParentFarId: string | null;
+  hasChildren: boolean;
   usefulLifeC1Years: number;
   usefulLifeC2Years: number;
   c1OpeningCost: number;
@@ -96,6 +99,9 @@ export interface AssetCreateInput {
   dateOfAddition?: string | null;
   accDepC1Opening?: number;
   accDepC2Opening?: number;
+  /** Links the new asset as a child of an existing one at creation time — see the
+   *  server's capitalizationParentSchema. Omitted means standalone, same as before. */
+  parentFarId?: string;
 }
 
 export interface AssetFilters {

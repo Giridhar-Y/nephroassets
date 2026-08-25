@@ -1,20 +1,24 @@
 import { useState } from "react";
-import { ChevronDownIcon, DeleteIcon, TransferIcon } from "../lib/icons.js";
+import { ChevronDownIcon, DeleteIcon, MergeIcon, TransferIcon } from "../lib/icons.js";
 
-/** Combines "Transfer Selected" and "Dispose Selected" into one toolbar control, using
- *  the same trigger+panel dropdown pattern as ColumnPicker. Disabled with the same
- *  styling as the two buttons it replaces whenever nothing is selected. */
+/** Combines "Transfer Selected", "Dispose Selected", and "Merge Selected" into one
+ *  toolbar control, using the same trigger+panel dropdown pattern as ColumnPicker.
+ *  Disabled with the same styling as the buttons it replaces whenever nothing is
+ *  selected; Merge additionally needs at least 2 (one parent, one child). */
 export function RecordMovementControl({
   selectedCount,
   onTransfer,
-  onDispose
+  onDispose,
+  onMerge
 }: {
   selectedCount: number;
   onTransfer: () => void;
   onDispose: () => void;
+  onMerge: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const disabled = selectedCount === 0;
+  const mergeDisabled = selectedCount < 2;
 
   return (
     <div className="relative">
@@ -56,6 +60,21 @@ export function RecordMovementControl({
             >
               <DeleteIcon fontSize={15} />
               Dispose
+            </button>
+            <button
+              type="button"
+              className={`flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm ${
+                mergeDisabled ? "cursor-not-allowed text-gray-300" : "text-gray-700 hover:bg-gray-50"
+              }`}
+              disabled={mergeDisabled}
+              title={mergeDisabled ? "Select at least 2 assets — one parent, one or more children" : undefined}
+              onClick={() => {
+                setOpen(false);
+                onMerge();
+              }}
+            >
+              <MergeIcon fontSize={15} />
+              Merge
             </button>
           </div>
         </>

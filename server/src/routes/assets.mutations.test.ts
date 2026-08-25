@@ -151,6 +151,52 @@ describe("Capitalization: POST /api/assets", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  describe("Parent linking at creation", () => {
+    beforeEach(async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "CAP-PARENT-1" } });
+    });
+
+    it("creates a new asset already linked to an existing parent", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-CHILD-1", parentFarId: "CAP-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'CAP-CHILD-1'`);
+      expect(rows[0].parent_far_id).toBe("CAP-PARENT-1");
+    });
+
+    it("does not create the asset at all when the chosen parent is invalid (disposed)", async () => {
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/CAP-PARENT-1/disposal",
+        payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+      });
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-CHILD-2", parentFarId: "CAP-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(409);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT 1 FROM assets WHERE far_id = 'CAP-CHILD-2'`);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("rejects a brand-new asset naming itself as its own parent", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-SELF-PARENT", parentFarId: "CAP-SELF-PARENT" }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
 });
 
 describe("Edit: PATCH /api/assets/:farId", () => {
@@ -177,7 +223,8 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     usefulLifeC1Years: 5,
     usefulLifeC2Years: 5,
     accDepC1Opening: 0,
-    accDepC2Opening: 0
+    accDepC2Opening: 0,
+    parentFarId: null as string | null
   };
 
   beforeEach(async () => {
@@ -334,6 +381,159 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatch(/disposed/);
   });
+
+  describe("Parent/child linking", () => {
+    beforeEach(async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "EDIT-PARENT-1" } });
+    });
+
+    it("links an asset to a parent", async () => {
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'EDIT-TEST-1'`);
+      expect(rows[0].parent_far_id).toBe("EDIT-PARENT-1");
+    });
+
+    it("unlinks an existing parent by sending parentFarId: null", async () => {
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: null }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'EDIT-TEST-1'`);
+      expect(rows[0].parent_far_id).toBeNull();
+    });
+
+    it("rejects an asset being its own parent", async () => {
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-TEST-1" }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/own parent/);
+    });
+
+    it("404s when the chosen parent doesn't exist", async () => {
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "NOT-REAL-PARENT" }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects a disposed asset as a parent", async () => {
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-PARENT-1/disposal",
+        payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+      });
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatch(/disposed/);
+    });
+
+    it("rejects one level of nesting: a child can't itself be used as a parent", async () => {
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "EDIT-GRANDCHILD-1" }
+      });
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-GRANDCHILD-1",
+        payload: { ...baseEdit, farId: "EDIT-GRANDCHILD-1", parentFarId: "EDIT-TEST-1" }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/only one level/);
+    });
+
+    it("rejects becoming a child when the asset already has children of its own", async () => {
+      // EDIT-PARENT-1 gets a child (EDIT-TEST-1) first, then tries to become a child
+      // itself of a third, unrelated, childless asset -- isolates "already has children"
+      // from the separate "target is itself a child" rule the other test covers.
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "EDIT-OTHER-PARENT-1" } });
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-PARENT-1",
+        payload: { ...baseEdit, farId: "EDIT-PARENT-1", parentFarId: "EDIT-OTHER-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/already has its own child assets/);
+    });
+
+    it("re-parenting: cleanly drops the old link when switched to a new parent, with no leftover reference", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "EDIT-PARENT-B" } });
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
+      });
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-B" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'EDIT-TEST-1'`);
+      expect(rows[0].parent_far_id).toBe("EDIT-PARENT-B");
+
+      // Disposing the old parent must not cascade to this asset anymore — proves the old
+      // link is truly gone, not just shadowed by the new one.
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-PARENT-1/disposal",
+        payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+      });
+      const { rows: afterOldParentDisposal } = await db.query(
+        `SELECT date_of_disposal FROM assets WHERE far_id = 'EDIT-TEST-1'`
+      );
+      expect(afterOldParentDisposal[0].date_of_disposal).toBeNull();
+
+      // Disposing the new parent DOES cascade — confirms only the new link is active.
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-PARENT-B/disposal",
+        payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+      });
+      const { rows: afterNewParentDisposal } = await db.query(
+        `SELECT date_of_disposal FROM assets WHERE far_id = 'EDIT-TEST-1'`
+      );
+      expect(afterNewParentDisposal[0].date_of_disposal).not.toBeNull();
+    });
+  });
 });
 
 describe("Addition: PATCH /api/assets/:farId/addition", () => {
@@ -439,6 +639,62 @@ describe("Addition: PATCH /api/assets/:farId/addition", () => {
       payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01" }
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  describe("Link to parent in the same request", () => {
+    beforeEach(async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "ADD-PARENT-1" } });
+    });
+
+    it("links the asset to a parent atomically with the addition", async () => {
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-TEST-1/addition",
+        payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01", parentFarId: "ADD-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(
+        `SELECT additions_c1, parent_far_id FROM assets WHERE far_id = 'ADD-TEST-1'`
+      );
+      expect(Number(rows[0].additions_c1)).toBe(1000);
+      expect(rows[0].parent_far_id).toBe("ADD-PARENT-1");
+    });
+
+    it("leaves any existing parent link untouched when parentFarId is omitted", async () => {
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'ADD-PARENT-1' WHERE far_id = 'ADD-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-TEST-1/addition",
+        payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'ADD-TEST-1'`);
+      expect(rows[0].parent_far_id).toBe("ADD-PARENT-1");
+    });
+
+    it("reuses the same validation as Edit — rejects a disposed asset as parent, without recording the addition", async () => {
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-PARENT-1/disposal",
+        payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+      });
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-TEST-1/addition",
+        payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01", parentFarId: "ADD-PARENT-1" }
+      });
+      expect(res.statusCode).toBe(409);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT additions_c1, parent_far_id FROM assets WHERE far_id = 'ADD-TEST-1'`);
+      expect(Number(rows[0].additions_c1)).toBe(0);
+      expect(rows[0].parent_far_id).toBeNull();
+    });
   });
 });
 
@@ -577,6 +833,101 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  describe("Parent/child cascade", () => {
+    it("disposing a parent also disposes its still-active children, with Sale Value 0", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-1" } });
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().childrenDisposed).toEqual(["DISP-CHILD-1"]);
+
+      const { rows } = await db.query(
+        `SELECT date_of_disposal, sale_value, status FROM assets WHERE far_id = 'DISP-CHILD-1'`
+      );
+      expect(rows[0].date_of_disposal).not.toBeNull();
+      expect(Number(rows[0].sale_value)).toBe(0);
+      expect(rows[0].status).toBe("Disposed");
+    });
+
+    it("does not touch a child that was already disposed independently beforehand", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-2" } });
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-2'`);
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-CHILD-2/disposal",
+        payload: { dateOfDisposal: "2026-07-01", saleValue: 999 }
+      });
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().childrenDisposed).toEqual([]);
+
+      const { rows } = await db.query(`SELECT sale_value, date_of_disposal FROM assets WHERE far_id = 'DISP-CHILD-2'`);
+      expect(Number(rows[0].sale_value)).toBe(999);
+      expect(String(rows[0].date_of_disposal)).toMatch(/^2026-07-01/);
+    });
+
+    it("marks a cascaded child with disposed_via_parent_far_id, and leaves the parent's own row null", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-3" } });
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-3'`);
+
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+      });
+
+      const { rows } = await db.query(
+        `SELECT far_id, disposed_via_parent_far_id FROM assets WHERE far_id IN ('DISP-TEST-1', 'DISP-CHILD-3')`
+      );
+      const parent = rows.find((r: { far_id: string }) => r.far_id === "DISP-TEST-1");
+      const child = rows.find((r: { far_id: string }) => r.far_id === "DISP-CHILD-3");
+      expect(parent.disposed_via_parent_far_id).toBeNull();
+      expect(child.disposed_via_parent_far_id).toBe("DISP-TEST-1");
+    });
+
+    it("leaves a cascaded child's cost, quantity, and useful life untouched — only Sale Value is overridden", async () => {
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO assets (
+           far_id, sub_classification, asset_description, status, date_acquired, location,
+           useful_life_c1_years, useful_life_c2_years, qty, c1_opening_cost, c2_opening_cost, parent_far_id
+         ) VALUES ('DISP-CHILD-4', 'Test-Sub', 'Child Asset', 'Active', '2026-01-01', 'Center-Test', 9, 4, 3, 55000, 22000, 'DISP-TEST-1')`
+      );
+
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+      });
+
+      const { rows } = await db.query(
+        `SELECT qty, useful_life_c1_years, useful_life_c2_years, c1_opening_cost, c2_opening_cost, sale_value
+         FROM assets WHERE far_id = 'DISP-CHILD-4'`
+      );
+      expect(Number(rows[0].qty)).toBe(3);
+      expect(Number(rows[0].useful_life_c1_years)).toBe(9);
+      expect(Number(rows[0].useful_life_c2_years)).toBe(4);
+      expect(Number(rows[0].c1_opening_cost)).toBe(55000);
+      expect(Number(rows[0].c2_opening_cost)).toBe(22000);
+      // The one deliberate exception — a cascaded child's Sale Value is always 0, never
+      // the parent's sale value (500 here).
+      expect(Number(rows[0].sale_value)).toBe(0);
+    });
+  });
 });
 
 describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
@@ -691,5 +1042,136 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
       payload: { dateOfDisposal: "2026-08-05", saleValue: 0 }
     });
     expect(res.statusCode).toBe(409);
+  });
+});
+
+describe("Merge: POST /api/assets/merge", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(assetsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await seedMasters();
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-PARENT-1" } });
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-CHILD-1" } });
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-CHILD-2" } });
+  });
+
+  it("links every child to the chosen parent in one request", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1", "MERGE-CHILD-2"] }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      parentFarId: "MERGE-PARENT-1",
+      childFarIds: ["MERGE-CHILD-1", "MERGE-CHILD-2"],
+      merged: 2
+    });
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT far_id, parent_far_id FROM assets WHERE far_id IN ('MERGE-CHILD-1', 'MERGE-CHILD-2') ORDER BY far_id`
+    );
+    expect(rows.every((r: { parent_far_id: string }) => r.parent_far_id === "MERGE-PARENT-1")).toBe(true);
+  });
+
+  it("rejects a self-parent (the parent listed among its own children)", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-PARENT-1"] }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/own parent/);
+  });
+
+  it("404s when a child FAR ID doesn't exist, and writes nothing", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1", "NOT-REAL-CHILD"] }
+    });
+    expect(res.statusCode).toBe(404);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'MERGE-CHILD-1'`);
+    expect(rows[0].parent_far_id).toBeNull();
+  });
+
+  it("rejects a disposed asset as the parent", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/MERGE-PARENT-1/disposal",
+      payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+    });
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("rejects two-level nesting: a child that already has its own children can't be merged in as a child", async () => {
+    // MERGE-CHILD-1 already has a child of its own (MERGE-CHILD-2) — merging it under
+    // MERGE-PARENT-1 would make a 3-generation chain, not one level.
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'MERGE-CHILD-1' WHERE far_id = 'MERGE-CHILD-2'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/already has its own child assets/);
+  });
+
+  it("rejects two-level nesting: an asset that's itself already a child can't be used as the parent", async () => {
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-GRANDPARENT-1" } });
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'MERGE-GRANDPARENT-1' WHERE far_id = 'MERGE-PARENT-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/only one level/);
+  });
+
+  it("all-or-nothing: rejects the whole batch (and writes nothing) if any one child fails validation", async () => {
+    // MERGE-CHILD-2 already has its own child, so it fails validation — MERGE-CHILD-1
+    // must not get linked either, even though it's independently fine.
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-GRANDCHILD-1" } });
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'MERGE-CHILD-2' WHERE far_id = 'MERGE-GRANDCHILD-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1", "MERGE-CHILD-2"] }
+    });
+    expect(res.statusCode).toBe(400);
+
+    const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'MERGE-CHILD-1'`);
+    expect(rows[0].parent_far_id).toBeNull();
   });
 });

@@ -98,6 +98,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   },
   { key: "effectiveLocation", label: "Current Location", width: 20, groupKey: "g1", kind: "text", value: (_a, r) => r.effectiveLocation },
   { key: "serialNo", label: "Serial No", width: 18, groupKey: "g1", kind: "text", value: (a) => a.serialNo },
+  { key: "parentFarId", label: "Parent FAR ID", width: 18, groupKey: "g1", kind: "text", value: (a) => a.parentFarId },
   { key: "status", label: "Status", width: 14, groupKey: "g1", kind: "text", value: (a) => a.status },
   { key: "assetDescription", label: "Asset Description", width: 34, groupKey: "g1", kind: "text", value: (a) => a.assetDescription },
   { key: "qty", label: "Qty", width: 10, groupKey: "g1", kind: "number", value: (a) => a.qty },

@@ -68,8 +68,9 @@ export function TransferModal({
     setSubmitting(true);
     setError(null);
     try {
-      await createTransfer({ farIds: assets.map((a) => a.asset.farId), toLocation, transactionDate });
-      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} transferred to ${toLocation}.`);
+      const res = await createTransfer({ farIds: assets.map((a) => a.asset.farId), toLocation, transactionDate });
+      const childNote = res.childrenIncluded.length > 0 ? ` (including ${res.childrenIncluded.length} child asset${res.childrenIncluded.length === 1 ? "" : "s"})` : "";
+      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} transferred to ${toLocation}${childNote}.`);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transfer failed.");

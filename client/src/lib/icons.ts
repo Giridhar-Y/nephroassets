@@ -40,5 +40,7 @@ export {
   PanelLeftExpandRegular as PanelExpandIcon,
   BookDatabaseRegular as BookDatabaseIcon,
   PeopleRegular as AdminIcon,
-  KeyRegular as KeyIcon
+  KeyRegular as KeyIcon,
+  LinkRegular as LinkIcon,
+  MergeRegular as MergeIcon
 } from "@fluentui/react-icons";

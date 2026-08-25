@@ -122,6 +122,9 @@ export interface AssetDetailTransfer {
   id: number;
   transactionDate: string;
   location: string;
+  /** Set only when this transfer was written by the parent/child cascade, not chosen
+   *  directly — the parent FAR ID it cascaded from, or null for an ordinary transfer. */
+  cascadedFromParentFarId: string | null;
 }
 
 export interface AssetDetailResponse {
@@ -142,7 +145,7 @@ export function createTransfer(payload: {
   farIds: string[];
   toLocation: string;
   transactionDate: string;
-}): Promise<{ transferred: number }> {
+}): Promise<{ transferred: number; childrenIncluded: string[] }> {
   return request("/api/transfers", { method: "POST", body: JSON.stringify(payload) });
 }
 
@@ -173,6 +176,7 @@ export interface AssetEditInput {
   usefulLifeC2Years: number;
   accDepC1Opening: number;
   accDepC2Opening: number;
+  parentFarId: string | null;
 }
 
 // Edit: modify an already-capitalized asset's non-historical particulars. Deliberately
@@ -186,7 +190,7 @@ export function updateAsset(farId: string, payload: AssetEditInput): Promise<{ f
 export function disposeAsset(
   farId: string,
   payload: { dateOfDisposal: string; saleValue: number }
-): Promise<{ farId: string; disposed: boolean }> {
+): Promise<{ farId: string; disposed: boolean; childrenDisposed: string[] }> {
   return request(`/api/assets/${encodeURIComponent(farId)}/disposal`, {
     method: "PATCH",
     body: JSON.stringify(payload)
@@ -199,12 +203,21 @@ export function disposeAsset(
 // the asset already has one recorded.
 export function recordAddition(
   farId: string,
-  payload: { additionsC1: number; additionsC2: number; dateOfAddition: string }
+  payload: { additionsC1: number; additionsC2: number; dateOfAddition: string; parentFarId?: string }
 ): Promise<{ farId: string; added: boolean }> {
   return request(`/api/assets/${encodeURIComponent(farId)}/addition`, {
     method: "PATCH",
     body: JSON.stringify(payload)
   });
+}
+
+// Bulk merge from Register: link one or more existing assets as children of one existing
+// parent in a single request — same validation Edit already applies one-at-a-time.
+export function mergeAssets(
+  parentFarId: string,
+  childFarIds: string[]
+): Promise<{ parentFarId: string; childFarIds: string[]; merged: number }> {
+  return request("/api/assets/merge", { method: "POST", body: JSON.stringify({ parentFarId, childFarIds }) });
 }
 
 export interface DisposalPreview {

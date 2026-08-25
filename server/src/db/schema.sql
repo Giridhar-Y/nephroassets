@@ -14,6 +14,12 @@ CREATE TABLE assets (
   location                   TEXT NOT NULL,
   revised_location           TEXT,
   last_date_of_transaction   DATE,
+  -- Parent/child: an accessory or component that must always move/dispose together with
+  -- another asset (its parent), while still appearing as its own row everywhere. One
+  -- level only (a child can't itself have children) — enforced in the Edit route, not
+  -- here, since a CHECK constraint can't see other rows. ON UPDATE CASCADE for the same
+  -- reason as transfers.far_id above: renaming a parent must not orphan its children.
+  parent_far_id              TEXT REFERENCES assets(far_id) ON UPDATE CASCADE,
 
   useful_life_c1_years        NUMERIC NOT NULL,
   useful_life_c2_years        NUMERIC NOT NULL,
@@ -28,6 +34,11 @@ CREATE TABLE assets (
   deletions_c1                 NUMERIC NOT NULL DEFAULT 0,
   deletions_c2                 NUMERIC NOT NULL DEFAULT 0,
   sale_value                   NUMERIC NOT NULL DEFAULT 0,
+  -- Set only when this asset was disposed as a cascaded child of its parent's disposal
+  -- (disposeWithChildren) — null for a normal standalone disposal and for the parent's
+  -- own disposal row. Lets Asset History show "cascaded from parent X" instead of looking
+  -- like an independent decision. ON UPDATE CASCADE for the same reason as parent_far_id.
+  disposed_via_parent_far_id   TEXT REFERENCES assets(far_id) ON UPDATE CASCADE,
 
   acc_dep_c1_opening           NUMERIC NOT NULL DEFAULT 0,
   acc_dep_c2_opening           NUMERIC NOT NULL DEFAULT 0
@@ -43,7 +54,12 @@ CREATE TABLE transfers (
   -- applySchema() for the equivalent migration on a database created before this existed.
   far_id             TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE,
   transaction_date   DATE NOT NULL,
-  location           TEXT NOT NULL
+  location           TEXT NOT NULL,
+  -- Set only when this transfer row was written by the cascade (a child moved because
+  -- its parent moved), not chosen directly — null for every ordinary transfer, including
+  -- one on an asset that happens to be a child but was independently selected. See
+  -- transfers.ts's POST /api/transfers.
+  cascaded_from_parent_far_id   TEXT REFERENCES assets(far_id) ON UPDATE CASCADE
 );
 
 -- Single-row control panel: AS_AT, FY_ST, FY_EN, DAYS_FY.
@@ -156,6 +172,10 @@ CREATE INDEX idx_assets_date_acquired ON assets (date_acquired);
 -- text_pattern_ops additionally makes `far_id LIKE 'prefix%'` searches index-friendly
 -- regardless of the database's default collation.
 CREATE INDEX idx_assets_farid_pattern ON assets (far_id text_pattern_ops);
+-- Partial: most rows have no parent, so only indexing the ones that do keeps this small
+-- and fast for the "find this asset's active children" lookup Transfer/Disposal cascade
+-- needs on every write.
+CREATE INDEX idx_assets_parent_far_id ON assets (parent_far_id) WHERE parent_far_id IS NOT NULL;
 
 CREATE INDEX idx_transfers_far_id_date ON transfers (far_id, transaction_date DESC);
 

@@ -6,6 +6,7 @@ import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { ColumnFilterPopover, TextFilterPanel } from "../components/ColumnFilterPopover.js";
 import { useToast } from "../components/Toast.js";
+import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { useAuth } from "../lib/AuthContext.js";
 import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
@@ -409,6 +410,34 @@ export function CapitalizationPage() {
                     onChange={(e) => update({ dateOfAddition: e.target.value || null })}
                   />
                 </Field>
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <h2 className="text-sm font-semibold text-ink">Parent Asset (optional)</h2>
+              <p className="mt-1 text-xs text-gray-500">
+                Link this new asset as a child of an existing one — it'll always move and dispose together with its
+                parent, while keeping its own cost, quantity, and useful life.
+              </p>
+              <div className="mt-3 max-w-sm">
+                {form.parentFarId ? (
+                  <div className="flex items-center justify-between rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+                    <span className="font-medium text-ink">{form.parentFarId}</span>
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-accent hover:underline"
+                      onClick={() => update({ parentFarId: undefined })}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <FarIdAutocomplete
+                    asAt={settings?.asAt ?? ""}
+                    placeholder="Search to link this as a child of another asset…"
+                    onSelect={(item) => update({ parentFarId: item.asset.farId })}
+                  />
+                )}
               </div>
             </div>
 

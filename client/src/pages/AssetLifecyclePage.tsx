@@ -60,8 +60,15 @@ function ageLabel(dateAcquired: string, asAt: string): { label: string; years: n
 type TimelineEvent =
   | { type: "capitalization"; date: string; location: string; cost: number }
   | { type: "addition"; date: string; amount: number }
-  | { type: "transfer"; date: string; from: string; to: string }
-  | { type: "disposal"; date: string; saleValue: number; wdv: number; profitLoss: number };
+  | { type: "transfer"; date: string; from: string; to: string; cascadedFromParentFarId: string | null }
+  | {
+      type: "disposal";
+      date: string;
+      saleValue: number;
+      wdv: number;
+      profitLoss: number;
+      cascadedFromParentFarId: string | null;
+    };
 
 function buildTimeline(data: AssetDetailResponse): TimelineEvent[] {
   const { asset, result, transfers } = data;
@@ -81,14 +88,27 @@ function buildTimeline(data: AssetDetailResponse): TimelineEvent[] {
 
   let currentLocation = asset.location;
   for (const t of transfers) {
-    events.push({ type: "transfer", date: t.transactionDate, from: currentLocation, to: t.location });
+    events.push({
+      type: "transfer",
+      date: t.transactionDate,
+      from: currentLocation,
+      to: t.location,
+      cascadedFromParentFarId: t.cascadedFromParentFarId
+    });
     currentLocation = t.location;
   }
 
   if (asset.dateOfDisposal) {
     const wdv = (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
     const profitLoss = result.assetProfitLossOnDisposal ?? 0;
-    events.push({ type: "disposal", date: asset.dateOfDisposal, saleValue: asset.saleValue, wdv, profitLoss });
+    events.push({
+      type: "disposal",
+      date: asset.dateOfDisposal,
+      saleValue: asset.saleValue,
+      wdv,
+      profitLoss,
+      cascadedFromParentFarId: asset.disposedViaParentFarId
+    });
   }
 
   return events.sort((a, b) => a.date.localeCompare(b.date));
@@ -136,6 +156,11 @@ function TimelineRow({ event }: { event: TimelineEvent }) {
             <p className="text-xs text-gray-500">
               {formatDate(event.date)} · {event.from} → {event.to}
             </p>
+            {event.cascadedFromParentFarId && (
+              <p className="mt-0.5 text-[11px] text-gray-400">
+                Cascaded from parent {event.cascadedFromParentFarId}
+              </p>
+            )}
           </div>
         </div>
       );
@@ -153,6 +178,11 @@ function TimelineRow({ event }: { event: TimelineEvent }) {
                 {event.profitLoss >= 0 ? "Profit" : "Loss"} {formatCurrency(Math.abs(event.profitLoss))}
               </span>
             </p>
+            {event.cascadedFromParentFarId && (
+              <p className="mt-0.5 text-[11px] text-gray-400">
+                Cascaded from parent {event.cascadedFromParentFarId}
+              </p>
+            )}
           </div>
         </div>
       );

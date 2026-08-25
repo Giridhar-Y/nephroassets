@@ -208,5 +208,16 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
           FOREIGN KEY (far_id) REFERENCES assets(far_id) ON UPDATE CASCADE;
       END IF;
     END $$;
+
+    -- Parent/child assets: a component/accessory that must always move/dispose with its
+    -- parent — see schema.sql's assets table comment for the full reasoning. IF NOT
+    -- EXISTS makes this a no-op on every boot after the first.
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS parent_far_id TEXT REFERENCES assets(far_id) ON UPDATE CASCADE;
+    CREATE INDEX IF NOT EXISTS idx_assets_parent_far_id ON assets (parent_far_id) WHERE parent_far_id IS NOT NULL;
+
+    -- Cascade audit-trail notes — see schema.sql's column comments for the full reasoning.
+    -- IF NOT EXISTS makes both a no-op on every boot after the first.
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS disposed_via_parent_far_id TEXT REFERENCES assets(far_id) ON UPDATE CASCADE;
+    ALTER TABLE transfers ADD COLUMN IF NOT EXISTS cascaded_from_parent_far_id TEXT REFERENCES assets(far_id) ON UPDATE CASCADE;
   `);
 }

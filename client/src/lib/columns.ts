@@ -150,6 +150,14 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     render: (i) => i.result.effectiveLocation
   },
   { id: "serialNo", label: "Serial No", tooltip: "Manufacturer serial number", width: 130, group: "assetIdentification", render: (i) => i.asset.serialNo || "—" },
+  {
+    id: "parentFarId",
+    label: "Parent FAR ID",
+    tooltip: "This asset moves and disposes together with its parent, if set",
+    width: 140,
+    group: "assetIdentification",
+    render: (i) => i.asset.parentFarId ?? "—"
+  },
   { id: "status", label: "Status", tooltip: "Active / Under Repair / Disposed", width: 110, sortKey: "status", group: "assetIdentification", render: (i) => i.asset.status },
   {
     id: "assetDescription",

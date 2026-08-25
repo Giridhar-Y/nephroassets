@@ -320,4 +320,117 @@ describe("Transfers", () => {
     expect(secondBody.items).toHaveLength(1);
     expect(secondBody.nextCursor).toBeNull();
   });
+
+  describe("Parent/child cascade", () => {
+    it("transferring a parent also transfers its still-active children", async () => {
+      await insertAsset("XFER-PARENT-1");
+      await insertAsset("XFER-CHILD-1");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'XFER-PARENT-1' WHERE far_id = 'XFER-CHILD-1'`);
+
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-PARENT-1"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().childrenIncluded).toEqual(["XFER-CHILD-1"]);
+
+      const { rows } = await db.query(
+        `SELECT far_id, revised_location FROM assets WHERE far_id IN ('XFER-PARENT-1', 'XFER-CHILD-1')`
+      );
+      expect(rows.every((r) => r.revised_location === "Center-B")).toBe(true);
+    });
+
+    it("does not transfer a child that's already disposed", async () => {
+      await insertAsset("XFER-PARENT-2");
+      await insertAsset("XFER-CHILD-2");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'XFER-PARENT-2' WHERE far_id = 'XFER-CHILD-2'`);
+      await db.query(`UPDATE assets SET date_of_disposal = '2026-04-01', status = 'Disposed' WHERE far_id = 'XFER-CHILD-2'`);
+
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-PARENT-2"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().childrenIncluded).toEqual([]);
+
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-CHILD-2'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+
+    it("does not double-transfer a child that was also explicitly selected, but still marks it cascaded (its parent moved too)", async () => {
+      await insertAsset("XFER-PARENT-3");
+      await insertAsset("XFER-CHILD-3");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'XFER-PARENT-3' WHERE far_id = 'XFER-CHILD-3'`);
+
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-PARENT-3", "XFER-CHILD-3"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().transferred).toBe(2);
+
+      const { rows } = await db.query(`SELECT far_id, cascaded_from_parent_far_id FROM transfers WHERE far_id = 'XFER-CHILD-3'`);
+      expect(rows).toHaveLength(1);
+      // The audit note is mechanical, not intent-based — this child's parent_far_id was
+      // also moving in the same batch (e.g. Register's checkbox auto-select already
+      // includes active children in what it sends), so it's still correctly "cascaded"
+      // even though its FAR ID was also literally present in the request.
+      expect(rows[0].cascaded_from_parent_far_id).toBe("XFER-PARENT-3");
+    });
+
+    it("marks a cascaded child's transfer row with the parent it cascaded from, and leaves the parent's own row null", async () => {
+      await insertAsset("XFER-PARENT-4");
+      await insertAsset("XFER-CHILD-4");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'XFER-PARENT-4' WHERE far_id = 'XFER-CHILD-4'`);
+
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-PARENT-4"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+
+      const { rows: parentRows } = await db.query(
+        `SELECT cascaded_from_parent_far_id FROM transfers WHERE far_id = 'XFER-PARENT-4'`
+      );
+      expect(parentRows[0].cascaded_from_parent_far_id).toBeNull();
+      const { rows: childRows } = await db.query(
+        `SELECT cascaded_from_parent_far_id FROM transfers WHERE far_id = 'XFER-CHILD-4'`
+      );
+      expect(childRows[0].cascaded_from_parent_far_id).toBe("XFER-PARENT-4");
+    });
+
+    it("leaves a cascaded child's cost, quantity, and useful life fully independent of the transfer", async () => {
+      await insertAsset("XFER-PARENT-5");
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO assets (
+           far_id, sub_classification, asset_description, status, date_acquired, location,
+           useful_life_c1_years, useful_life_c2_years, qty, c1_opening_cost, c2_opening_cost, parent_far_id
+         ) VALUES ('XFER-CHILD-5', 'Test-Sub', 'Child Asset', 'Active', '2020-01-01', 'Center-A', 7, 3, 4, 12345, 6789, 'XFER-PARENT-5')`
+      );
+
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-PARENT-5"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+
+      const { rows } = await db.query(
+        `SELECT qty, useful_life_c1_years, useful_life_c2_years, c1_opening_cost, c2_opening_cost
+         FROM assets WHERE far_id = 'XFER-CHILD-5'`
+      );
+      expect(Number(rows[0].qty)).toBe(4);
+      expect(Number(rows[0].useful_life_c1_years)).toBe(7);
+      expect(Number(rows[0].useful_life_c2_years)).toBe(3);
+      expect(Number(rows[0].c1_opening_cost)).toBe(12345);
+      expect(Number(rows[0].c2_opening_cost)).toBe(6789);
+    });
+  });
 });

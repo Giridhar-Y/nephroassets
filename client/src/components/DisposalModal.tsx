@@ -66,8 +66,16 @@ export function DisposalModal({
     setSubmitting(true);
     setError(null);
     try {
-      await Promise.all(assets.map((a) => disposeAsset(a.asset.farId, { dateOfDisposal, saleValue })));
-      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} disposed.`);
+      // A child whose parent is also selected here gets disposed automatically as part
+      // of the parent's own disposal call — sending its own disposeAsset too would race
+      // against that cascade and 409 as "already disposed" depending on which resolves
+      // first. Only the "roots" of this selection need their own call.
+      const selectedFarIds = new Set(assets.map((a) => a.asset.farId));
+      const roots = assets.filter((a) => !(a.asset.parentFarId && selectedFarIds.has(a.asset.parentFarId)));
+      const results = await Promise.all(roots.map((a) => disposeAsset(a.asset.farId, { dateOfDisposal, saleValue })));
+      const childrenDisposed = results.reduce((sum, r) => sum + r.childrenDisposed.length, 0);
+      const childNote = childrenDisposed > 0 ? ` (including ${childrenDisposed} child asset${childrenDisposed === 1 ? "" : "s"})` : "";
+      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} disposed${childNote}.`);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Disposal failed.");

@@ -19,6 +19,19 @@ export interface AssetInput {
   location: string;
   revisedLocation: string | null;
   lastDateOfTransaction: IsoDate | null;
+  /** The parent asset's FAR ID, if this asset is a child (e.g. an accessory that must
+   *  always move/dispose with its parent) — null for a standalone or parent asset. Pure
+   *  identity/movement metadata: the calc engine never reads this, each asset's
+   *  depreciation is computed entirely independently regardless of this relationship. */
+  parentFarId: string | null;
+  /** Set only when this asset was disposed as a cascaded child of its parent's disposal —
+   *  null otherwise, including for the parent's own disposal. Same "the engine never reads
+   *  this" note as parentFarId — pure audit-trail metadata for Asset History. */
+  disposedViaParentFarId: string | null;
+  /** True if any other asset currently has this one as its parent. Computed via a join,
+   *  not a stored column — only populated by routes that opt in (Register's list route);
+   *  everywhere else it's false by default. Drives Register's "has children" badge. */
+  hasChildren: boolean;
 
   usefulLifeC1Years: number;
   usefulLifeC2Years: number;
