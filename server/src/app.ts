@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
@@ -60,6 +60,16 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(assetsExportRoutes);
   await app.register(mastersRoutes);
   await app.register(bulkMastersRoutes);
+
+  // Fastify's default error handler already logs, but doesn't guarantee a JSON body —
+  // an error thrown before the response starts can still leave the platform (Vercel) to
+  // serve its own non-JSON error page, which the client can't parse into a useful
+  // message. Logging the full error here (not just message) is what makes an
+  // intermittent, hard-to-reproduce failure diagnosable from server logs afterward.
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    req.log.error({ err, url: req.url }, "Unhandled error in request handler");
+    reply.code(err.statusCode ?? 500).send({ error: err.message || "Internal server error." });
+  });
 
   app.get("/api/health", async () => ({ ok: true }));
 

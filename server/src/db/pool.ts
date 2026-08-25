@@ -36,11 +36,26 @@ export async function getPool(): Promise<pg.Pool> {
       max: 5,
       idleTimeoutMillis: 10_000
     });
+    attachIdleErrorHandler(pool);
   } else {
     const { ensureDevPostgres } = await import("./devPostgres.js");
     pool = new pg.Pool({ connectionString: await ensureDevPostgres() });
+    attachIdleErrorHandler(pool);
   }
   return pool;
+}
+
+// An idle pooled client's underlying socket can die out from under it — Supabase's
+// pooler closing it server-side, or a Vercel serverless instance freezing mid-connection
+// and thawing to find it gone. pg.Pool is an EventEmitter and reports that as an 'error'
+// event; Node throws it at the process top level (crashing the whole serverless
+// invocation, not just the one request) if nothing is listening. This was the actual
+// cause of the "occasional 500, retry works" reports — logging and dropping the dead
+// client here is the fix, not a diagnostic nicety.
+function attachIdleErrorHandler(pool: pg.Pool): void {
+  pool.on("error", (err) => {
+    console.error("Idle Postgres client error (connection dropped, pool will reconnect):", err);
+  });
 }
 
 export async function applySchema(): Promise<void> {

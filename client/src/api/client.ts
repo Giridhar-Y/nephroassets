@@ -20,31 +20,52 @@ export class ApiError extends Error {
   }
 }
 
+const RETRYABLE_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    // Only declare a JSON content-type when there's actually a body — Fastify's default
-    // JSON body parser rejects an empty body outright (FST_ERR_CTP_EMPTY_JSON_BODY) if
-    // told to expect one, which every no-body POST (logout, reset-password) hit.
-    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers }
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const err = new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status, body.code);
-    // A session can die mid-use — 12-hour expiry while a tab stays open overnight, or an
-    // admin disabling the account (auth/middleware.ts reads status fresh on every
-    // request, so that takes effect immediately, not next login). Without this, only the
-    // one component whose fetch happened to fail shows a "Not signed in" error while the
-    // rest of the app (sidebar, nav) keeps rendering as if still signed in. AuthContext
-    // listens for this and clears its user state, which sends RequireAuth to /login.
-    // Skip it for the login endpoint itself — a wrong-password 401 there is normal,
-    // expected input validation, not a dead session to react to.
-    if (err.code === "UNAUTHENTICATED" && path !== "/api/auth/login") {
-      window.dispatchEvent(new Event("auth:unauthenticated"));
+  // A safety net for transient 5xx (e.g. a cold-start/connection blip resolved by the
+  // *next* request) — never on a body-carrying request, since retrying a POST/PATCH
+  // risks double-submitting a mutation. The real fix for the known cause of this is
+  // server-side (pool.ts's idle-connection error handling); this only smooths over
+  // whatever transient failure slips through anyway.
+  const isRetryable = (!init?.method || init.method === "GET") && !init?.body;
+  let lastRes: Response | undefined;
+  for (let attempt = 1; attempt <= (isRetryable ? RETRYABLE_ATTEMPTS : 1); attempt++) {
+    const res = await fetch(path, {
+      ...init,
+      // Only declare a JSON content-type when there's actually a body — Fastify's default
+      // JSON body parser rejects an empty body outright (FST_ERR_CTP_EMPTY_JSON_BODY) if
+      // told to expect one, which every no-body POST (logout, reset-password) hit.
+      headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers }
+    });
+    if (res.ok) return res.json() as Promise<T>;
+    lastRes = res;
+    if (isRetryable && res.status >= 500 && attempt < RETRYABLE_ATTEMPTS) {
+      await sleep(RETRY_DELAY_MS * attempt);
+      continue;
     }
-    throw err;
+    break;
   }
-  return res.json() as Promise<T>;
+  const res = lastRes!;
+  const body = await res.json().catch(() => ({}));
+  const err = new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status, body.code);
+  // A session can die mid-use — 12-hour expiry while a tab stays open overnight, or an
+  // admin disabling the account (auth/middleware.ts reads status fresh on every
+  // request, so that takes effect immediately, not next login). Without this, only the
+  // one component whose fetch happened to fail shows a "Not signed in" error while the
+  // rest of the app (sidebar, nav) keeps rendering as if still signed in. AuthContext
+  // listens for this and clears its user state, which sends RequireAuth to /login.
+  // Skip it for the login endpoint itself — a wrong-password 401 there is normal,
+  // expected input validation, not a dead session to react to.
+  if (err.code === "UNAUTHENTICATED" && path !== "/api/auth/login") {
+    window.dispatchEvent(new Event("auth:unauthenticated"));
+  }
+  throw err;
 }
 
 /** Returns null when settings genuinely haven't been configured yet (404) — a real,
