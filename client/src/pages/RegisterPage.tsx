@@ -114,6 +114,18 @@ export function RegisterPage() {
         )}
       </ColumnFilterPopover>
     ),
+    location: (
+      <ColumnFilterPopover label="Capitalized Location" active={(filters.capLocation?.length ?? 0) > 0}>
+        {() => (
+          <SelectFilterPanel
+            label="Center"
+            options={centers}
+            value={filters.capLocation ?? []}
+            onChange={(v) => (v.length > 0 ? setFilter("capLocation", v) : clearFilter("capLocation"))}
+          />
+        )}
+      </ColumnFilterPopover>
+    ),
     dateAcquired: (
       <ColumnFilterPopover label="Date Acquired" active={!!(filters.dateAcquiredFrom || filters.dateAcquiredTo)}>
         {() => (

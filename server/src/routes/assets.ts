@@ -69,6 +69,11 @@ const multiValue = z
 const querySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   center: multiValue,
+  // The raw `location` column (where an asset was capitalized) — deliberately separate
+  // from `center`, which filters COALESCE(revised_location, location) (today's actual
+  // location, after any transfers). An asset that's since moved should still be findable
+  // by either its capitalized location or its current one.
+  capLocation: multiValue,
   subClassification: multiValue,
   status: multiValue,
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -137,6 +142,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (q.center) {
       params.push(q.center);
       conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);
+    }
+    if (q.capLocation) {
+      params.push(q.capLocation);
+      conditions.push(`location = ANY($${params.length})`);
     }
     if (q.subClassification) {
       params.push(q.subClassification);

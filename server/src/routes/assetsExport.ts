@@ -24,6 +24,7 @@ const multiValue = z
 const exportQuerySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   center: multiValue,
+  capLocation: multiValue,
   subClassification: multiValue,
   status: multiValue,
   dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -423,6 +424,10 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     if (q.center) {
       params.push(q.center);
       conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);
+    }
+    if (q.capLocation) {
+      params.push(q.capLocation);
+      conditions.push(`location = ANY($${params.length})`);
     }
     if (q.subClassification) {
       params.push(q.subClassification);

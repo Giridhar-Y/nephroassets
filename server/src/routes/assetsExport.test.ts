@@ -122,6 +122,22 @@ describe("Register Export: GET /api/assets/export", () => {
     expect(dataRow).toContain("EXP-4");
   });
 
+  it("applies capLocation (raw capitalization location, not the current post-transfer one)", async () => {
+    await insertAsset("EXP-CAPLOC-1");
+    await insertAsset("EXP-CAPLOC-2", { location: "Center-Other" });
+    const db = await getPool();
+    // EXP-CAPLOC-1 has since moved away — capLocation should still find it under its
+    // original Center-Export, proving it filters the raw column, not the COALESCE'd
+    // current-location one (which `center` already covers).
+    await db.query(`UPDATE assets SET revised_location = 'Center-Other' WHERE far_id = 'EXP-CAPLOC-1'`);
+
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?capLocation=Center-Export" });
+    const worksheet = await readWorkbook(res.rawPayload);
+    expect(worksheet.rowCount).toBe(4);
+    const dataRow = worksheet.getRow(4).values as unknown[];
+    expect(dataRow).toContain("EXP-CAPLOC-1");
+  });
+
   it("sums numeric columns (Qty and C1 Opening Cost) into the totals row, respecting the same filters", async () => {
     await insertAsset("EXP-TOTALS-1", { qty: 2, c1_opening_cost: 10000 });
     await insertAsset("EXP-TOTALS-2", { qty: 3, c1_opening_cost: 25000, location: "Center-Other" });

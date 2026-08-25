@@ -100,6 +100,7 @@ export interface AssetCreateInput {
 
 export interface AssetFilters {
   center?: string[];
+  capLocation?: string[];
   subClassification?: string[];
   status?: string[];
   dateAcquiredFrom?: string;

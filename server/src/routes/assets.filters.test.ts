@@ -316,3 +316,54 @@ describe("GET /api/assets: multi-value status/subClassification/center filters",
     expect(farIds).toEqual(["MULTI-6", "MULTI-7"]);
   });
 });
+
+describe("GET /api/assets: capLocation filter (Capitalized Location)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(assetsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("filters on the raw capitalization location, unaffected by a later transfer", async () => {
+    await insertAsset("CAPLOC-1", "A", { location: "Center-X" });
+    await insertAsset("CAPLOC-2", "B", { location: "Center-Y" });
+    const db = await getPool();
+    // CAPLOC-1 has since moved to Center-Y — capLocation should still find it under its
+    // original Center-X, unlike the existing `center` (current-location) filter.
+    await db.query(`UPDATE assets SET revised_location = 'Center-Y' WHERE far_id = 'CAPLOC-1'`);
+
+    const res = await authedInject(app, { method: "GET", url: "/api/assets?capLocation=Center-X" });
+    expect(res.json().items.map((i: { asset: { farId: string } }) => i.asset.farId)).toEqual(["CAPLOC-1"]);
+  });
+
+  it("a transferred asset no longer matches its old center (current-location) filter, but still matches capLocation", async () => {
+    await insertAsset("CAPLOC-3", "A", { location: "Center-X" });
+    const db = await getPool();
+    await db.query(`UPDATE assets SET revised_location = 'Center-Y' WHERE far_id = 'CAPLOC-3'`);
+
+    const byCenter = await authedInject(app, { method: "GET", url: "/api/assets?center=Center-X" });
+    expect(byCenter.json().items).toHaveLength(0);
+
+    const byCapLocation = await authedInject(app, { method: "GET", url: "/api/assets?capLocation=Center-X" });
+    expect(byCapLocation.json().items.map((i: { asset: { farId: string } }) => i.asset.farId)).toEqual(["CAPLOC-3"]);
+  });
+});
