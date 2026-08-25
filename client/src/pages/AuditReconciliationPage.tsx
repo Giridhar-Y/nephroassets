@@ -8,11 +8,9 @@ import {
 import { useSettings } from "../lib/SettingsContext.js";
 import { formatCurrency } from "../lib/format.js";
 import { Tooltip } from "../components/Tooltip.js";
+import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
-
-const DATE_INPUT_CLASS =
-  "rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -130,18 +128,11 @@ export function AuditReconciliationPage() {
               />
             </div>
             {isCustomPeriod && settings && (
-              <>
-                <span className="mb-0.5 rounded-full bg-ink px-2 py-0.5 text-[10px] font-semibold text-white">
-                  Custom period
-                </span>
-                <button
-                  type="button"
-                  className="mb-0.5 text-[11px] font-medium text-accent hover:underline"
-                  onClick={() => setPeriod({ asAt: settings.asAt, fyStart: settings.fyStart, fyEnd: settings.fyEnd })}
-                >
-                  Reset to current FY
-                </button>
-              </>
+              <CustomPeriodBadge
+                label="Custom period"
+                resetLabel="Reset to current FY"
+                onReset={() => setPeriod({ asAt: settings.asAt, fyStart: settings.fyStart, fyEnd: settings.fyEnd })}
+              />
             )}
           </div>
         )}
