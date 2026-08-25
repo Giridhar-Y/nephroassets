@@ -169,6 +169,17 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     await app.close();
   });
 
+  const baseEdit = {
+    farId: "EDIT-TEST-1",
+    subClassification: "Test-Sub",
+    assetDescription: "Capitalization Test Asset",
+    serialNo: "",
+    usefulLifeC1Years: 5,
+    usefulLifeC2Years: 5,
+    accDepC1Opening: 0,
+    accDepC2Opening: 0
+  };
+
   beforeEach(async () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
@@ -181,7 +192,7 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/EDIT-TEST-1",
-      payload: { serialNo: "SN-NEW-1", usefulLifeC1Years: 8, usefulLifeC2Years: 6, accDepC1Opening: 1500, accDepC2Opening: 500 }
+      payload: { ...baseEdit, serialNo: "SN-NEW-1", usefulLifeC1Years: 8, usefulLifeC2Years: 6, accDepC1Opening: 1500, accDepC2Opening: 500 }
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ farId: "EDIT-TEST-1", updated: true });
@@ -197,23 +208,94 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     expect(Number(rows[0].acc_dep_c2_opening)).toBe(500);
   });
 
-  it("does not touch FAR ID, Date Acquired, Location, Status, cost, or additions fields", async () => {
+  it("updates FAR ID, Sub Classification, and Asset Description", async () => {
+    const db0 = await getPool();
+    await db0.query(`INSERT INTO sub_classifications (name) VALUES ('Second-Sub')`);
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, farId: "EDIT-RENAMED-1", subClassification: "Second-Sub", assetDescription: "Renamed Description" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ farId: "EDIT-RENAMED-1", updated: true });
+
+    const db = await getPool();
+    const { rows } = await db.query(
+      `SELECT far_id, sub_classification, asset_description FROM assets WHERE far_id = 'EDIT-RENAMED-1'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sub_classification).toBe("Second-Sub");
+    expect(rows[0].asset_description).toBe("Renamed Description");
+
+    const old = await db.query(`SELECT 1 FROM assets WHERE far_id = 'EDIT-TEST-1'`);
+    expect(old.rows).toHaveLength(0);
+  });
+
+  it("renaming FAR ID carries the asset's transfer history to the new FAR ID", async () => {
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO transfers (far_id, transaction_date, location) VALUES ('EDIT-TEST-1', '2026-06-01', 'Center-Moved')`
+    );
+
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, farId: "EDIT-RENAMED-2" }
+    });
+    expect(res.statusCode).toBe(200);
+
+    const { rows } = await db.query(`SELECT far_id, location FROM transfers WHERE far_id = 'EDIT-RENAMED-2'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].location).toBe("Center-Moved");
+    const orphaned = await db.query(`SELECT 1 FROM transfers WHERE far_id = 'EDIT-TEST-1'`);
+    expect(orphaned.rows).toHaveLength(0);
+  });
+
+  it("rejects renaming FAR ID to one already in use by another asset", async () => {
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "EDIT-OTHER-1" } });
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, farId: "EDIT-OTHER-1" }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/already in use/);
+  });
+
+  it("rejects an invalid FAR ID format on edit", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, farId: "lowercase-id" }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects a Sub Classification not in the active Masters list", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, subClassification: "Not A Real Sub" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Sub Classification "Not A Real Sub" not recognized/);
+  });
+
+  it("does not touch Date Acquired, Location, Status, cost, or additions fields", async () => {
     await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/EDIT-TEST-1",
-      payload: { serialNo: "SN-2", usefulLifeC1Years: 9, usefulLifeC2Years: 9, accDepC1Opening: 0, accDepC2Opening: 0 }
+      payload: { ...baseEdit, serialNo: "SN-2", usefulLifeC1Years: 9, usefulLifeC2Years: 9 }
     });
 
     const db = await getPool();
     const { rows } = await db.query(
-      `SELECT far_id, date_acquired, location, status, sub_classification, c1_opening_cost, c2_opening_cost, additions_c1, additions_c2
+      `SELECT date_acquired, location, status, c1_opening_cost, c2_opening_cost, additions_c1, additions_c2
        FROM assets WHERE far_id = 'EDIT-TEST-1'`
     );
-    expect(rows[0].far_id).toBe("EDIT-TEST-1");
     expect(String(rows[0].date_acquired)).toMatch(/^2026-01-01/);
     expect(rows[0].location).toBe("Center-Test");
     expect(rows[0].status).toBe("Active");
-    expect(rows[0].sub_classification).toBe("Test-Sub");
     expect(Number(rows[0].c1_opening_cost)).toBe(10000);
     expect(Number(rows[0].c2_opening_cost)).toBe(10000);
     expect(Number(rows[0].additions_c1)).toBe(0);
@@ -224,7 +306,7 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/EDIT-TEST-1",
-      payload: { serialNo: "", usefulLifeC1Years: -1, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+      payload: { ...baseEdit, usefulLifeC1Years: -1 }
     });
     expect(res.statusCode).toBe(400);
   });
@@ -233,7 +315,7 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/NOT-REAL",
-      payload: { serialNo: "", usefulLifeC1Years: 5, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+      payload: { ...baseEdit, farId: "NOT-REAL" }
     });
     expect(res.statusCode).toBe(404);
   });
@@ -247,7 +329,7 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/EDIT-TEST-1",
-      payload: { serialNo: "SN-3", usefulLifeC1Years: 5, usefulLifeC2Years: 5, accDepC1Opening: 0, accDepC2Opening: 0 }
+      payload: { ...baseEdit, serialNo: "SN-3" }
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatch(/disposed/);

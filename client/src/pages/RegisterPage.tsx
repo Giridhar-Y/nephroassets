@@ -258,6 +258,7 @@ export function RegisterPage() {
           return (
             <EditAssetModal
               asset={editingAsset}
+              subClassifications={subClassifications}
               onClose={() => setEditingFarId(null)}
               onDone={() => {
                 setEditingFarId(null);

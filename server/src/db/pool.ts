@@ -190,5 +190,23 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_user_audit_log_target ON user_audit_log (target_user_id, created_at);
+
+    -- One-time migration so an asset's FAR ID can be corrected via Edit (a typo made at
+    -- Capitalization/Bulk Upload time, previously unfixable without direct DB access):
+    -- transfers.far_id's FK originally had no ON UPDATE action, which would otherwise
+    -- reject renaming an asset that has any transfer history. CASCADE makes a single
+    -- UPDATE assets SET far_id = ... correctly carry transfer history to the new FAR ID
+    -- instead of orphaning it. Guarded on confupdtype so this ALTER only runs once, not
+    -- on every boot.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'transfers_far_id_fkey' AND confupdtype = 'c'
+      ) THEN
+        ALTER TABLE transfers DROP CONSTRAINT IF EXISTS transfers_far_id_fkey;
+        ALTER TABLE transfers ADD CONSTRAINT transfers_far_id_fkey
+          FOREIGN KEY (far_id) REFERENCES assets(far_id) ON UPDATE CASCADE;
+      END IF;
+    END $$;
   `);
 }

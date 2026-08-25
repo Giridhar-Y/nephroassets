@@ -37,7 +37,11 @@ CREATE TABLE assets (
 -- center-first transfer action described in the build prompt.
 CREATE TABLE transfers (
   id                 BIGSERIAL PRIMARY KEY,
-  far_id             TEXT NOT NULL REFERENCES assets(far_id),
+  -- ON UPDATE CASCADE: Register's Edit action can rename an asset's FAR ID (correcting a
+  -- typo from Capitalization/Bulk Upload) — this carries that asset's transfer history to
+  -- the new FAR ID atomically instead of rejecting the rename outright. See pool.ts's
+  -- applySchema() for the equivalent migration on a database created before this existed.
+  far_id             TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE,
   transaction_date   DATE NOT NULL,
   location           TEXT NOT NULL
 );

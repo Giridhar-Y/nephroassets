@@ -165,6 +165,9 @@ export function createAsset(payload: AssetCreateInput): Promise<{ farId: string;
 }
 
 export interface AssetEditInput {
+  farId: string;
+  subClassification: string;
+  assetDescription: string;
   serialNo: string;
   usefulLifeC1Years: number;
   usefulLifeC2Years: number;
@@ -173,8 +176,8 @@ export interface AssetEditInput {
 }
 
 // Edit: modify an already-capitalized asset's non-historical particulars. Deliberately
-// a short field list — see the server's editAssetSchema for why FAR ID/Date Acquired/
-// cost/additions fields aren't included.
+// a short field list — see the server's editAssetSchema for why Date Acquired/
+// Location/Status/cost/additions fields aren't included.
 export function updateAsset(farId: string, payload: AssetEditInput): Promise<{ farId: string; updated: boolean }> {
   return request(`/api/assets/${encodeURIComponent(farId)}`, { method: "PATCH", body: JSON.stringify(payload) });
 }

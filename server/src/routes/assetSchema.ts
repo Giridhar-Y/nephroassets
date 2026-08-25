@@ -12,7 +12,7 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 // Only gates new writes (Capitalization, Bulk Upload) — never applied retroactively to
 // rows already in the database.
 const FAR_ID_RE = /^[A-Z0-9-]+$/;
-const farId = z.string().min(1).regex(FAR_ID_RE, "FAR ID can only contain uppercase letters, numbers, and hyphens.");
+export const farId = z.string().min(1).regex(FAR_ID_RE, "FAR ID can only contain uppercase letters, numbers, and hyphens.");
 
 // The calc engine (engine.ts) only ever looks at dateOfAddition — not whether additions
 // are non-zero — to decide if an addition depreciates at all. A row with an addition

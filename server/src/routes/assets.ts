@@ -4,7 +4,7 @@ import { getPool } from "../db/pool.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
-import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues } from "./assetSchema.js";
+import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { applyFullDisposal } from "./disposalWriteOff.js";
 import { requireEditor } from "../auth/middleware.js";
@@ -32,17 +32,20 @@ const additionSchema = z
     path: ["additionsC1"]
   });
 
-// Editable-after-capitalization: only fields that don't feed the calc engine's
-// historical Gross Block/Additions classification. FAR ID, Date Acquired, Location,
-// Status, Sub Classification, the cost fields (c1/c2OpeningCost), and
-// additionsC1/C2 + dateOfAddition are deliberately NOT editable here — changing any of
-// them after the fact would rewrite a fact the engine has already used to compute
-// historical figures (a correction to those belongs in Bulk Upload, which is explicit
-// about being an upsert; a new addition has its own dedicated flow). Useful Life and
-// Opening Acc Dep are NOT date-versioned anywhere in this engine (same as Capitalization
-// already allows) — editing them recomputes every AS_AT, past and future, same as
-// editing them would if entered wrong at Capitalization time.
+// Editable-after-capitalization: FAR ID, Sub Classification, and Asset Description are
+// identity/categorization fields the calc engine never reads — safe to correct without
+// touching any historical figure. Date Acquired, Location, Status, the cost fields
+// (c1/c2OpeningCost), and additionsC1/C2 + dateOfAddition are still deliberately NOT
+// editable here — changing any of THOSE after the fact would rewrite a fact the engine
+// has already used to compute historical figures (a correction to those belongs in Bulk
+// Upload, which is explicit about being an upsert; a new addition has its own dedicated
+// flow). Useful Life and Opening Acc Dep are NOT date-versioned anywhere in this engine
+// (same as Capitalization already allows) — editing them recomputes every AS_AT, past
+// and future, same as editing them would if entered wrong at Capitalization time.
 const editAssetSchema = z.object({
+  farId: farIdSchema,
+  subClassification: z.string().min(1),
+  assetDescription: z.string().min(1),
   serialNo: z.string().optional().default(""),
   usefulLifeC1Years: z.coerce.number().min(0),
   usefulLifeC2Years: z.coerce.number().min(0),
@@ -359,9 +362,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
     return { farId: input.farId, created: true };
   });
 
-  // Edit: modify an already-capitalized asset's non-historical particulars (Serial No,
-  // Useful Life C1/C2, Opening Acc Dep C1/C2) without going through Bulk Upload. See
-  // editAssetSchema's comment for why this field list is deliberately short.
+  // Edit: modify an already-capitalized asset's non-historical particulars (FAR ID, Sub
+  // Classification, Asset Description, Serial No, Useful Life C1/C2, Opening Acc Dep
+  // C1/C2) without going through Bulk Upload. See editAssetSchema's comment for why this
+  // field list stops here.
   app.patch("/api/assets/:farId", { preHandler: requireEditor }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = editAssetSchema.safeParse(req.body);
@@ -389,14 +393,45 @@ export default async function assetsRoutes(app: FastifyInstance) {
       return { error: `Asset "${farId}" has been disposed — its particulars can no longer be edited.` };
     }
 
+    const maps = await loadActiveMasterMaps(db);
+    const canonicalSubClass = lookupCanonical(maps.subClassifications, input.subClassification);
+    if (!canonicalSubClass) {
+      reply.code(400);
+      return { error: `Sub Classification "${input.subClassification}" not recognized — see Masters for valid values.` };
+    }
+
+    // far_id is the primary key everything else (transfers, and now this same row) keys
+    // off — only worth checking for a collision when it's actually changing.
+    if (input.farId !== farId) {
+      const { rows: collision } = await db.query(`SELECT 1 FROM assets WHERE far_id = $1`, [input.farId]);
+      if (collision.length > 0) {
+        reply.code(409);
+        return { error: `FAR ID "${input.farId}" is already in use by another asset.` };
+      }
+    }
+
+    // A single UPDATE renaming far_id relies on transfers_far_id_fkey's ON UPDATE CASCADE
+    // (see pool.ts) to carry that asset's transfer history to the new FAR ID atomically —
+    // no separate repoint-then-rename dance needed.
     await db.query(
       `UPDATE assets
-       SET serial_no = $1, useful_life_c1_years = $2, useful_life_c2_years = $3,
-           acc_dep_c1_opening = $4, acc_dep_c2_opening = $5
-       WHERE far_id = $6`,
-      [input.serialNo, input.usefulLifeC1Years, input.usefulLifeC2Years, input.accDepC1Opening, input.accDepC2Opening, farId]
+       SET far_id = $1, sub_classification = $2, asset_description = $3, serial_no = $4,
+           useful_life_c1_years = $5, useful_life_c2_years = $6,
+           acc_dep_c1_opening = $7, acc_dep_c2_opening = $8
+       WHERE far_id = $9`,
+      [
+        input.farId,
+        canonicalSubClass,
+        input.assetDescription,
+        input.serialNo,
+        input.usefulLifeC1Years,
+        input.usefulLifeC2Years,
+        input.accDepC1Opening,
+        input.accDepC2Opening,
+        farId
+      ]
     );
-    return { farId, updated: true };
+    return { farId: input.farId, updated: true };
   });
 
   // Mid-Year Addition on an already-capitalized asset — writes the same

@@ -2,26 +2,33 @@ import { useEffect, useState } from "react";
 import { updateAsset, type AssetEditInput } from "../api/client.js";
 import { formatCurrency } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
-import { EditIcon, ErrorIcon } from "../lib/icons.js";
+import { EditIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 
-type Step = "form" | "confirm";
+type Step = "form" | "confirm" | "success";
 
-// Only Serial No, Useful Life C1/C2, and Opening Acc Dep C1/C2 are editable — see the
-// server's editAssetSchema for why FAR ID, Date Acquired, Location, Status, Sub
-// Classification, cost, and additions fields are deliberately excluded.
+// FAR ID, Sub Classification, Asset Description, Serial No, Useful Life C1/C2, and
+// Opening Acc Dep C1/C2 are editable — see the server's editAssetSchema for why FAR ID
+// (identity, not a calc input) and these other categorization fields are safe to correct
+// after capitalization, while Date Acquired, Location, Status, cost, and additions
+// fields are not.
 export function EditAssetModal({
   asset,
+  subClassifications,
   onClose,
   onDone
 }: {
   asset: AssetListItem["asset"];
+  subClassifications: string[];
   onClose: () => void;
   onDone: () => void;
 }) {
   const { showToast } = useToast();
   const [step, setStep] = useState<Step>("form");
   const [form, setForm] = useState<AssetEditInput>({
+    farId: asset.farId,
+    subClassification: asset.subClassification,
+    assetDescription: asset.assetDescription,
     serialNo: asset.serialNo,
     usefulLifeC1Years: asset.usefulLifeC1Years,
     usefulLifeC2Years: asset.usefulLifeC2Years,
@@ -45,6 +52,22 @@ export function EditAssetModal({
   }
 
   function handleReview() {
+    if (!form.farId.trim()) {
+      setError("FAR ID is required.");
+      return;
+    }
+    if (!/^[A-Z0-9-]+$/.test(form.farId)) {
+      setError("FAR ID can only contain uppercase letters, numbers, and hyphens.");
+      return;
+    }
+    if (!form.subClassification.trim()) {
+      setError("Sub Classification is required.");
+      return;
+    }
+    if (!form.assetDescription.trim()) {
+      setError("Asset Description is required.");
+      return;
+    }
     if (form.usefulLifeC1Years < 0 || form.usefulLifeC2Years < 0) {
       setError("Useful life cannot be negative.");
       return;
@@ -62,8 +85,7 @@ export function EditAssetModal({
     setError(null);
     try {
       await updateAsset(asset.farId, form);
-      showToast(`Asset ${asset.farId} updated.`);
-      onDone();
+      setStep("success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Update failed.");
     } finally {
@@ -71,7 +93,20 @@ export function EditAssetModal({
     }
   }
 
+  function handleDone() {
+    // A toast too, so the confirmation survives after this modal closes (matching every
+    // other action in the app) — not shown *instead of* the in-modal success step, since
+    // a rename is disorienting enough (the row's FAR ID just changed under the user)
+    // that it's worth a beat of explicit, undismissable-until-acknowledged confirmation
+    // right where the edit happened, not just a corner toast that can be missed.
+    showToast(`${form.farId} updated successfully.`);
+    onDone();
+  }
+
   const changes: Array<{ label: string; from: string; to: string }> = [
+    { label: "FAR ID", from: asset.farId, to: form.farId },
+    { label: "Sub Classification", from: asset.subClassification, to: form.subClassification },
+    { label: "Asset Description", from: asset.assetDescription, to: form.assetDescription },
     { label: "Serial No", from: asset.serialNo || "—", to: form.serialNo || "—" },
     { label: "Useful Life C1 (Yrs)", from: String(asset.usefulLifeC1Years), to: String(form.usefulLifeC1Years) },
     { label: "Useful Life C2 (Yrs)", from: String(asset.usefulLifeC2Years), to: String(form.usefulLifeC2Years) },
@@ -87,7 +122,7 @@ export function EditAssetModal({
       }}
     >
       <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-sm"}`}
+        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "form" ? "max-w-sm" : "max-w-lg"}`}
         onClick={(e) => e.stopPropagation()}
       >
         {step === "form" && (
@@ -96,11 +131,57 @@ export function EditAssetModal({
               <EditIcon fontSize={18} />
               Edit {asset.farId}
             </h2>
-            <p className="mt-1 text-sm text-gray-500">
-              {asset.assetDescription} — only these particulars can be changed after capitalization.
-            </p>
+            <p className="mt-1 text-sm text-gray-500">{asset.assetDescription}</p>
 
-            <div className="mt-4 flex flex-col gap-1">
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label htmlFor="edit-far-id" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                  FAR ID
+                </label>
+                <input
+                  id="edit-far-id"
+                  type="text"
+                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm uppercase focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  value={form.farId}
+                  onChange={(e) => update({ farId: e.target.value.toUpperCase() })}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="edit-sub-class" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                  Sub Classification
+                </label>
+                <select
+                  id="edit-sub-class"
+                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  value={form.subClassification}
+                  onChange={(e) => update({ subClassification: e.target.value })}
+                >
+                  {!subClassifications.includes(form.subClassification) && (
+                    <option value={form.subClassification}>{form.subClassification}</option>
+                  )}
+                  {subClassifications.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-1">
+              <label htmlFor="edit-description" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                Asset Description
+              </label>
+              <input
+                id="edit-description"
+                type="text"
+                className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                value={form.assetDescription}
+                onChange={(e) => update({ assetDescription: e.target.value })}
+              />
+            </div>
+
+            <div className="mt-3 flex flex-col gap-1">
               <label htmlFor="edit-serial-no" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
                 Serial No
               </label>
@@ -170,7 +251,8 @@ export function EditAssetModal({
 
             <p className="mt-3 text-[11px] text-gray-400">
               Useful Life and Opening Acc Dep aren't locked per period — a change recomputes depreciation for every
-              "as of" date, past and future, not just going forward.
+              "as of" date, past and future, not just going forward. Renaming FAR ID carries this asset's transfer
+              history with it.
             </p>
 
             {error && (
@@ -258,6 +340,23 @@ export function EditAssetModal({
               </button>
             </div>
           </>
+        )}
+
+        {step === "success" && (
+          <div className="flex flex-col items-center py-4 text-center">
+            <PassIcon fontSize={40} className="text-green-600" />
+            <h2 className="mt-3 text-base font-semibold text-ink">Asset Updated</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              {form.farId} was updated successfully — {changes.length} field{changes.length === 1 ? "" : "s"} changed.
+            </p>
+            <button
+              type="button"
+              className="mt-6 rounded-md bg-accent px-5 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
+              onClick={handleDone}
+            >
+              Done
+            </button>
+          </div>
         )}
       </div>
     </div>
