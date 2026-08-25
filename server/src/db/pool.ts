@@ -58,8 +58,31 @@ function attachIdleErrorHandler(pool: pg.Pool): void {
   });
 }
 
+// Every cold-start serverless instance calls applySchema() independently, and under
+// concurrent traffic Vercel spins up several instances at once — each running the SAME
+// DDL (the calcFunction.sql DROP+CREATE below, plus the CREATE TABLE IF NOT EXISTS
+// block) against the SAME production database simultaneously. Postgres can genuinely
+// deadlock two such concurrent DDL batches against each other (error 40P01, seen in
+// production), which throws out of applySchema() uncaught and crashes that invocation
+// (FUNCTION_INVOCATION_FAILED) before the request handler ever runs. A session-scoped
+// advisory lock serializes this across instances — whichever instance runs it waits for
+// any other's DDL to finish first, then proceeds (safe to redo, per the comments below),
+// instead of two racing each other's lock acquisitions.
+const APPLY_SCHEMA_LOCK_ID = 727501;
+
 export async function applySchema(): Promise<void> {
   const db = await getPool();
+  const client = await db.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [APPLY_SCHEMA_LOCK_ID]);
+    await applySchemaLocked(client);
+  } finally {
+    await client.query("SELECT pg_advisory_unlock($1)", [APPLY_SCHEMA_LOCK_ID]);
+    client.release();
+  }
+}
+
+async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
   const { rows } = await db.query<{ exists: boolean }>(
     `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'assets') AS exists`
   );
