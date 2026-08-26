@@ -201,6 +201,219 @@ describe("Period Depreciation cap (step 5)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// End-of-life taper (step 5) — ported from the reference Excel workbook's own
+// separately-verified formula. The four canonical scenarios used there.
+// ---------------------------------------------------------------------------
+describe("End-of-life taper (step 5)", () => {
+  it("(a) normal mid-life asset, no additions — unchanged from flat-rate behavior", () => {
+    // eol = 2020-01-01 + 10yr ≈ 2029-12, well past fyEnd (2026-03-31) — flat-rate branch,
+    // identical to what the old (pre-taper) formula already produced for this input.
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 20000
+      },
+      fy({ asAt: "2025-09-30" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(5013.698630136986, 6);
+  });
+
+  it("(b) eol falls within the current FY, no additions — tapers to exactly zero NBV", () => {
+    // dateAcquired 2021-10-01 + 4yr useful life -> eol = 2025-09-30, inside FY 2025-26
+    // (fyStart 2025-04-01, fyEnd 2026-03-31). AS_AT (2026-01-15) is past eol, so the
+    // remaining taperNbv (100000 - 30000 = 70000) is fully written off by eol, not the
+    // old flat-rate/cap behavior that would have kept accruing a small amount per period.
+    const r = computeComponent(
+      {
+        dateAcquired: "2021-10-01",
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 4,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 30000
+      },
+      fy({ asAt: "2026-01-15" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(70000, 6);
+    expect(r.closingAccDep).toBeCloseTo(100000, 6);
+    expect(r.nbv).toBeCloseTo(0, 6);
+  });
+
+  it("(c) same as (b) but with an addition this year — still tapers to zero, addition included", () => {
+    // Same asset as (b) plus a same-year addition (20000 @ 2025-06-01). The branch-order
+    // fix: eol <= fyEnd is checked BEFORE the additions check, so this must still hit the
+    // taper branch and write off the COMBINED nbv (opening + addition - accDepOpening) to
+    // zero, not fall into the flat-rate additions branch (the bug caught on the Excel
+    // version — evaluating additions first would give a small flat amount instead).
+    const r = computeComponent(
+      {
+        dateAcquired: "2021-10-01",
+        openingCost: 100000,
+        additions: 20000,
+        dateOfAddition: "2025-06-01",
+        usefulLifeYears: 4,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 30000
+      },
+      fy({ asAt: "2026-01-15" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(90000, 6);
+    expect(r.closingAccDep).toBeCloseTo(120000, 6);
+    expect(r.nbv).toBeCloseTo(0, 6);
+  });
+
+  it("(d) eol in a prior FY, stale leftover NBV — fully written off in one period", () => {
+    // eol = 2015-01-01 + 5yr = 2019-12-31, well before fyStart (2025-04-01) — remLife <= 0,
+    // so the entire remaining taperNbv (100000 - 60000 = 40000) is written off this one
+    // period rather than continuing a flat rate indefinitely past end-of-life.
+    const r = computeComponent(
+      {
+        dateAcquired: "2015-01-01",
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 5,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 60000
+      },
+      fy({ asAt: "2025-09-30" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(40000, 6);
+    expect(r.closingAccDep).toBeCloseTo(100000, 6);
+    expect(r.nbv).toBeCloseTo(0, 6);
+  });
+
+  it("(e) flat-rate branch: a mid-year addition still prorates from its own dateOfAddition, not FY Start", () => {
+    // eol = 2020-01-01 + 10yr, safely past fyEnd (2026-03-31) — flat-rate branch. Proves
+    // the addition-dating question raised before implementing this: depOnOpening/
+    // depOnAdditions (steps 2-4, splitTranche) are what feed periodDepreciation here, so
+    // the addition (dated 2025-07-01, mid-FY) depreciates only from its own date, not
+    // from fyStart like opening cost — NOT the taper spec's literal fy_start-for-both
+    // wording, which was evaluated and rejected as a real regression of the prior
+    // FY-rollover fix.
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 50000,
+        additions: 20000,
+        dateOfAddition: "2025-07-01",
+        usefulLifeYears: 10,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 5000
+      },
+      fy({ asAt: "2025-12-31" })
+    );
+    // depOnOpening: (50000/10) * (275 days fyStart..asAt / 365) = 3767.123287671233
+    // depOnAdditions: (20000/10) * (184 days dateOfAddition..asAt / 365) = 1008.219178082192
+    // periodDepreciation = their sum, NOT the literal-formula's 5273.97 (both terms over
+    // the same 275-day opening window).
+    expect(r.depOnOpening).toBeCloseTo(3767.123287671233, 6);
+    expect(r.depOnAdditions).toBeCloseTo(1008.219178082192, 6);
+    expect(r.periodDepreciation).toBeCloseTo(4775.342465753425, 6);
+  });
+
+  it("(f) disposed after useful life had already expired — Audit Reconciliation identity holds", () => {
+    // eol = 2020-01-01 + 5yr = 2024-12-30, before fyStart (2025-04-01) — remLife <= 0, so
+    // this component's entire remaining taperNbv (50000 - 10000 = 40000) is attributable
+    // to the disposed portion. Step 8 (accDepOnDisposed) now uses the same
+    // depreciationAsOf helper as step 5, so accDepOpening + periodDepreciation -
+    // accDepOnDisposed reconciles to exactly closingAccDep (both 0 here) instead of
+    // leaving a gap — the bug Audit Reconciliation's dep-check caught for this exact
+    // combination (an asset disposed post-expiry) before this fix.
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 50000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 5,
+        dateOfDisposal: "2025-06-01",
+        deletionsCost: 50000,
+        saleValue: 5000,
+        accDepOpening: 10000
+      },
+      fy({ asAt: "2025-12-31" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(40000, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(50000, 6);
+    expect(r.closingAccDep).toBeCloseTo(0, 6);
+    // The reconciliation identity Audit Reconciliation checks (accDepOpening is 10000,
+    // per the fixture above):
+    expect(10000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(0, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(5000, 6);
+  });
+
+  it("(g) taper branch: a not-yet-happened addition doesn't inflate taperNbv (ongoing asset)", () => {
+    // eol = 2020-01-01 + 3yr ≈ 2022-12-31, well before fyStart — remLife <= 0, taper
+    // branch. dateOfAddition (2026-01-01) is AFTER asAt (2025-09-30), so it hasn't
+    // happened yet as of this view — taperNbv must be 10000 - 2000 = 8000 (opening only),
+    // NOT 15000 - 2000 = 13000 (opening + not-yet-happened addition). Found via a real
+    // seed-data case with the same shape but for a disposed asset (test (h) below) — this
+    // is the same bug's simpler, non-disposal form: the taper spec's literal nbv formula
+    // doesn't date-gate additions at all, unlike costBase/depOnAdditions elsewhere in this
+    // engine, which already correctly exclude a tranche that hasn't happened yet.
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 10000,
+        additions: 5000,
+        dateOfAddition: "2026-01-01",
+        usefulLifeYears: 3,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 2000
+      },
+      fy({ asAt: "2025-09-30" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(8000, 6);
+  });
+
+  it("(h) taper branch: an addition dated after the asset's own Disposal Date doesn't inflate accDepOnDisposed", () => {
+    // Same shape as (g), but disposed instead of ongoing — the exact pattern found in
+    // real seed data (an addition dated after its own asset's disposal date). eol is well
+    // before fyStart (remLife <= 0); dateOfAddition (2025-08-01) is after dateOfDisposal
+    // (2025-06-01), so it hasn't happened yet as of the disposal — taperNbv at disposal
+    // must be 10000 - 2000 = 8000 (opening only), not 15000 - 2000 = 13000.
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 10000,
+        additions: 5000,
+        dateOfAddition: "2025-08-01",
+        usefulLifeYears: 3,
+        dateOfDisposal: "2025-06-01",
+        deletionsCost: 10000,
+        saleValue: 3000,
+        accDepOpening: 2000
+      },
+      fy({ asAt: "2025-12-31" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(8000, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(10000, 6);
+    expect(r.closingAccDep).toBeCloseTo(0, 6);
+    expect(2000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step 6: Gross Block as at AS_AT
 // ---------------------------------------------------------------------------
 describe("Gross Block as at AS_AT (step 6)", () => {
@@ -364,13 +577,23 @@ describe("Disposal accounting (steps 8-11)", () => {
       },
       fy({ asAt: "2025-12-31" })
     );
-    expect(r.periodDepreciation).toBeCloseTo(3369.863013698630, 6);
+    // periodDepreciation is 50000, not the old flat-rate 3369.86: dateAcquired
+    // (2020-01-01) + 5yr useful life puts eol at 2024-12-30, before fyStart — the
+    // end-of-life taper's remLife<=0 branch writes off the whole remaining taperNbv
+    // (openingCost 0 + additions 50000 − accDepOpening 0) in this one period.
+    // wdvAtDisposal/profitLossOnDisposal now change too: step 8 (accDepOnDisposed) is
+    // taper-aware via the same depreciationAsOf helper as step 5, so this asset — whose
+    // life had already run out before this FY even started — correctly shows zero WDV at
+    // disposal (it had no remaining book value left to lose) instead of the old flat-rate
+    // figure's stale, nonsensical small loss on an asset that should've already been
+    // worthless. Sale value becomes pure gain.
+    expect(r.periodDepreciation).toBeCloseTo(50000, 6);
     expect(r.grossBlock).toBe(0);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(r.closingAccDep).toBeGreaterThanOrEqual(0);
     expect(r.nbv).toBeCloseTo(0, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(46630.136986301370, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-1630.136986301370, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(0, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(45000, 6);
   });
 
   it("edge case (doc): no additions and no disposal leaves WDV/P&L null, not zero", () => {
@@ -388,9 +611,15 @@ describe("Disposal accounting (steps 8-11)", () => {
       },
       fy({ asAt: "2025-09-30" })
     );
+    // depOnOpening (step 3, unchanged) still matches the old flat-rate figure — it's an
+    // intermediate value the taper formula no longer uses for periodDepreciation, kept
+    // only for Gross Block reporting. closingAccDep/nbv, downstream of periodDepreciation
+    // (step 5), do change: dateAcquired + 6yr puts eol at 2025-12-30, within this FY
+    // (fyEnd 2026-03-31) — the taper branch depreciates the remaining taperNbv (60000 −
+    // 10000 = 50000) over daysUsed/remLife (183/274 days) instead of the old flat rate.
     expect(r.depOnOpening).toBeCloseTo(5013.698630136986, 6);
-    expect(r.closingAccDep).toBeCloseTo(15013.698630136986, 6);
-    expect(r.nbv).toBeCloseTo(44986.301369863014, 6);
+    expect(r.closingAccDep).toBeCloseTo(43394.16058394161, 6);
+    expect(r.nbv).toBeCloseTo(16605.83941605839, 6);
     expect(r.wdvAtDisposal).toBeNull();
     expect(r.profitLossOnDisposal).toBeNull();
   });

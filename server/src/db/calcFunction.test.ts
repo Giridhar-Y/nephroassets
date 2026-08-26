@@ -29,16 +29,17 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     await pool.query(calcSql);
   });
 
-  it("removes a legacy 11-parameter overload and leaves one working 12-parameter function", async () => {
+  it("removes a legacy 12-parameter overload and leaves one working 13-parameter function", async () => {
     // Simulate "production before this fix": a second, legacy-signature overload of
     // far_calc_component sitting alongside the current one — exactly the parameter list
-    // the app had before p_date_acquired was added (see schema.sql's git history).
+    // the app had before p_fy_end was added (see schema.sql's git history, and before
+    // that p_date_acquired — this same test previously simulated *that* transition).
     await pool.query(`
       CREATE OR REPLACE FUNCTION far_calc_component(
         p_opening_cost numeric, p_additions numeric, p_date_of_addition date,
         p_useful_life_years numeric, p_date_of_disposal date, p_deletions_cost numeric,
         p_sale_value numeric, p_acc_dep_opening numeric, p_as_at date, p_fy_start date,
-        p_days_in_fy integer
+        p_days_in_fy integer, p_date_acquired date
       ) RETURNS far_component_result
       LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
       BEGIN
@@ -50,7 +51,7 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     const before = await pool.query<{ nargs: number }>(
       `SELECT pronargs AS nargs FROM pg_proc WHERE proname = 'far_calc_component' ORDER BY pronargs`
     );
-    expect(before.rows.map((r) => r.nargs)).toEqual([11, 12]);
+    expect(before.rows.map((r) => r.nargs)).toEqual([12, 13]);
 
     // The actual fix: re-applying calcFunction.sql (what pool.ts's applySchema() now
     // does on every boot).
@@ -60,20 +61,20 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     const after = await pool.query<{ nargs: number }>(
       `SELECT pronargs AS nargs FROM pg_proc WHERE proname = 'far_calc_component'`
     );
-    expect(after.rows.map((r) => r.nargs)).toEqual([12]);
+    expect(after.rows.map((r) => r.nargs)).toEqual([13]);
 
-    // The exact call shape that broke in production: 8 typed column-like values, 3
-    // untyped parameters (as_at/fy_start/days_in_fy — `unknown` type until Postgres
-    // resolves them against a candidate function), and a 12th typed value
+    // The exact call shape that broke in production: 8 typed column-like values, 4
+    // untyped parameters (as_at/fy_start/fy_end/days_in_fy — `unknown` type until
+    // Postgres resolves them against a candidate function), and a 13th typed value
     // (date_acquired) — reproduced with literal casts standing in for "column reference"
     // since there's no table involved here.
     const result = await pool.query(
       `SELECT (far_calc_component(
          100000::numeric, 0::numeric, NULL::date, 10::numeric,
          NULL::date, 0::numeric, 0::numeric, 0::numeric,
-         $1, $2, $3, '2020-01-01'::date
+         $1, $2, $3, $4, '2020-01-01'::date
        )).gross_block AS gross_block`,
-      ["2025-09-30", "2025-04-01", 365]
+      ["2025-09-30", "2025-04-01", "2026-03-31", 365]
     );
     expect(Number(result.rows[0].gross_block)).toBe(100000);
   });

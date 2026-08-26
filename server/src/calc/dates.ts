@@ -29,3 +29,12 @@ export function isAfter(a: IsoDate, b: IsoDate): boolean {
 export function maxIsoDate(dates: IsoDate[]): IsoDate {
   return dates.reduce((max, d) => (isAfter(d, max) ? d : max));
 }
+
+/** Adds a whole number of days to an ISO date, UTC-midnight arithmetic (same DST-safety
+ *  as parseIsoDate). Used for the end-of-life taper's `eol = dateAcquired + usefulLife *
+ *  daysInFy` — the caller rounds the day count first, since a fractional day has no
+ *  single correct answer. */
+export function addDaysToIsoDate(date: IsoDate, days: number): IsoDate {
+  const d = new Date(parseIsoDate(date) + days * MS_PER_DAY);
+  return d.toISOString().slice(0, 10);
+}

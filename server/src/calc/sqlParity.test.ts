@@ -196,6 +196,129 @@ const fixtures: Fixture[] = [
       accDepOpening: 0
     },
     fy: { ...FY, asAt: "2025-04-01" }
+  },
+  // End-of-life taper (step 5) — the same four canonical scenarios as engine.test.ts's
+  // "End-of-life taper" describe block, so the SQL port is proven to agree with TS on the
+  // new branches specifically, not just the pre-existing ones.
+  {
+    name: "taper (a): normal mid-life asset, no additions — flat-rate branch",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 10,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 20000
+    },
+    fy: FY
+  },
+  {
+    name: "taper (b): eol falls within the current FY, no additions",
+    input: {
+      dateAcquired: "2021-10-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 4,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 30000
+    },
+    fy: { ...FY, asAt: "2026-01-15" }
+  },
+  {
+    name: "taper (c): same as (b) but with an addition this year — branch-order fix",
+    input: {
+      dateAcquired: "2021-10-01",
+      openingCost: 100000,
+      additions: 20000,
+      dateOfAddition: "2025-06-01",
+      usefulLifeYears: 4,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 30000
+    },
+    fy: { ...FY, asAt: "2026-01-15" }
+  },
+  {
+    name: "taper (d): eol in a prior FY, stale leftover NBV — remLife <= 0",
+    input: {
+      dateAcquired: "2015-01-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 5,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 60000
+    },
+    fy: FY
+  },
+  {
+    name: "taper (e): flat-rate branch, mid-year addition still prorates from its own dateOfAddition",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 50000,
+      additions: 20000,
+      dateOfAddition: "2025-07-01",
+      usefulLifeYears: 10,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 5000
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
+  },
+  {
+    name: "taper (f): disposed after useful life had already expired — accDepOnDisposed is taper-aware",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 50000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 5,
+      dateOfDisposal: "2025-06-01",
+      deletionsCost: 50000,
+      saleValue: 5000,
+      accDepOpening: 10000
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
+  },
+  {
+    name: "taper (g): a not-yet-happened addition doesn't inflate taperNbv (ongoing asset)",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 10000,
+      additions: 5000,
+      dateOfAddition: "2026-01-01",
+      usefulLifeYears: 3,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 2000
+    },
+    fy: { ...FY, asAt: "2025-09-30" }
+  },
+  {
+    name: "taper (h): an addition dated after the asset's own Disposal Date doesn't inflate accDepOnDisposed",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 10000,
+      additions: 5000,
+      dateOfAddition: "2025-08-01",
+      usefulLifeYears: 3,
+      dateOfDisposal: "2025-06-01",
+      deletionsCost: 10000,
+      saleValue: 3000,
+      accDepOpening: 2000
+    },
+    fy: { ...FY, asAt: "2025-12-31" }
   }
 ];
 
@@ -204,7 +327,7 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
 
   const pool = getTestPool();
   const { rows } = await pool.query(
-    `SELECT (far_calc_component($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)).*`,
+    `SELECT (far_calc_component($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)).*`,
     [
       input.openingCost,
       input.additions,
@@ -216,6 +339,7 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
       input.accDepOpening,
       fy.asAt,
       fy.fyStart,
+      fy.fyEnd,
       fy.daysInFy,
       input.dateAcquired
     ]

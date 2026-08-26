@@ -29,6 +29,7 @@ async function requireFySettings(
   return {
     asAt: overrides?.asAt ?? settings.as_at,
     fyStart,
+    fyEnd,
     daysInFy
   };
 }
@@ -87,7 +88,7 @@ type ReconciliationRow = {
 // from the same per-asset figures as C1/C2, so an equivalent check would be tautological.
 async function computeReconciliationItems(
   db: Awaited<ReturnType<typeof getPool>>,
-  fy: { asAt: string; fyStart: string; daysInFy: number }
+  fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number }
 ) {
   const { rows } = await db.query<ReconciliationRow>(
     `WITH calc AS (
@@ -97,11 +98,11 @@ async function computeReconciliationItems(
          deletions_c2, acc_dep_c2_opening,
          far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $3::integer, date_acquired
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          ) AS c1,
          far_calc_component(
            c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $3::integer, date_acquired
+           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          ) AS c2,
          (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
        FROM assets
@@ -141,7 +142,7 @@ async function computeReconciliationItems(
        SUM((c1).opening_nbv + (c2).opening_nbv), SUM((c1).nbv + (c2).nbv)
      FROM calc GROUP BY sub_classification
      ORDER BY sub_classification, component`,
-    [fy.asAt, fy.fyStart, fy.daysInFy]
+    [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
   );
 
   return rows.map((r) => {
@@ -407,11 +408,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
          COUNT(*) AS asset_count,
          COALESCE(SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2::date, $3::date, $4::integer, date_acquired
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2::date, $3::date, $5::date, $4::integer, date_acquired
          )).gross_block), 0) AS total_c1_gross_block
        FROM assets
        WHERE COALESCE(revised_location, location) = $1`,
-      [parsed.data.location, fy.asAt, fy.fyStart, fy.daysInFy]
+      [parsed.data.location, fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
     );
 
     const row = rows[0]!;
@@ -489,16 +490,16 @@ export default async function reportsRoutes(app: FastifyInstance) {
          sub_classification,
          SUM((far_calc_component(
            c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $3::integer, date_acquired
+           date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          )).period_depreciation) AS c1_period_dep,
          SUM((far_calc_component(
            c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $3::integer, date_acquired
+           date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          )).period_depreciation) AS c2_period_dep
        FROM assets
        GROUP BY sub_classification
        ORDER BY sub_classification`,
-      [fy.asAt, fy.fyStart, fy.daysInFy]
+      [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
     );
 
     const breakdown = rows.map((r) => {

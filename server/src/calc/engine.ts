@@ -1,4 +1,4 @@
-import { daysHeldInclusive, isAfter, isOnOrBefore, maxIsoDate } from "./dates.js";
+import { addDaysToIsoDate, daysHeldInclusive, isAfter, isOnOrBefore, maxIsoDate } from "./dates.js";
 import type {
   AssetCalculationResult,
   AssetInput,
@@ -77,7 +77,7 @@ function isOpeningTranche(amount: number, date: IsoDate | null, fyStart: IsoDate
  * cost component (C1 or C2). Applied identically and independently to each component.
  */
 export function computeComponent(input: ComponentInput, fy: FySettings): ComponentResult {
-  const { asAt, fyStart, daysInFy } = fy;
+  const { asAt, fyStart, fyEnd, daysInFy } = fy;
   const usefulLife = input.usefulLifeYears;
   const hasUsefulLife = usefulLife > 0;
 
@@ -123,13 +123,63 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // "added and disposed within the same period" case.
   const costBase = openingGrossBlockAsAt + additionsGrossBlock;
 
-  // Step 5: Period Depreciation (final) — capped at the remaining depreciable value
-  // (full cost basis minus what's already been depreciated), so NBV can never go negative
-  // and a fully depreciated asset always shows zero further depreciation.
-  const periodDepreciation = Math.min(
-    depOnOpening + depOnAdditions,
-    Math.max(costBase - input.accDepOpening, 0)
-  );
+  // Step 5: Period Depreciation (final) — end-of-life taper, ported from the same
+  // formula validated separately on the reference Excel workbook. eol/taperNbv/remLife
+  // name-match that formula's own eol/nbv/remLife ("taperNbv" avoids colliding with this
+  // function's own *closing* `nbv`, computed later at step 10) and are asset-level: fixed
+  // once, independent of which date we're asking "how much depreciation by" (below).
+  //
+  // Confirmed with the user (after flagging it as a real risk before implementing): the
+  // flat-rate branch's additions term uses depOnOpening/depOnAdditions from steps 2-4
+  // above, NOT a flat eff-fyStart+1 window for both — preserving splitTranche's existing
+  // fix (a mid-year addition depreciates from its own dateOfAddition, not from FY Start).
+  // The taper spec's literal wording would have additions share opening cost's window
+  // exactly; that was evaluated and rejected as a real regression of the prior
+  // FY-rollover fix, not adopted.
+  const eol = hasUsefulLife
+    ? addDaysToIsoDate(input.dateAcquired, Math.round(usefulLife * daysInFy))
+    : input.dateAcquired;
+  const remLife = daysHeldInclusive(fyStart, eol);
+  const eolWithinFy = isOnOrBefore(eol, fyEnd);
+
+  // Depreciation from FY Start up to `viewEnd` (capped at FY End) — step 5 calls this
+  // with effectiveEndDate (AS_AT, or an earlier Disposal Date); step 8 below calls it
+  // again with the Disposal Date specifically, so both steps agree on what "how much
+  // depreciation had accrued by this date" means for an asset whose life has already run
+  // out, instead of step 8 staying on the old flat-rate-only assumption while step 5
+  // tapers — which broke Audit Reconciliation's roll-forward identity for exactly that
+  // combination (an asset disposed after its useful life had already expired).
+  //
+  // taperNbv is computed HERE (per viewEnd), not once at the top — it gates `additions`
+  // by whether dateOfAddition has actually happened by viewEnd. Found via a real seed-
+  // data case: an addition dated AFTER the asset's own disposal date was still inflating
+  // the disposed portion's taperNbv (and would equally inflate an ongoing, non-disposed
+  // asset's periodDepreciation for any addition dated after AS_AT) — the taper spec's
+  // literal `nbv` formula doesn't date-gate at all, unlike costBase/depOnAdditions above,
+  // which already correctly exclude a tranche that "hasn't happened yet as of this view"
+  // (see splitTranche). openingCost isn't similarly gated by dateAcquired: the app never
+  // computes a component for an AS_AT before its own capitalization date (assets.ts
+  // filters `date_acquired <= asAt` upstream), so that case can't reach here in practice.
+  function depreciationAsOf(viewEnd: IsoDate, depOnOpeningAt: number, depOnAdditionsAt: number): number {
+    const effAt = isAfter(viewEnd, fyEnd) ? fyEnd : viewEnd;
+    const additionsAt = input.dateOfAddition !== null && isOnOrBefore(input.dateOfAddition, viewEnd) ? input.additions : 0;
+    const taperNbvAt = Math.max(0, input.openingCost + additionsAt - input.accDepOpening);
+    if (eolWithinFy) {
+      // Taper branch: useful life ends within (or before) the current FY — depreciate the
+      // rest of taperNbvAt over the days actually held up to viewEnd, reaching exactly
+      // zero NBV at end-of-life instead of stopping short (flat-rate) or overshooting
+      // (previously only the generic cap prevented that).
+      const cappedEffAt = isAfter(effAt, eol) ? eol : effAt;
+      const daysUsedAt = Math.max(0, daysHeldInclusive(fyStart, cappedEffAt));
+      return remLife <= 0 ? taperNbvAt : (taperNbvAt * daysUsedAt) / remLife;
+    }
+    // Flat-rate SLM, additions dated by their own splitTranche classification (see the
+    // comment above) — covers the formula's "with additions" and "without" cases in one
+    // branch, since additions=0 just zeroes that term.
+    return Math.min(depOnOpeningAt + depOnAdditionsAt, taperNbvAt);
+  }
+
+  const periodDepreciation = hasUsefulLife ? depreciationAsOf(effectiveEndDate, depOnOpening, depOnAdditions) : 0;
 
   // Step 6: Gross Block as at AS_AT (net of disposal, if disposal is effective for AS_AT)
   const effectiveDisposedCost = disposalEffective ? input.deletionsCost : 0;
@@ -138,19 +188,26 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // Step 7: Disposed Ratio
   const disposedRatio = costBase !== 0 ? effectiveDisposedCost / costBase : 0;
 
-  // Step 8: Depreciation on the disposed portion, up to Disposal Date. Re-applies the same
-  // per-tranche classification as steps 3-4, but cut off at Disposal Date instead of
-  // AS_AT, then scales the result by the Disposed Ratio to isolate the disposed portion's
-  // share (the Deletions fields don't record whether the disposed cost came from the
-  // opening balance or from an in-year addition, so this proportional split is the closest
-  // consistent reading of "depreciation on the disposed portion").
+  // Step 8: Depreciation on the disposed portion, up to Disposal Date — via the same
+  // depreciationAsOf helper step 5 uses (see its comment), so a component whose useful
+  // life had already run out before disposal still tapers here too instead of falling
+  // back to a flat-rate figure that no longer matches step 5's own periodDepreciation.
+  // The per-tranche recomputation at Disposal Date (rather than reusing depOnOpening/
+  // depOnAdditions from steps 3-4) is still needed for the flat-rate branch's dated
+  // additions proration — those were computed as at effectiveEndDate, not Disposal Date,
+  // and the two only coincide when the asset's own disposal already IS the effective end.
+  // Scaled by the Disposed Ratio to isolate the disposed portion's share (the Deletions
+  // fields don't record whether the disposed cost came from the opening balance or from
+  // an in-year addition, so this proportional split is the closest consistent reading of
+  // "depreciation on the disposed portion").
   let depOnDisposedPortion = 0;
   if (disposalEffective && hasUsefulLife) {
     const disposalDate = input.dateOfDisposal!;
     const acqAtDisposal = splitTranche(input.openingCost, input.dateAcquired, fyStart, disposalDate, usefulLife, daysInFy);
     const addAtDisposal = splitTranche(input.additions, input.dateOfAddition, fyStart, disposalDate, usefulLife, daysInFy);
-    depOnDisposedPortion =
-      disposedRatio * (acqAtDisposal.openingDep + acqAtDisposal.additionDep + addAtDisposal.openingDep + addAtDisposal.additionDep);
+    const depOnOpeningAtDisposal = acqAtDisposal.openingDep + addAtDisposal.openingDep;
+    const depOnAdditionsAtDisposal = acqAtDisposal.additionDep + addAtDisposal.additionDep;
+    depOnDisposedPortion = disposedRatio * depreciationAsOf(disposalDate, depOnOpeningAtDisposal, depOnAdditionsAtDisposal);
   }
 
   const accDepOnDisposed = disposalEffective

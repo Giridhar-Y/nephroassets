@@ -47,6 +47,61 @@ CREATE TYPE far_component_result AS (
   profit_loss_on_disposal numeric
 );
 
+-- Depreciation from FY Start up to p_view_end (capped at FY End) — the end-of-life
+-- taper, factored out so far_calc_component's step 5 (period depreciation as at
+-- effective_end_date) and step 8 (depreciation as at Disposal Date, for
+-- acc_dep_on_disposed) agree on what "how much depreciation had accrued by this date"
+-- means for a component whose useful life has already run out, instead of step 8 staying
+-- on the old flat-rate-only assumption while step 5 tapers. Mirrors engine.ts's
+-- computeComponent's local depreciationAsOf function — PL/pgSQL has no nested closures,
+-- so this is a plain top-level function instead. A brand-new function (not a signature
+-- change to something already deployed), so no DROP-FUNCTION-by-old-signature guard is
+-- needed yet — CREATE OR REPLACE is sufficient here, unlike far_calc_component below.
+--
+-- taper_nbv is computed INSIDE here (per p_view_end), not passed in pre-computed — it
+-- gates p_additions by whether p_date_of_addition has actually happened by p_view_end.
+-- Found via a real seed-data case: an addition dated AFTER the asset's own disposal date
+-- was still inflating the disposed portion's taper_nbv (and would equally inflate an
+-- ongoing, non-disposed asset's period_depreciation for any addition dated after AS_AT) —
+-- the taper spec's literal nbv formula doesn't date-gate at all, unlike cost_base/
+-- dep_on_additions in far_calc_component, which already correctly exclude a tranche that
+-- "hasn't happened yet as of this view" (see far_calc_component's own tranche logic).
+-- p_opening_cost isn't similarly gated by date_acquired: the app never computes a
+-- component for an AS_AT before its own capitalization date (assets.ts filters
+-- date_acquired <= asAt upstream), so that case can't reach here in practice.
+CREATE OR REPLACE FUNCTION far_depreciation_as_of(
+  p_view_end date,
+  p_fy_start date,
+  p_fy_end date,
+  p_eol date,
+  p_rem_life integer,
+  p_opening_cost numeric,
+  p_additions numeric,
+  p_date_of_addition date,
+  p_acc_dep_opening numeric,
+  p_dep_on_opening_at numeric,
+  p_dep_on_additions_at numeric
+) RETURNS numeric
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE
+  eff_at date;
+  capped_eff_at date;
+  days_used_at integer;
+  additions_at numeric;
+  taper_nbv_at numeric;
+BEGIN
+  eff_at := LEAST(p_view_end, p_fy_end);
+  additions_at := CASE WHEN p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_view_end THEN p_additions ELSE 0 END;
+  taper_nbv_at := GREATEST(0, p_opening_cost + additions_at - p_acc_dep_opening);
+  IF p_eol <= p_fy_end THEN
+    capped_eff_at := LEAST(eff_at, p_eol);
+    days_used_at := GREATEST(0, (capped_eff_at - p_fy_start) + 1);
+    RETURN CASE WHEN p_rem_life <= 0 THEN taper_nbv_at ELSE (taper_nbv_at * days_used_at) / p_rem_life END;
+  END IF;
+  RETURN LEAST(p_dep_on_opening_at + p_dep_on_additions_at, taper_nbv_at);
+END;
+$$;
+
 -- Implemented as PL/pgSQL rather than a `WITH`-chain SQL function. Postgres cannot
 -- inline a CTE-based SQL function, so at 2,50,000 rows x 2 cost components x 3 report
 -- endpoints, every call was re-planning the whole CTE chain — Audit Reconciliation and
@@ -72,6 +127,7 @@ CREATE OR REPLACE FUNCTION far_calc_component(
   p_acc_dep_opening numeric,
   p_as_at date,
   p_fy_start date,
+  p_fy_end date,
   p_days_in_fy integer,
   p_date_acquired date
 ) RETURNS far_component_result
@@ -106,12 +162,25 @@ DECLARE
   additions_gross_block numeric;
   cost_base numeric;
   period_depreciation numeric;
+
+  -- End-of-life taper (step 5) — ported from the same formula validated separately on
+  -- the reference Excel workbook. eol/rem_life are asset-level, fixed once regardless of
+  -- which date far_depreciation_as_of is asked about (taper_nbv is computed inside that
+  -- function itself, per view date — see its own comment). See engine.ts's
+  -- computeComponent for the identical TS logic and comments — kept in lock-step by
+  -- sqlParity.test.ts.
+  eol date;
+  rem_life integer;
+
   effective_disposed_cost numeric;
   gross_block numeric;
   disposed_ratio numeric;
   dep_on_disposed_portion numeric := 0;
 
-  -- Same tranche classification, re-run as at Disposal Date (step 8).
+  -- Same tranche classification, re-run as at Disposal Date (step 8) — still needed for
+  -- the flat-rate branch's dated additions proration (computed as at effective_end_date
+  -- above, not Disposal Date; the two only coincide when the asset's own disposal already
+  -- IS the effective end).
   acq_is_opening_at_disposal boolean;
   acq_opening_dep_at_disposal numeric;
   acq_addition_dep_at_disposal numeric;
@@ -119,6 +188,8 @@ DECLARE
   add_is_opening_at_disposal boolean;
   add_opening_dep_at_disposal numeric;
   add_addition_dep_at_disposal numeric;
+  dep_on_opening_at_disposal numeric;
+  dep_on_additions_at_disposal numeric;
 
   acc_dep_on_disposed numeric;
   closing_acc_dep numeric;
@@ -184,16 +255,40 @@ BEGIN
   additions_gross_block := acq_addition_amount + add_addition_amount;
   cost_base := opening_gross_block_as_at + additions_gross_block;
 
-  -- Step 5: Period Depreciation (final), capped at the remaining depreciable value
-  period_depreciation := LEAST(dep_on_opening + dep_on_additions, GREATEST(cost_base - p_acc_dep_opening, 0));
+  -- Step 5: Period Depreciation (final) — end-of-life taper, via far_depreciation_as_of.
+  -- Confirmed with the user: dep_on_opening/dep_on_additions above (steps 2-4, dated
+  -- tranche proration) feed the flat-rate branch, NOT a flat p_fy_start-for-both window —
+  -- preserving the existing FY-rollover fix (a mid-year addition depreciates from its own
+  -- p_date_of_addition, not from FY Start). The taper spec's literal wording would have
+  -- additions share opening cost's window exactly; that was evaluated and rejected as a
+  -- real regression of the prior fix, not adopted.
+  eol := p_date_acquired + ROUND(p_useful_life_years * p_days_in_fy)::integer;
+  rem_life := (eol - p_fy_start) + 1;
+
+  period_depreciation := CASE WHEN NOT has_useful_life THEN 0
+    ELSE far_depreciation_as_of(
+      effective_end_date, p_fy_start, p_fy_end, eol, rem_life,
+      p_opening_cost, p_additions, p_date_of_addition, p_acc_dep_opening,
+      dep_on_opening, dep_on_additions
+    )
+  END;
+
   effective_disposed_cost := CASE WHEN disposal_effective THEN p_deletions_cost ELSE 0 END;
 
   -- Step 6: Gross Block as at AS_AT / Step 7: Disposed Ratio
   gross_block := cost_base - effective_disposed_cost;
   disposed_ratio := CASE WHEN cost_base <> 0 THEN effective_disposed_cost / cost_base ELSE 0 END;
 
-  -- Step 8: Depreciation on the disposed portion, up to Disposal Date — same per-tranche
-  -- classification, re-run with effective_end_date replaced by p_date_of_disposal.
+  -- Step 8: Depreciation on the disposed portion, up to Disposal Date — via the same
+  -- far_depreciation_as_of function step 5 uses, so a component whose useful life had
+  -- already run out before disposal still tapers here too instead of falling back to a
+  -- flat-rate figure that no longer matches step 5's own period_depreciation. The
+  -- per-tranche recomputation below (rather than reusing dep_on_opening/dep_on_additions
+  -- from steps 2-4) is still needed for the flat-rate branch's dated additions proration.
+  -- Scaled by the Disposed Ratio to isolate the disposed portion's share (the Deletions
+  -- fields don't record whether the disposed cost came from the opening balance or from
+  -- an in-year addition, so this proportional split is the closest consistent reading of
+  -- "depreciation on the disposed portion").
   IF disposal_effective AND has_useful_life THEN
     acq_opening_dep_at_disposal := 0;
     acq_addition_dep_at_disposal := 0;
@@ -222,8 +317,14 @@ BEGIN
       END IF;
     END IF;
 
+    dep_on_opening_at_disposal := acq_opening_dep_at_disposal + add_opening_dep_at_disposal;
+    dep_on_additions_at_disposal := acq_addition_dep_at_disposal + add_addition_dep_at_disposal;
     dep_on_disposed_portion := disposed_ratio
-      * (acq_opening_dep_at_disposal + acq_addition_dep_at_disposal + add_opening_dep_at_disposal + add_addition_dep_at_disposal);
+      * far_depreciation_as_of(
+          p_date_of_disposal, p_fy_start, p_fy_end, eol, rem_life,
+          p_opening_cost, p_additions, p_date_of_addition, p_acc_dep_opening,
+          dep_on_opening_at_disposal, dep_on_additions_at_disposal
+        );
   END IF;
 
   acc_dep_on_disposed := CASE WHEN disposal_effective
