@@ -434,8 +434,14 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const input = bodyParsed.data;
     const db = await getPool();
 
-    const { rows: existing } = await db.query<{ status: string; date_of_disposal: string | null; parent_far_id: string | null }>(
-      `SELECT status, date_of_disposal, parent_far_id FROM assets WHERE far_id = $1`,
+    const { rows: existing } = await db.query<{
+      status: string;
+      date_of_disposal: string | null;
+      parent_far_id: string | null;
+      c1_opening_cost: string | number;
+      c2_opening_cost: string | number;
+    }>(
+      `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost FROM assets WHERE far_id = $1`,
       [farId]
     );
     if (existing.length === 0) {
@@ -448,6 +454,28 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (existing[0]!.date_of_disposal !== null) {
       reply.code(409);
       return { error: `Asset "${farId}" has been disposed — its particulars can no longer be edited.` };
+    }
+
+    // Opening cost itself isn't editable here (see editAssetSchema's comment), so this
+    // checks the submitted Opening Acc Dep against the asset's existing, unchanged cost —
+    // the engine's NBV math (openingNbv = openingGrossBlock - accDepOpening, and the
+    // end-of-life taper's taperNbv) assumes accDepOpening never exceeds what the asset
+    // actually cost. Same check as assetCreateSchema's checkAccDepWithinCost, duplicated
+    // here rather than shared: this route compares against a *fetched* cost, not a
+    // submitted one, so it can't reuse the same Zod refinement directly.
+    const c1OpeningCost = Number(existing[0]!.c1_opening_cost);
+    const c2OpeningCost = Number(existing[0]!.c2_opening_cost);
+    if (input.accDepC1Opening > c1OpeningCost) {
+      reply.code(400);
+      return {
+        error: `Component 1 Opening Acc. Dep. (${input.accDepC1Opening}) cannot exceed Component 1 Opening Cost (${c1OpeningCost}).`
+      };
+    }
+    if (input.accDepC2Opening > c2OpeningCost) {
+      reply.code(400);
+      return {
+        error: `Component 2 Opening Acc. Dep. (${input.accDepC2Opening}) cannot exceed Component 2 Opening Cost (${c2OpeningCost}).`
+      };
     }
 
     const maps = await loadActiveMasterMaps(db);

@@ -39,6 +39,34 @@ function checkAdditionsPairing(
   }
 }
 
+// The engine's NBV math (openingNbv = openingGrossBlock - accDepOpening, and the
+// end-of-life taper's taperNbv = openingCost + additions - accDepOpening) assumes an
+// asset's opening accumulated depreciation never exceeds what it actually cost —
+// otherwise NBV implies a value the accounting model has no meaning for. Real gap found
+// via a leftover dev asset that had zero opening cost but nonzero opening accumulated
+// depreciation on both components, which neither this schema nor Edit (routes/assets.ts,
+// its own copy of this same check against a fetched rather than submitted cost) blocked.
+// Shared by both schemas below.
+function checkAccDepWithinCost(
+  data: { c1OpeningCost: number; c2OpeningCost: number; accDepC1Opening: number; accDepC2Opening: number },
+  ctx: z.RefinementCtx
+) {
+  if (data.accDepC1Opening > data.c1OpeningCost) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["accDepC1Opening"],
+      message: `Component 1 Opening Acc. Dep. (${data.accDepC1Opening}) cannot exceed Component 1 Opening Cost (${data.c1OpeningCost}).`
+    });
+  }
+  if (data.accDepC2Opening > data.c2OpeningCost) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["accDepC2Opening"],
+      message: `Component 2 Opening Acc. Dep. (${data.accDepC2Opening}) cannot exceed Component 2 Opening Cost (${data.c2OpeningCost}).`
+    });
+  }
+}
+
 // Shared with the Capitalization form (new-asset creation) and bulk upload's row
 // validation, so both paths agree on what a valid asset looks like.
 const assetCreateShape = z.object({
@@ -61,7 +89,10 @@ const assetCreateShape = z.object({
   accDepC2Opening: z.coerce.number().min(0).default(0)
 });
 
-export const assetCreateSchema = assetCreateShape.superRefine(checkAdditionsPairing);
+export const assetCreateSchema = assetCreateShape.superRefine((data, ctx) => {
+  checkAdditionsPairing(data, ctx);
+  checkAccDepWithinCost(data, ctx);
+});
 
 export type AssetCreateInput = z.infer<typeof assetCreateShape>;
 
@@ -123,6 +154,7 @@ export const bulkAssetRowSchema = assetCreateShape
   })
   .superRefine((data, ctx) => {
     checkAdditionsPairing(data, ctx);
+    checkAccDepWithinCost(data, ctx);
     // Same reasoning as checkAdditionsPairing: the calc engine (engine.ts) treats an
     // asset as disposed purely based on dateOfDisposal, but the Disposals screen and the
     // Register's Status filter both key off `status`. The single/bulk disposal endpoints

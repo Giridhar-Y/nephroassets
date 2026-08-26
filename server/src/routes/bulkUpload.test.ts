@@ -195,6 +195,25 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(body.errors[0].message).toMatch(/dateOfAddition is required/);
   });
 
+  it("rejects Opening Acc Dep exceeding Opening Cost for either component", async () => {
+    const withAccDepHeader = HEADER + ",accDepC1Opening,accDepC2Opening";
+    const csv = [
+      withAccDepHeader,
+      "BULK-BAD-ACCDEP,Test-Sub,Bad Acc Dep,Active,2020-01-01,Center-A,5,5,1000,1000,1001,0",
+      "BULK-OK-ACCDEP,Test-Sub,Boundary OK,Active,2020-01-01,Center-A,5,5,1000,1000,1000,1000"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(1);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors[0].farId).toBe("BULK-BAD-ACCDEP");
+    expect(body.errors[0].message).toMatch(/cannot exceed Component 1 Opening Cost/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id LIKE 'BULK-%ACCDEP'`);
+    expect(rows.map((r) => r.far_id)).toEqual(["BULK-OK-ACCDEP"]);
+  });
+
   it("accepts DD-MM-YYYY dates, and reports a clear error for a malformed one", async () => {
     const csv = [
       HEADER,

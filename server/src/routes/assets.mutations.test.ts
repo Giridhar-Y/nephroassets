@@ -152,6 +152,33 @@ describe("Capitalization: POST /api/assets", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("rejects Opening Acc Dep exceeding Opening Cost for either component", async () => {
+    const c1 = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-BAD-ACCDEP-1", accDepC1Opening: 10001 }
+    });
+    expect(c1.statusCode).toBe(400);
+    expect(c1.json().error).toBeDefined();
+
+    const c2 = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-BAD-ACCDEP-2", accDepC2Opening: 10001 }
+    });
+    expect(c2.statusCode).toBe(400);
+
+    // Exactly equal to cost is allowed (fully depreciated at capitalization is valid,
+    // only *exceeding* cost is nonsensical) — same boundary Edit and the reference
+    // fixture below both rely on.
+    const boundary = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "CAP-ACCDEP-BOUNDARY", accDepC1Opening: 10000, accDepC2Opening: 10000 }
+    });
+    expect(boundary.statusCode).toBe(200);
+  });
+
   describe("Parent linking at creation", () => {
     beforeEach(async () => {
       await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "CAP-PARENT-1" } });
@@ -356,6 +383,36 @@ describe("Edit: PATCH /api/assets/:farId", () => {
       payload: { ...baseEdit, usefulLifeC1Years: -1 }
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects Opening Acc Dep exceeding the asset's existing Opening Cost for either component", async () => {
+    // EDIT-TEST-1 was capitalized via NEW_ASSET: c1OpeningCost/c2OpeningCost = 10000 each.
+    // Opening cost itself isn't editable here, so this checks the submitted Opening Acc
+    // Dep against that unchanged, already-stored cost.
+    const c1 = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, accDepC1Opening: 10001 }
+    });
+    expect(c1.statusCode).toBe(400);
+    expect(c1.json().error).toMatch(/cannot exceed Component 1 Opening Cost/);
+
+    const c2 = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, accDepC2Opening: 10001 }
+    });
+    expect(c2.statusCode).toBe(400);
+    expect(c2.json().error).toMatch(/cannot exceed Component 2 Opening Cost/);
+
+    // Exactly equal to cost is allowed (fully depreciated is valid) — only exceeding it
+    // is rejected.
+    const boundary = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, accDepC1Opening: 10000, accDepC2Opening: 10000 }
+    });
+    expect(boundary.statusCode).toBe(200);
   });
 
   it("404s for an unknown FAR ID", async () => {
