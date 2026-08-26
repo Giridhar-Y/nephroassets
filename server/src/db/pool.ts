@@ -219,5 +219,17 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     -- IF NOT EXISTS makes both a no-op on every boot after the first.
     ALTER TABLE assets ADD COLUMN IF NOT EXISTS disposed_via_parent_far_id TEXT REFERENCES assets(far_id) ON UPDATE CASCADE;
     ALTER TABLE transfers ADD COLUMN IF NOT EXISTS cascaded_from_parent_far_id TEXT REFERENCES assets(far_id) ON UPDATE CASCADE;
+
+    -- Depreciation Formula Settings audit trail — see schema.sql's comment for the full
+    -- reasoning. IF NOT EXISTS makes this a no-op on every boot after the first.
+    CREATE TABLE IF NOT EXISTS settings_audit_log (
+      id              BIGSERIAL PRIMARY KEY,
+      actor_user_id   BIGINT REFERENCES users(id),
+      field           TEXT NOT NULL,
+      old_value       TEXT,
+      new_value       TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_settings_audit_log_created_at ON settings_audit_log (created_at DESC);
   `);
 }

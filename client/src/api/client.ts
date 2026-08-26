@@ -83,6 +83,44 @@ export function updateSettings(settings: FySettings): Promise<FySettings> {
   return request<FySettings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
+// The header's "Figures as of" picker's own endpoint — every role, not just admins (see
+// PATCH /api/settings/as-at's comment). updateSettings above is now admin-only.
+export function updateAsAt(asAt: string): Promise<FySettings> {
+  return request<FySettings>("/api/settings/as-at", { method: "PATCH", body: JSON.stringify({ asAt }) });
+}
+
+export interface DaysInFyPreview {
+  totalAssets: number;
+  assetsChanged: number;
+  currentTotalPeriodDep: number;
+  projectedTotalPeriodDep: number;
+  delta: number;
+}
+
+export function previewDaysInFy(daysInFy: number): Promise<DaysInFyPreview> {
+  return request<DaysInFyPreview>(`/api/settings/days-in-fy/preview?daysInFy=${daysInFy}`);
+}
+
+export function updateDaysInFy(daysInFy: number): Promise<FySettings> {
+  return request<FySettings>("/api/settings/days-in-fy", {
+    method: "PATCH",
+    body: JSON.stringify({ daysInFy })
+  });
+}
+
+export interface SettingsAuditLogEntry {
+  id: number;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+  changedAt: string;
+  username: string | null;
+}
+
+export function fetchSettingsAuditLog(): Promise<{ items: SettingsAuditLogEntry[] }> {
+  return request<{ items: SettingsAuditLogEntry[] }>("/api/settings/audit-log");
+}
+
 export function fetchCenters(): Promise<string[]> {
   return request<string[]>("/api/meta/centers");
 }

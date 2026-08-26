@@ -14,6 +14,20 @@ export function formatDate(value: string | null): string {
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
+// A full ISO timestamp (e.g. an audit log's created_at), not a plain "YYYY-MM-DD" date —
+// formatDate above appends its own "T00:00:00Z" and would mangle an already-complete
+// timestamp into an invalid string. Local time (no timeZone override), since this is
+// "when did this actually happen" for the person reading it, not a date-only figure.
+export function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
 // DD-MM-YYYY — a plain string rearrangement of the ISO "YYYY-MM-DD" storage format (no
 // Date object, no timezone risk). Used for the Register's grouped-header column labels
 // and the "as at ..." date placeholders, matching the reference export's date style —

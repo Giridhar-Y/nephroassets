@@ -156,6 +156,20 @@ CREATE TABLE user_audit_log (
 );
 CREATE INDEX idx_user_audit_log_target ON user_audit_log (target_user_id, created_at);
 
+-- Depreciation Formula Settings audit trail (routes/settings.ts) — who changed which
+-- calculation parameter, from what value to what, and when. Only DAYS_FY today; plain
+-- TEXT old/new (not user_audit_log's JSONB `details`) since exactly one scalar field
+-- changes per row, not a variable action-specific shape.
+CREATE TABLE settings_audit_log (
+  id              BIGSERIAL PRIMARY KEY,
+  actor_user_id   BIGINT REFERENCES users(id),
+  field           TEXT NOT NULL,
+  old_value       TEXT,
+  new_value       TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_settings_audit_log_created_at ON settings_audit_log (created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

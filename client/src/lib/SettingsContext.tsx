@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { fetchSettingsOrNull, updateSettings as updateSettingsApi } from "../api/client.js";
+import { fetchSettingsOrNull, updateAsAt as updateAsAtApi, updateSettings as updateSettingsApi } from "../api/client.js";
 import { useAuth } from "./AuthContext.js";
 import type { FySettings } from "./types.js";
 
@@ -40,7 +40,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         // the AsAtControl still persists for that look, but a new visit starts at today.
         const today = todayIso();
         const asAt = today < result.fyStart ? result.fyStart : today > result.fyEnd ? result.fyEnd : today;
-        setSettings(asAt === result.asAt ? result : await updateSettingsApi({ ...result, asAt }));
+        setSettings(asAt === result.asAt ? result : await updateAsAtApi(asAt));
       } else {
         setSettings(null);
       }
@@ -84,9 +84,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const setAsAt = useCallback(
     async (asAt: string) => {
       if (!settings) return;
-      await saveSettings({ ...settings, asAt });
+      setError(null);
+      try {
+        setSettings(await updateAsAtApi(asAt));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not change Figures As Of.");
+        throw err;
+      }
     },
-    [settings, saveSettings]
+    [settings]
   );
 
   return (
