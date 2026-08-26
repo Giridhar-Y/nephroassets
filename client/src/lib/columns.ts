@@ -1,5 +1,5 @@
 import type { AssetListItem } from "./types.js";
-import { formatCurrency, formatDateDDMMYYYY } from "./format.js";
+import { addYearsToIsoDate, formatCurrency, formatDateDDMMYYYY } from "./format.js";
 
 // The 10 groups of the reference Fixed Asset Register export, left to right. Two pairs
 // share a conceptual name in the source file (GROSS BLOCK (COST) appears twice; so does
@@ -102,7 +102,9 @@ const AS_AT_DISPOSAL_DATE = "as at that asset's own Disposal Date";
 
 // Matches the reference Fixed Asset Register export's 10 groups and 39 columns, in the
 // same left-to-right order — see server/src/routes/assetsExport.ts for the identical
-// structure the Excel export renders (with color, unlike this on-screen table).
+// structure the Excel export renders (with color, unlike this on-screen table). Plus 2
+// screen-only columns (Expiry Date C1/C2) not in the reference export — Register-only,
+// deliberately not added to assetsExport.ts's EXPORT_COLUMNS.
 export const ALL_COLUMNS: RawColumnDef[] = [
   // --- 1. Asset Identification ---------------------------------------------------
   { id: "farId", label: "FAR ID", tooltip: "Unique asset ID", width: 130, sortKey: "farId", group: "assetIdentification", render: (i) => i.asset.farId },
@@ -185,6 +187,22 @@ export const ALL_COLUMNS: RawColumnDef[] = [
     align: "right",
     group: "assetIdentification",
     render: (i) => String(i.asset.usefulLifeC2Years)
+  },
+  {
+    id: "expiryDateC1",
+    label: "Expiry Date C1",
+    tooltip: "Estimated end of useful life — Capitalization Date + Useful Life C1 (Years)",
+    width: 140,
+    group: "assetIdentification",
+    render: (i) => formatDateDDMMYYYY(addYearsToIsoDate(i.asset.dateAcquired, i.asset.usefulLifeC1Years))
+  },
+  {
+    id: "expiryDateC2",
+    label: "Expiry Date C2",
+    tooltip: "Estimated end of useful life — Capitalization Date + Useful Life C2 (Years)",
+    width: 140,
+    group: "assetIdentification",
+    render: (i) => formatDateDDMMYYYY(addYearsToIsoDate(i.asset.dateAcquired, i.asset.usefulLifeC2Years))
   },
 
   // --- 2. Gross Block (Cost) -------------------------------------------------------

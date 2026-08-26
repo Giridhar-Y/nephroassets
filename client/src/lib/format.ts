@@ -24,3 +24,21 @@ export function formatDateDDMMYYYY(value: string | null): string {
   const [y, m, d] = value.split("-");
   return `${d}-${m}-${y}`;
 }
+
+// Estimated end of useful life: Capitalization Date + Useful Life (Years) — a display
+// convenience, not a figure the calc engine depreciates against (it only ever uses
+// usefulLifeYears as a divisor, never converts it to a calendar date). Whole years add
+// calendar-correct via setUTCFullYear; a fractional remainder (e.g. 3.5 years) adds as an
+// approximate day count (365.25/yr) since there's no single "correct" day-precise answer
+// for a fractional year. usefulLifeYears <= 0 has no meaningful expiry.
+export function addYearsToIsoDate(date: string, years: number): string | null {
+  if (years <= 0) return null;
+  const whole = Math.floor(years);
+  const fraction = years - whole;
+  const d = new Date(date + "T00:00:00Z");
+  d.setUTCFullYear(d.getUTCFullYear() + whole);
+  if (fraction > 0) {
+    d.setUTCDate(d.getUTCDate() + Math.round(fraction * 365.25));
+  }
+  return d.toISOString().slice(0, 10);
+}
