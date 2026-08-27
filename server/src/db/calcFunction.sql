@@ -48,27 +48,38 @@ CREATE TYPE far_component_result AS (
 );
 
 -- Depreciation from FY Start up to p_view_end (capped at FY End) — the end-of-life
--- taper, factored out so far_calc_component's step 5 (period depreciation as at
--- effective_end_date) and step 8 (depreciation as at Disposal Date, for
--- acc_dep_on_disposed) agree on what "how much depreciation had accrued by this date"
--- means for a component whose useful life has already run out, instead of step 8 staying
--- on the old flat-rate-only assumption while step 5 tapers. Mirrors engine.ts's
--- computeComponent's local depreciationAsOf function — PL/pgSQL has no nested closures,
--- so this is a plain top-level function instead. A brand-new function (not a signature
--- change to something already deployed), so no DROP-FUNCTION-by-old-signature guard is
--- needed yet — CREATE OR REPLACE is sufficient here, unlike far_calc_component below.
+-- taper, per the FAR FY 2026-27 Excel workbook's Z/AA formula (rows 6-12, verified
+-- cell-by-cell). Mirrors engine.ts's computeComponent's local depreciationAsOf function —
+-- PL/pgSQL has no nested closures, so this is a plain top-level function instead. A
+-- brand-new function (not a signature change to something already deployed), so no
+-- DROP-FUNCTION-by-old-signature guard is needed yet — CREATE OR REPLACE is sufficient
+-- here, unlike far_calc_component below.
+--
+-- Branch order: checks "is there an addition this period" (additions_at > 0) BEFORE
+-- checking "does useful life end within this FY" (p_eol <= p_fy_end) — whenever there's
+-- an addition, flat-rate depreciation on cost+additions (capped at NBV) applies
+-- unconditionally, and the taper branch never fires, regardless of p_eol. Confirmed
+-- explicitly by finance as intentional (2026-08-27); reverses the eol-first order shipped
+-- in the prior deploy — don't re-flip this order without re-confirming with finance.
+--
+-- NOTE (far_calc_component's step 8 coupling): step 8 still calls this same function in
+-- this commit, so its output changes too wherever an addition and a disposal coincide —
+-- expected here, and gets superseded in the very next commit, which reverts step 8 to a
+-- flat-rate form that no longer calls this function at all.
 --
 -- taper_nbv is computed INSIDE here (per p_view_end), not passed in pre-computed — it
--- gates p_additions by whether p_date_of_addition has actually happened by p_view_end.
--- Found via a real seed-data case: an addition dated AFTER the asset's own disposal date
--- was still inflating the disposed portion's taper_nbv (and would equally inflate an
--- ongoing, non-disposed asset's period_depreciation for any addition dated after AS_AT) —
--- the taper spec's literal nbv formula doesn't date-gate at all, unlike cost_base/
--- dep_on_additions in far_calc_component, which already correctly exclude a tranche that
--- "hasn't happened yet as of this view" (see far_calc_component's own tranche logic).
--- p_opening_cost isn't similarly gated by date_acquired: the app never computes a
--- component for an AS_AT before its own capitalization date (assets.ts filters
--- date_acquired <= asAt upstream), so that case can't reach here in practice.
+-- gates p_additions by whether p_date_of_addition has actually happened by p_view_end,
+-- same as the additions_at check that now drives branch order. Found via a real seed-data
+-- case: an addition dated AFTER the asset's own disposal date was still inflating
+-- taper_nbv (and would equally inflate an ongoing, non-disposed asset's
+-- period_depreciation for any addition dated after AS_AT) — the Excel formula's literal
+-- O/nbv references don't date-gate at all (a static per-FY spreadsheet has no
+-- AS_AT-before-addition-date case to worry about), unlike cost_base/dep_on_additions in
+-- far_calc_component, which already correctly exclude a tranche that "hasn't happened yet
+-- as of this view" (see far_calc_component's own tranche logic). p_opening_cost isn't
+-- similarly gated by date_acquired: the app never computes a component for an AS_AT
+-- before its own capitalization date (assets.ts filters date_acquired <= asAt upstream),
+-- so that case can't reach here in practice.
 CREATE OR REPLACE FUNCTION far_depreciation_as_of(
   p_view_end date,
   p_fy_start date,
@@ -93,11 +104,19 @@ BEGIN
   eff_at := LEAST(p_view_end, p_fy_end);
   additions_at := CASE WHEN p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_view_end THEN p_additions ELSE 0 END;
   taper_nbv_at := GREATEST(0, p_opening_cost + additions_at - p_acc_dep_opening);
+  IF additions_at > 0 THEN
+    -- An addition happened this period (Excel's O>0) — flat-rate SLM on cost+additions,
+    -- capped at NBV, unconditionally. The taper branch below never fires here.
+    RETURN LEAST(p_dep_on_opening_at + p_dep_on_additions_at, taper_nbv_at);
+  END IF;
   IF p_eol <= p_fy_end THEN
+    -- Taper branch: no addition this period, and useful life ends within (or before)
+    -- the current FY.
     capped_eff_at := LEAST(eff_at, p_eol);
     days_used_at := GREATEST(0, (capped_eff_at - p_fy_start) + 1);
     RETURN CASE WHEN p_rem_life <= 0 THEN taper_nbv_at ELSE (taper_nbv_at * days_used_at) / p_rem_life END;
   END IF;
+  -- Flat-rate SLM, no addition this period and useful life not yet expired this FY.
   RETURN LEAST(p_dep_on_opening_at + p_dep_on_additions_at, taper_nbv_at);
 END;
 $$;

@@ -249,12 +249,21 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.nbv).toBeCloseTo(0, 6);
   });
 
-  it("(c) same as (b) but with an addition this year — still tapers to zero, addition included", () => {
-    // Same asset as (b) plus a same-year addition (20000 @ 2025-06-01). The branch-order
-    // fix: eol <= fyEnd is checked BEFORE the additions check, so this must still hit the
-    // taper branch and write off the COMBINED nbv (opening + addition - accDepOpening) to
-    // zero, not fall into the flat-rate additions branch (the bug caught on the Excel
-    // version — evaluating additions first would give a small flat amount instead).
+  it("(c) same as (b) but with an addition this year — additions-first branch order takes flat-rate, not taper", () => {
+    // Same asset as (b) plus a same-year addition (20000 @ 2025-06-01). Per the FAR FY
+    // 2026-27 Excel workbook's Z/AA formula (confirmed cell-by-cell, 2026-08-27): the
+    // additions check (O>0) is evaluated BEFORE the eol check, so an addition this period
+    // always takes flat-rate depreciation on cost+additions (capped at NBV), and the
+    // taper branch never fires here even though eol falls within this FY — the opposite
+    // of the order this app shipped in the prior deploy (which checked eol first and
+    // wrote off the combined NBV in one shot; see the git history of this test for that
+    // prior expectation).
+    //
+    // depOnOpening: (100000/4) * (290 days fyStart..asAt / 365) = 19863.013698630137
+    // depOnAdditions: (20000/4) * (229 days dateOfAddition..asAt / 365) = 3136.986301369863
+    // periodDepreciation = their sum = 23000, well under taperNbv (90000) so the cap
+    // doesn't bind — NOT the taper branch's 90000 (full write-off) from before this
+    // reversion.
     const r = computeComponent(
       {
         dateAcquired: "2021-10-01",
@@ -269,9 +278,9 @@ describe("End-of-life taper (step 5)", () => {
       },
       fy({ asAt: "2026-01-15" })
     );
-    expect(r.periodDepreciation).toBeCloseTo(90000, 6);
-    expect(r.closingAccDep).toBeCloseTo(120000, 6);
-    expect(r.nbv).toBeCloseTo(0, 6);
+    expect(r.periodDepreciation).toBeCloseTo(23000, 6);
+    expect(r.closingAccDep).toBeCloseTo(53000, 6);
+    expect(r.nbv).toBeCloseTo(67000, 6);
   });
 
   it("(d) eol in a prior FY, stale leftover NBV — fully written off in one period", () => {
@@ -298,13 +307,18 @@ describe("End-of-life taper (step 5)", () => {
   });
 
   it("(e) flat-rate branch: a mid-year addition still prorates from its own dateOfAddition, not FY Start", () => {
-    // eol = 2020-01-01 + 10yr, safely past fyEnd (2026-03-31) — flat-rate branch. Proves
-    // the addition-dating question raised before implementing this: depOnOpening/
+    // eol = 2020-01-01 + 10yr, safely past fyEnd (2026-03-31) — flat-rate branch, reached
+    // here via the additions-first check now (additionsAt > 0, since dateOfAddition
+    // 2025-07-01 <= asAt) rather than via "eol not within FY" as it would have been
+    // before the 2026-08-27 branch-order reversion — same destination branch, same
+    // result, confirming the reordering didn't disturb this. Proves the addition-dating
+    // question raised before the original taper implementation still holds: depOnOpening/
     // depOnAdditions (steps 2-4, splitTranche) are what feed periodDepreciation here, so
     // the addition (dated 2025-07-01, mid-FY) depreciates only from its own date, not
-    // from fyStart like opening cost — NOT the taper spec's literal fy_start-for-both
+    // from fyStart like opening cost — NOT the Excel formula's literal fy_start-for-both
     // wording, which was evaluated and rejected as a real regression of the prior
-    // FY-rollover fix.
+    // FY-rollover fix, and stays rejected through this reversion (explicitly reconfirmed
+    // 2026-08-27, see step 5's comment in engine.ts).
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -410,6 +424,48 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.accDepOnDisposed).toBeCloseTo(10000, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(2000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
+  });
+
+  // Additional regression coverage (2026-08-27, second round): the Excel workbook's own
+  // sample rows (6-12) are all old, fully-depreciated assets with zero additions and zero
+  // disposals — they never exercise the additions branch, the taper branch, or step 8's
+  // math at all, so they were never a real test of this reversion. This test uses
+  // realistically-shaped asset data (not the round demo numbers above) to independently
+  // confirm the branch-order reversal, hand-derived the same way as (a)-(h). (A matching
+  // realistic-shape test for step 8 — an addition disposed within the same FY — lands in
+  // the next commit, alongside step 8's own reversion.)
+  it("(i) realistic shape: a mid-year addition in the same FY useful life expires — additions-first order still overrides the taper, not just for round numbers", () => {
+    // dateAcquired 2021-01-01 + 5yr useful life -> eol = 2025-12-31, inside this FY
+    // (fyStart 2025-04-01, fyEnd 2026-03-31) — would hit the taper branch and fully write
+    // off taperNbv if there were no addition (asAt 2026-02-01 is after eol, so remLife<=
+    // daysUsed and the taper branch would return taperNbv exactly: 134202). Instead, the
+    // 45000 addition on 2025-09-01 means additionsAt > 0, so per the reordering this stays
+    // in the flat-rate branch regardless of eol:
+    //   depOnOpening = (439202/5) * (307 days fyStart..asAt / 365) = 73882.19945205479
+    //   depOnAdditions = (45000/5) * (154 days dateOfAddition..asAt / 365) = 3797.2602739726026
+    //   periodDepreciation = their sum = 77679.45972602739, well under taperNbv (134202)
+    // — NOT the taper branch's 134202 a full write-off would have given.
+    const r = computeComponent(
+      {
+        dateAcquired: "2021-01-01",
+        openingCost: 439202,
+        additions: 45000,
+        dateOfAddition: "2025-09-01",
+        usefulLifeYears: 5,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 350000
+      },
+      fy({ asAt: "2026-02-01" })
+    );
+    expect(r.depOnOpening).toBeCloseTo(73882.19945205479, 6);
+    expect(r.depOnAdditions).toBeCloseTo(3797.2602739726026, 6);
+    expect(r.periodDepreciation).toBeCloseTo(77679.45972602739, 6);
+    expect(r.periodDepreciation).not.toBeCloseTo(134202, 0);
+    expect(r.grossBlock).toBe(484202);
+    expect(r.closingAccDep).toBeCloseTo(427679.4597260274, 6);
+    expect(r.nbv).toBeCloseTo(56522.54027397261, 6);
   });
 });
 

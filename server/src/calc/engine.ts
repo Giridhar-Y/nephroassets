@@ -123,59 +123,69 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // "added and disposed within the same period" case.
   const costBase = openingGrossBlockAsAt + additionsGrossBlock;
 
-  // Step 5: Period Depreciation (final) — end-of-life taper, ported from the same
-  // formula validated separately on the reference Excel workbook. eol/taperNbv/remLife
-  // name-match that formula's own eol/nbv/remLife ("taperNbv" avoids colliding with this
-  // function's own *closing* `nbv`, computed later at step 10) and are asset-level: fixed
-  // once, independent of which date we're asking "how much depreciation by" (below).
+  // Step 5: Period Depreciation (final) — end-of-life taper, per the FAR FY 2026-27
+  // Excel workbook's Z/AA formula (rows 6-12, verified cell-by-cell). eol/taperNbv/
+  // remLife name-match that formula's own eol/nbv/remLife ("taperNbv" avoids colliding
+  // with this function's own *closing* `nbv`, computed later at step 10) and are
+  // asset-level: fixed once, independent of which date we're asking "how much
+  // depreciation by" (below).
   //
-  // Confirmed with the user (after flagging it as a real risk before implementing): the
-  // flat-rate branch's additions term uses depOnOpening/depOnAdditions from steps 2-4
-  // above, NOT a flat eff-fyStart+1 window for both — preserving splitTranche's existing
-  // fix (a mid-year addition depreciates from its own dateOfAddition, not from FY Start).
-  // The taper spec's literal wording would have additions share opening cost's window
-  // exactly; that was evaluated and rejected as a real regression of the prior
-  // FY-rollover fix, not adopted.
+  // Branch order: the Excel formula checks "is there an addition this period" BEFORE
+  // checking "does useful life end within this FY" — whenever there's an addition, flat-
+  // rate depreciation on cost+additions (capped at NBV) applies unconditionally, and the
+  // taper branch below never fires, regardless of eol. This was confirmed explicitly by
+  // finance as intentional (2026-08-27) and reverses the eol-first order shipped in the
+  // prior deploy — don't re-flip this order without re-confirming with finance.
+  //
+  // The flat-rate branch's additions term still uses depOnOpening/depOnAdditions from
+  // steps 2-4 above (splitTranche, dated from the addition's own dateOfAddition), NOT a
+  // flat eff-fyStart+1 window for both — this part is UNCHANGED and orthogonal to the
+  // branch-order question above: it was evaluated and rejected as a real regression of
+  // the prior FY-rollover fix when the taper formula first shipped, and that decision
+  // still stands.
+  //
+  // NOTE (step 8 coupling): step 8 below still calls this same depreciationAsOf function
+  // in this commit, so its output changes too wherever an addition and a disposal
+  // coincide — that's expected here, and gets superseded in the very next commit, which
+  // reverts step 8 to a flat-rate form that no longer calls this function at all.
   const eol = hasUsefulLife
     ? addDaysToIsoDate(input.dateAcquired, Math.round(usefulLife * daysInFy))
     : input.dateAcquired;
   const remLife = daysHeldInclusive(fyStart, eol);
   const eolWithinFy = isOnOrBefore(eol, fyEnd);
 
-  // Depreciation from FY Start up to `viewEnd` (capped at FY End) — step 5 calls this
-  // with effectiveEndDate (AS_AT, or an earlier Disposal Date); step 8 below calls it
-  // again with the Disposal Date specifically, so both steps agree on what "how much
-  // depreciation had accrued by this date" means for an asset whose life has already run
-  // out, instead of step 8 staying on the old flat-rate-only assumption while step 5
-  // tapers — which broke Audit Reconciliation's roll-forward identity for exactly that
-  // combination (an asset disposed after its useful life had already expired).
-  //
   // taperNbv is computed HERE (per viewEnd), not once at the top — it gates `additions`
-  // by whether dateOfAddition has actually happened by viewEnd. Found via a real seed-
-  // data case: an addition dated AFTER the asset's own disposal date was still inflating
-  // the disposed portion's taperNbv (and would equally inflate an ongoing, non-disposed
-  // asset's periodDepreciation for any addition dated after AS_AT) — the taper spec's
-  // literal `nbv` formula doesn't date-gate at all, unlike costBase/depOnAdditions above,
-  // which already correctly exclude a tranche that "hasn't happened yet as of this view"
-  // (see splitTranche). openingCost isn't similarly gated by dateAcquired: the app never
-  // computes a component for an AS_AT before its own capitalization date (assets.ts
-  // filters `date_acquired <= asAt` upstream), so that case can't reach here in practice.
+  // by whether dateOfAddition has actually happened by viewEnd, same as the additions-
+  // present check below that now drives branch order. Found via a real seed-data case:
+  // an addition dated AFTER the asset's own disposal date was still inflating taperNbv
+  // (and would equally inflate an ongoing, non-disposed asset's periodDepreciation for
+  // any addition dated after AS_AT) — the Excel formula's literal O/nbv references don't
+  // date-gate at all (a static per-FY spreadsheet has no AS_AT-before-addition-date case
+  // to worry about), unlike costBase/depOnAdditions above, which already correctly
+  // exclude a tranche that "hasn't happened yet as of this view" (see splitTranche).
+  // openingCost isn't similarly gated by dateAcquired: the app never computes a
+  // component for an AS_AT before its own capitalization date (assets.ts filters
+  // `date_acquired <= asAt` upstream), so that case can't reach here in practice.
   function depreciationAsOf(viewEnd: IsoDate, depOnOpeningAt: number, depOnAdditionsAt: number): number {
     const effAt = isAfter(viewEnd, fyEnd) ? fyEnd : viewEnd;
     const additionsAt = input.dateOfAddition !== null && isOnOrBefore(input.dateOfAddition, viewEnd) ? input.additions : 0;
     const taperNbvAt = Math.max(0, input.openingCost + additionsAt - input.accDepOpening);
+    if (additionsAt > 0) {
+      // An addition happened this period (Excel's O>0) — flat-rate SLM on cost+additions,
+      // capped at NBV, unconditionally. The taper branch below never fires here.
+      return Math.min(depOnOpeningAt + depOnAdditionsAt, taperNbvAt);
+    }
     if (eolWithinFy) {
-      // Taper branch: useful life ends within (or before) the current FY — depreciate the
-      // rest of taperNbvAt over the days actually held up to viewEnd, reaching exactly
-      // zero NBV at end-of-life instead of stopping short (flat-rate) or overshooting
-      // (previously only the generic cap prevented that).
+      // Taper branch: no addition this period, and useful life ends within (or before)
+      // the current FY — depreciate the rest of taperNbvAt over the days actually held
+      // up to viewEnd, reaching exactly zero NBV at end-of-life instead of stopping
+      // short (flat-rate) or overshooting (previously only the generic cap prevented
+      // that).
       const cappedEffAt = isAfter(effAt, eol) ? eol : effAt;
       const daysUsedAt = Math.max(0, daysHeldInclusive(fyStart, cappedEffAt));
       return remLife <= 0 ? taperNbvAt : (taperNbvAt * daysUsedAt) / remLife;
     }
-    // Flat-rate SLM, additions dated by their own splitTranche classification (see the
-    // comment above) — covers the formula's "with additions" and "without" cases in one
-    // branch, since additions=0 just zeroes that term.
+    // Flat-rate SLM, no addition this period and useful life not yet expired this FY.
     return Math.min(depOnOpeningAt + depOnAdditionsAt, taperNbvAt);
   }
 

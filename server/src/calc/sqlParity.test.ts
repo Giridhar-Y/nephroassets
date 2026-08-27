@@ -231,7 +231,7 @@ const fixtures: Fixture[] = [
     fy: { ...FY, asAt: "2026-01-15" }
   },
   {
-    name: "taper (c): same as (b) but with an addition this year — branch-order fix",
+    name: "taper (c): same as (b) but with an addition this year — additions-first branch order takes flat-rate",
     input: {
       dateAcquired: "2021-10-01",
       openingCost: 100000,
@@ -319,6 +319,24 @@ const fixtures: Fixture[] = [
       accDepOpening: 2000
     },
     fy: { ...FY, asAt: "2025-12-31" }
+  },
+  // Additional regression coverage (2026-08-27, second round) — realistically-shaped
+  // fixture, not round demo numbers, matching engine.test.ts's (i). (A matching
+  // realistic-shape fixture for step 8 lands in the next commit.)
+  {
+    name: "taper (i): realistic shape, mid-year addition in the same FY useful life expires",
+    input: {
+      dateAcquired: "2021-01-01",
+      openingCost: 439202,
+      additions: 45000,
+      dateOfAddition: "2025-09-01",
+      usefulLifeYears: 5,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 350000
+    },
+    fy: { ...FY, asAt: "2026-02-01" }
   }
 ];
 
