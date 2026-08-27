@@ -329,8 +329,15 @@ BEGIN
   acc_dep_on_disposed := CASE WHEN disposal_effective
     THEN LEAST(disposed_ratio * p_acc_dep_opening + dep_on_disposed_portion, effective_disposed_cost) ELSE 0 END;
 
-  -- Step 9: Closing Accumulated Depreciation / Step 10: Net Book Value
-  closing_acc_dep := LEAST(p_acc_dep_opening + period_depreciation - acc_dep_on_disposed, gross_block);
+  -- Step 9: Closing Accumulated Depreciation / Step 10: Net Book Value — floored at 0,
+  -- not just capped at gross_block. See engine.ts's computeComponent step 9 comment:
+  -- step 5 keeps the addition's-own-date window while step 8 reverted to Excel's literal
+  -- FY-Start-for-both window, so an asset added and disposed within the same FY can make
+  -- acc_dep_on_disposed exceed p_acc_dep_opening+period_depreciation, which would
+  -- otherwise go negative here. Confirmed explicitly by finance (2026-08-27). This is a
+  -- NephroAssets-specific safety net — the Excel workbook itself never needs it, since
+  -- its own step 5 and step 8 always agree on an addition's window.
+  closing_acc_dep := GREATEST(0, LEAST(p_acc_dep_opening + period_depreciation - acc_dep_on_disposed, gross_block));
   nbv := gross_block - closing_acc_dep;
 
   -- Step 11: WDV at Disposal / Profit(Loss) on Disposal

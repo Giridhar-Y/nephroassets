@@ -240,10 +240,26 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
     ? Math.min(disposedRatio * input.accDepOpening + depOnDisposedPortion, effectiveDisposedCost)
     : 0;
 
-  // Step 9: Closing Accumulated Depreciation
-  const closingAccDep = Math.min(
-    input.accDepOpening + periodDepreciation - accDepOnDisposed,
-    grossBlock
+  // Step 9: Closing Accumulated Depreciation — floored at 0, not just capped at
+  // grossBlock. Excel's own file never needs a floor here because its step 5 and step 8
+  // always agree on an addition's day-count window (both FY Start-based); NephroAssets'
+  // step 5 deliberately keeps the addition's-own-date window instead (see step 5's
+  // comment), which step 8's reverted FY-Start-for-both window can now disagree with for
+  // an asset added and disposed within the same FY — step 8's window is longer, so
+  // accDepOnDisposed can exceed accDepOpening+periodDepreciation, which would otherwise
+  // go negative here. Confirmed explicitly by finance (2026-08-27): floor it, since
+  // negative accumulated depreciation has no accounting meaning. This same floor also
+  // applies to the accepted post-expiry-disposal reconciliation gap (see step 8's
+  // comment) — a no-op there in every case checked so far (that gap's raw value comes
+  // out non-negative), but the floor isn't specific to one case over the other.
+  //
+  // This is a NephroAssets-specific safety net, not something the Excel workbook itself
+  // needs or has: it exists purely because of the deliberate window mismatch between
+  // steps 5 and 8 introduced by this reversion (see both steps' comments above), which
+  // Excel's own formulas structurally never encounter.
+  const closingAccDep = Math.max(
+    0,
+    Math.min(input.accDepOpening + periodDepreciation - accDepOnDisposed, grossBlock)
   );
 
   // Step 10: Net Book Value

@@ -337,6 +337,23 @@ const fixtures: Fixture[] = [
       accDepOpening: 350000
     },
     fy: { ...FY, asAt: "2026-02-01" }
+  },
+  // Additional regression coverage (2026-08-27, third round) — the floor's own
+  // realistically-shaped fixture, matching engine.test.ts's (j).
+  {
+    name: "taper (j): realistic shape, opening cost + mid-year addition fully disposed the same FY (floor engages)",
+    input: {
+      dateAcquired: "2015-01-01",
+      openingCost: 250000,
+      additions: 60000,
+      dateOfAddition: "2025-07-01",
+      usefulLifeYears: 10,
+      dateOfDisposal: "2025-11-30",
+      deletionsCost: 310000,
+      saleValue: 20000,
+      accDepOpening: 50000
+    },
+    fy: { ...FY, asAt: "2025-11-30" }
   }
 ];
 
