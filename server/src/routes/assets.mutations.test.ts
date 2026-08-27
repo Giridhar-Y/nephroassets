@@ -859,6 +859,28 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
     expect(rows[0].status).toBe("Active");
   });
 
+  it("rejects a disposal dated before the asset's addition date", async () => {
+    const addRes = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/addition",
+      payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-06-01" }
+    });
+    expect(addRes.statusCode).toBe(200);
+
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-05-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Disposal date cannot be before the asset's addition date \(01-06-2026\)/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT date_of_disposal, status FROM assets WHERE far_id = 'DISP-TEST-1'`);
+    expect(rows[0].date_of_disposal).toBeNull();
+    expect(rows[0].status).toBe("Active");
+  });
+
   it("allows a disposal dated exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
     const res = await authedInject(app, {
       method: "PATCH",
@@ -1046,6 +1068,23 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/Disposal date cannot be before the asset's capitalization date \(01-01-2026\)/);
+  });
+
+  it("rejects a preview dated before the asset's addition date", async () => {
+    const addRes = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/PREV-TEST-1/addition",
+      payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-06-01" }
+    });
+    expect(addRes.statusCode).toBe(200);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-05-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Disposal date cannot be before the asset's addition date \(01-06-2026\)/);
   });
 
   it("allows a preview dated exactly on the asset's capitalization date (boundary is >=, not >)", async () => {

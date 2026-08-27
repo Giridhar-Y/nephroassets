@@ -186,6 +186,18 @@ export const bulkAssetRowSchema = assetCreateShape
         message: `Disposal date cannot be before the capitalization date (${isoToDDMMYYYY(data.dateAcquired)}).`
       });
     }
+    // Same reasoning against the addition date: a row can't record an addition dated
+    // after the asset was already disposed. engine.ts already gates an addition dated
+    // after the effective end date out of Gross Block/depreciation entirely (treats it
+    // as "hasn't happened yet"), so this wouldn't corrupt figures — but it's confusing,
+    // silently-dropped data rather than a rejected one, so reject it here instead.
+    if (hasDisposalDate && data.dateOfAddition !== null && data.dateOfDisposal! < data.dateOfAddition) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dateOfDisposal"],
+        message: `Disposal date cannot be before the addition date (${isoToDDMMYYYY(data.dateOfAddition)}).`
+      });
+    }
   });
 
 export type BulkAssetRowInput = z.infer<typeof bulkAssetRowSchema>;

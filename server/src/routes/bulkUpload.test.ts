@@ -132,6 +132,18 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(body.errors[0].message).toMatch(/Disposal date cannot be before the capitalization date \(01-04-2026\)/);
   });
 
+  it("rejects a dateOfDisposal before dateOfAddition within the same row", async () => {
+    const withAdditionAndDisposalHeader = HEADER + ",additionsC1,dateOfAddition,dateOfDisposal";
+    const csv = [
+      withAdditionAndDisposalHeader,
+      "BULK-ADD-AFTER-DISPOSAL,Test-Sub,Bad Dates,Disposed,01-01-2020,Center-A,5,5,1000,1000,5000,15-08-2026,01-04-2026"
+    ].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Disposal date cannot be before the addition date \(15-08-2026\)/);
+  });
+
   it("allows a dateOfDisposal exactly on dateAcquired within the same row (boundary is >=, not >)", async () => {
     const withDisposalHeader = HEADER + ",dateOfDisposal";
     const csv = [

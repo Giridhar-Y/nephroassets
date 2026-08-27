@@ -8,11 +8,12 @@ import type pg from "pg";
  * instead of the same UPDATE duplicated in both.
  *
  * Returns true if the asset was found, not already disposed, and dateOfDisposal wasn't
- * before its capitalization date (and so was just written), false otherwise — callers
- * distinguish which of those three reasons via a follow-up SELECT, same as before this
- * was extracted. An asset can't have moved locations/been written off before it existed
- * on the books, so `date_acquired <= $1` is gated here rather than duplicated at every
- * caller.
+ * before its capitalization date or its addition date (and so was just written), false
+ * otherwise — callers distinguish which of those reasons via a follow-up SELECT, same as
+ * before this was extracted. An asset can't have moved locations/been written off before
+ * it existed on the books, so `date_acquired <= $1` is gated here rather than duplicated
+ * at every caller; same for `date_of_addition <= $1`, so an addition can't end up dated
+ * after the disposal that supposedly already happened.
  */
 export async function applyFullDisposal(
   client: Pick<pg.Pool | pg.PoolClient, "query">,
@@ -33,6 +34,7 @@ export async function applyFullDisposal(
          status = 'Disposed',
          disposed_via_parent_far_id = $4
      WHERE far_id = $3 AND date_of_disposal IS NULL AND date_acquired <= $1
+       AND (date_of_addition IS NULL OR date_of_addition <= $1)
      RETURNING far_id`,
     [dateOfDisposal, saleValue, farId, cascadedFromParentFarId]
   );

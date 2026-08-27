@@ -674,6 +674,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
         error: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(asset.dateAcquired)}).`
       };
     }
+    if (asset.dateOfAddition !== null && dateOfDisposal < asset.dateOfAddition) {
+      reply.code(400);
+      return {
+        error: `Disposal date cannot be before the asset's addition date (${isoToDDMMYYYY(asset.dateOfAddition)}).`
+      };
+    }
 
     const { rows: settingsRows } = await db.query<SettingsRow>(
       `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
@@ -731,8 +737,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
       client.release();
     }
     if (!result.written) {
-      const { rows: check } = await db.query<{ date_of_disposal: string | null; date_acquired: string }>(
-        `SELECT date_of_disposal, date_acquired FROM assets WHERE far_id = $1`,
+      const { rows: check } = await db.query<{
+        date_of_disposal: string | null;
+        date_acquired: string;
+        date_of_addition: string | null;
+      }>(
+        `SELECT date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = $1`,
         [farId]
       );
       if (check.length === 0) {
@@ -742,6 +752,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
       if (check[0]!.date_of_disposal !== null) {
         reply.code(409);
         return { error: `Asset "${farId}" has already been disposed.` };
+      }
+      if (check[0]!.date_of_addition !== null && dateOfDisposal < check[0]!.date_of_addition!) {
+        reply.code(400);
+        return {
+          error: `Disposal date cannot be before the asset's addition date (${isoToDDMMYYYY(check[0]!.date_of_addition!)}).`
+        };
       }
       reply.code(400);
       return {

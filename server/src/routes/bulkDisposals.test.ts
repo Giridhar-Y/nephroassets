@@ -101,6 +101,34 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     expect(rows[0].date_of_disposal).toBeNull();
   });
 
+  it("rejects a row disposed before the asset's addition date, and reports it in preview too", async () => {
+    await insertAsset("BDISP-EARLY-ADD", {
+      date_acquired: "2020-01-01",
+      additions_c1: 5000,
+      date_of_addition: "2026-06-01"
+    });
+
+    const csv = [HEADER, "BDISP-EARLY-ADD,01-05-2026,0"].join("\n");
+    const preview = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/bulk-dispose?preview=true",
+      ...csvPayload(csv)
+    });
+    expect(preview.json().rows[0].message).toMatch(
+      /Disposal date cannot be before the asset's addition date \(01-06-2026\)/
+    );
+
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Disposal date cannot be before the asset's addition date \(01-06-2026\)/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT status, date_of_disposal FROM assets WHERE far_id = 'BDISP-EARLY-ADD'`);
+    expect(rows[0].status).toBe("Active");
+    expect(rows[0].date_of_disposal).toBeNull();
+  });
+
   it("allows a row disposed exactly on the asset's capitalization date (boundary is >=, not >)", async () => {
     await insertAsset("BDISP-BOUNDARY", { date_acquired: "2026-04-01" });
     const csv = [HEADER, "BDISP-BOUNDARY,01-04-2026,0"].join("\n");
