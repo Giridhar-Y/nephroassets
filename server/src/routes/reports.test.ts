@@ -73,7 +73,11 @@ describe("Audit Reconciliation report", () => {
       asset_description: "Clean fixture 2",
       serial_no: "S2",
       qty: 1,
-      useful_life_c1_years: 5,
+      // useful_life_c1_years chosen so end-of-life (dateAcquired + usefulLife) falls
+      // safely after fyEnd — keeps this disposal in the flat-rate branch, not the
+      // end-of-life taper, so it's genuinely clean under the 2026-08-27 reversion (see
+      // RECON-POST-EXPIRY-DISPOSAL below for the case where it isn't).
+      useful_life_c1_years: 10,
       c1_opening_cost: 50000,
       additions_c1: 0,
       date_of_disposal: "2026-06-01",
@@ -129,6 +133,30 @@ describe("Audit Reconciliation report", () => {
       date_of_disposal: "2027-01-01",
       deletions_c1: 40000,
       acc_dep_c1_opening: 20000
+    });
+
+    // Regression fixture: an asset disposed after its useful life had already expired
+    // (dateAcquired + usefulLife = 2024-12-30, well before this FY's fyStart). Step 8
+    // (accDepOnDisposed) was reverted 2026-08-27 to a flat-rate form fully independent of
+    // step 5's end-of-life taper, per the FAR FY 2026-27 Excel workbook's AB/AC formula
+    // (confirmed cell-by-cell) — this deliberately reopens the dep-check gap for exactly
+    // this combination. Cost side is unaffected and still reconciles. Confirmed explicitly
+    // by finance as an accepted consequence, since the Excel file itself has this same
+    // gap — see engine.test.ts's "(f) disposed after useful life had already expired" for
+    // the underlying component-level numbers this fixture matches.
+    await insertAsset({
+      far_id: "RECON-POST-EXPIRY-DISPOSAL",
+      sub_classification: "Test-Post-Expiry-Disposal",
+      asset_description: "Disposed after useful life had already expired",
+      serial_no: "S6",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      additions_c1: 0,
+      date_of_disposal: "2026-06-01",
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 10000,
+      sale_value: 5000
     });
 
     app = Fastify();
@@ -214,6 +242,24 @@ describe("Audit Reconciliation report", () => {
     expect(brokenC2).toBeDefined();
     expect(brokenC2.costCheckPass).toBe(true);
     expect(brokenC2.depCheckPass).toBe(true);
+  });
+
+  it("flags a disposal after useful life had already expired — accepted, reopened by the 2026-08-27 Excel-alignment revert", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const postExpiry = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Post-Expiry-Disposal" && i.component === "C1"
+    );
+    expect(postExpiry).toBeDefined();
+    // Cost side is unaffected by the revert — still reconciles.
+    expect(postExpiry.costCheckPass).toBe(true);
+    expect(postExpiry.costCheckDelta).toBeCloseTo(0, 6);
+    // Dep side legitimately fails now: step 8 stays flat-rate independent of step 5's
+    // taper, so accDepOpening(10000) + periodDep(40000) - accDepOnDisposed(11698.630137)
+    // no longer equals closingAccDep(0).
+    expect(postExpiry.depCheckPass).toBe(false);
+    expect(postExpiry.depCheckDelta).toBeCloseTo(38301.369863013699, 4);
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {

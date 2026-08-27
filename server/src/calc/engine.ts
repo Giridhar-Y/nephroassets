@@ -198,26 +198,42 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // Step 7: Disposed Ratio
   const disposedRatio = costBase !== 0 ? effectiveDisposedCost / costBase : 0;
 
-  // Step 8: Depreciation on the disposed portion, up to Disposal Date — via the same
-  // depreciationAsOf helper step 5 uses (see its comment), so a component whose useful
-  // life had already run out before disposal still tapers here too instead of falling
-  // back to a flat-rate figure that no longer matches step 5's own periodDepreciation.
-  // The per-tranche recomputation at Disposal Date (rather than reusing depOnOpening/
-  // depOnAdditions from steps 3-4) is still needed for the flat-rate branch's dated
-  // additions proration — those were computed as at effectiveEndDate, not Disposal Date,
-  // and the two only coincide when the asset's own disposal already IS the effective end.
-  // Scaled by the Disposed Ratio to isolate the disposed portion's share (the Deletions
-  // fields don't record whether the disposed cost came from the opening balance or from
-  // an in-year addition, so this proportional split is the closest consistent reading of
-  // "depreciation on the disposed portion").
+  // Step 8: Depreciation on the disposed portion, up to Disposal Date — per the FAR FY
+  // 2026-27 Excel workbook's AB/AC formula (rows 6-12, verified cell-by-cell), reverted
+  // to be fully independent of step 5's end-of-life taper: a component whose useful life
+  // had already run out before disposal still gets flat-rate SLM here, even though step
+  // 5 above would taper it. Confirmed explicitly by finance as intentional (2026-08-27),
+  // reversing the taper-aware depreciationAsOf sharing between steps 5 and 8 from the
+  // prior deploy. Known, accepted consequence: this reopens the Audit Reconciliation
+  // roll-forward gap for an asset disposed after its useful life had already expired —
+  // that gap exists in the Excel file itself, so it's not a regression to route around.
+  //
+  // The day-count window for BOTH the opening-portion and the additions-portion uses FY
+  // Start (not the addition's own dateOfAddition, unlike step 5's flat-rate branch above)
+  // — confirmed against 6 of 7 sample rows in the workbook; the 7th's reference to a
+  // different column was a copy-paste artifact, not the intended formula. The Excel
+  // formula literally computes disposedRatio * ((M/K)*window + (O/K)*window) with an
+  // M/(M+O) + O/(M+O) split that's algebraically inert when both windows are identical —
+  // disposedRatio * (M+O) = deletionsCost by construction, so the whole expression
+  // reduces to (deletionsCost/usefulLife)*window regardless of the M/O split. Implemented
+  // directly in that reduced form rather than transcribing the redundant split — except
+  // the reduction divides by (M+O), so the `costBase !== 0` guard below (matching
+  // Excel's own `IF(M+O=0,0,...)`) still has to be kept explicit: this app's own full-
+  // disposal write path always has deletionsCost = costBase at disposal (so the reduced
+  // form is safe there even without a guard), but a bulk-uploaded historical disposed
+  // row can carry a nonzero deletionsCost against a zero-cost component independently.
+  //
+  // NOTE (step 9 interaction): step 5 above deliberately keeps the addition's-own-date
+  // window while this step reverts to FY-Start-for-both — that mismatch can drive
+  // step 9's raw value negative for an asset added and disposed within the same FY. This
+  // commit doesn't add a floor for that yet (see the "added and disposed" test, still
+  // failing after this commit) — the next commit adds it.
   let depOnDisposedPortion = 0;
-  if (disposalEffective && hasUsefulLife) {
+  if (disposalEffective && hasUsefulLife && costBase !== 0) {
     const disposalDate = input.dateOfDisposal!;
-    const acqAtDisposal = splitTranche(input.openingCost, input.dateAcquired, fyStart, disposalDate, usefulLife, daysInFy);
-    const addAtDisposal = splitTranche(input.additions, input.dateOfAddition, fyStart, disposalDate, usefulLife, daysInFy);
-    const depOnOpeningAtDisposal = acqAtDisposal.openingDep + addAtDisposal.openingDep;
-    const depOnAdditionsAtDisposal = acqAtDisposal.additionDep + addAtDisposal.additionDep;
-    depOnDisposedPortion = disposedRatio * depreciationAsOf(disposalDate, depOnOpeningAtDisposal, depOnAdditionsAtDisposal);
+    const cappedDisposalDate = isAfter(disposalDate, fyEnd) ? fyEnd : disposalDate;
+    const daysHeldToDisposal = Math.max(0, daysHeldInclusive(fyStart, cappedDisposalDate));
+    depOnDisposedPortion = (input.deletionsCost / usefulLife) * (daysHeldToDisposal / daysInFy);
   }
 
   const accDepOnDisposed = disposalEffective

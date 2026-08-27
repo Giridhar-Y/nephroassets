@@ -276,7 +276,7 @@ const fixtures: Fixture[] = [
     fy: { ...FY, asAt: "2025-12-31" }
   },
   {
-    name: "taper (f): disposed after useful life had already expired — accDepOnDisposed is taper-aware",
+    name: "taper (f): disposed after useful life had already expired — accDepOnDisposed stays flat-rate (reconciliation gap accepted)",
     input: {
       dateAcquired: "2020-01-01",
       openingCost: 50000,

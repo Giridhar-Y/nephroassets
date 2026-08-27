@@ -342,14 +342,22 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.periodDepreciation).toBeCloseTo(4775.342465753425, 6);
   });
 
-  it("(f) disposed after useful life had already expired — Audit Reconciliation identity holds", () => {
+  it("(f) disposed after useful life had already expired — step 8 stays flat-rate, reopening the Audit Reconciliation gap", () => {
     // eol = 2020-01-01 + 5yr = 2024-12-30, before fyStart (2025-04-01) — remLife <= 0, so
-    // this component's entire remaining taperNbv (50000 - 10000 = 40000) is attributable
-    // to the disposed portion. Step 8 (accDepOnDisposed) now uses the same
-    // depreciationAsOf helper as step 5, so accDepOpening + periodDepreciation -
-    // accDepOnDisposed reconciles to exactly closingAccDep (both 0 here) instead of
-    // leaving a gap — the bug Audit Reconciliation's dep-check caught for this exact
-    // combination (an asset disposed post-expiry) before this fix.
+    // step 5's periodDepreciation is this component's entire remaining taperNbv
+    // (50000 - 10000 = 40000). Step 8 (accDepOnDisposed) was reverted 2026-08-27 to a
+    // flat-rate form fully independent of step 5's taper, per the FAR FY 2026-27 Excel
+    // workbook's AB/AC formula (confirmed cell-by-cell) — a component whose useful life
+    // had already run out before disposal now gets flat-rate SLM in step 8 regardless of
+    // step 5's taper. This deliberately reopens the Audit Reconciliation dep-check gap
+    // for exactly this combination (an asset disposed post-expiry): accDepOpening +
+    // periodDepreciation - accDepOnDisposed no longer equals closingAccDep. Confirmed
+    // explicitly by finance as an accepted consequence, since the Excel file itself has
+    // this same gap.
+    //
+    // depOnDisposedPortion = (50000/5) * (62 days fyStart..disposalDate / 365) =
+    // 1698.6301369863013; accDepOnDisposed = 10000 (accDepOpening, disposedRatio=1) +
+    // 1698.6301369863013 = 11698.630136986301.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -365,13 +373,13 @@ describe("End-of-life taper (step 5)", () => {
       fy({ asAt: "2025-12-31" })
     );
     expect(r.periodDepreciation).toBeCloseTo(40000, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(50000, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(11698.630136986301, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     // The reconciliation identity Audit Reconciliation checks (accDepOpening is 10000,
-    // per the fixture above):
-    expect(10000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(0, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(5000, 6);
+    // per the fixture above) no longer holds — the whole point of this reversion:
+    expect(10000 + r.periodDepreciation - r.accDepOnDisposed).not.toBeCloseTo(r.closingAccDep, 2);
+    expect(r.wdvAtDisposal).toBeCloseTo(38301.369863013699, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(-33301.369863013699, 6);
   });
 
   it("(g) taper branch: a not-yet-happened addition doesn't inflate taperNbv (ongoing asset)", () => {
@@ -400,12 +408,22 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.periodDepreciation).toBeCloseTo(8000, 6);
   });
 
-  it("(h) taper branch: an addition dated after the asset's own Disposal Date doesn't inflate accDepOnDisposed", () => {
+  it("(h) step 5's taper branch still gates a future-dated addition, even though step 8 no longer cares about addition dates at all", () => {
     // Same shape as (g), but disposed instead of ongoing — the exact pattern found in
     // real seed data (an addition dated after its own asset's disposal date). eol is well
     // before fyStart (remLife <= 0); dateOfAddition (2025-08-01) is after dateOfDisposal
-    // (2025-06-01), so it hasn't happened yet as of the disposal — taperNbv at disposal
-    // must be 10000 - 2000 = 8000 (opening only), not 15000 - 2000 = 13000.
+    // (2025-06-01), so as of the disposal it hasn't happened yet — step 5's taperNbv gate
+    // still correctly excludes it (10000 - 2000 = 8000, opening only, not 15000 - 2000 =
+    // 13000). This is the future-dated-addition-gating fix from before the taper work —
+    // unrelated to the 2026-08-27 reversion, kept intact.
+    //
+    // Step 8, after the 2026-08-27 reversion, is a flat (deletionsCost/usefulLife)*window
+    // formula that doesn't reference dateOfAddition at all — so the future-dated
+    // addition here has zero effect on it either way (there's no taperNbv gate left to
+    // even test), and, per test (f) above, the reconciliation identity no longer holds
+    // for a post-expiry disposal regardless of whether an addition is involved.
+    // depOnDisposedPortion = (10000/3) * (62 days fyStart..disposalDate / 365) =
+    // 566.2100456621005; accDepOnDisposed = 2000 (accDepOpening) + 566.2100456621005.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -421,9 +439,9 @@ describe("End-of-life taper (step 5)", () => {
       fy({ asAt: "2025-12-31" })
     );
     expect(r.periodDepreciation).toBeCloseTo(8000, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(10000, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(2566.2100456621005, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
-    expect(2000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
+    expect(2000 + r.periodDepreciation - r.accDepOnDisposed).not.toBeCloseTo(r.closingAccDep, 2);
   });
 
   // Additional regression coverage (2026-08-27, second round): the Excel workbook's own
