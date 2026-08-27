@@ -102,8 +102,14 @@ export default async function transfersRoutes(app: FastifyInstance) {
         // plain indexed column lookup at scale. This reflects the *current* effective
         // location; point-in-time correctness for a past AS_AT is handled separately by
         // the calculation engine's Effective Location step when rendering each row.
+        // Guarded so a backdated/out-of-order transfer (entered after a later-dated one
+        // already on file) still gets recorded in transfer history but doesn't regress
+        // this cache — otherwise Center filtering/Location Summary/Export/Masters usage
+        // count (which all trust this column directly, not a recomputed one) would show
+        // the asset at a location it's already moved on from.
         await client.query(
-          `UPDATE assets SET revised_location = $1, last_date_of_transaction = $2 WHERE far_id = $3`,
+          `UPDATE assets SET revised_location = $1, last_date_of_transaction = $2
+           WHERE far_id = $3 AND (last_date_of_transaction IS NULL OR last_date_of_transaction <= $2)`,
           [toLocation, transactionDate, farId]
         );
       }

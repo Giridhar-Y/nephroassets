@@ -204,7 +204,7 @@ const DETAIL_FIELDS: Array<{ label: string; render: (d: AssetDetailResponse) => 
   { label: "C1 Depreciation This Period", render: (d) => formatCurrency(d.result.c1.periodDepreciation) },
   { label: "C2 Depreciation This Period", render: (d) => formatCurrency(d.result.c2.periodDepreciation) },
   { label: "Original Location", render: (d) => d.asset.location },
-  { label: "Last Date of Transaction", render: (d) => formatDate(d.asset.lastDateOfTransaction) }
+  { label: "Last Date of Transaction", render: (d) => formatDate(d.result.lastDateOfTransaction) }
 ];
 
 export function AssetLifecyclePage() {

@@ -77,6 +77,27 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     ]);
   });
 
+  it("still records both transfers, but a backdated row later in the file does not regress the denormalized current location", async () => {
+    await insertAsset("BXFER-BACKDATE");
+
+    const csv = [HEADER, "BXFER-BACKDATE,Center-B,2026-08-01", "BXFER-BACKDATE,Center-C,2026-05-01"].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().processed).toBe(2);
+
+    const db = await getPool();
+    const { rows: history } = await db.query(
+      `SELECT location FROM transfers WHERE far_id = 'BXFER-BACKDATE' ORDER BY transaction_date`
+    );
+    expect(history.map((r) => r.location)).toEqual(["Center-C", "Center-B"]);
+
+    const { rows: asset } = await db.query(
+      `SELECT revised_location, last_date_of_transaction FROM assets WHERE far_id = 'BXFER-BACKDATE'`
+    );
+    expect(asset[0].revised_location).toBe("Center-B");
+    expect(String(asset[0].last_date_of_transaction)).toMatch(/^2026-08-01/);
+  });
+
   it("400s when no file is uploaded", async () => {
     const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...emptyMultipartPayload() });
     expect(res.statusCode).toBe(400);

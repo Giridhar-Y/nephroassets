@@ -126,11 +126,14 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
               data.transactionDate,
               data.toLocation
             ]);
-            await client.query(`UPDATE assets SET revised_location = $1, last_date_of_transaction = $2 WHERE far_id = $3`, [
-              data.toLocation,
-              data.transactionDate,
-              data.farId
-            ]);
+            // Guarded the same way as POST /api/transfers — a backdated/out-of-order row
+            // still gets recorded in transfer history but doesn't regress the denormalized
+            // "current location" cache that filtering/reports/export trust directly.
+            await client.query(
+              `UPDATE assets SET revised_location = $1, last_date_of_transaction = $2
+               WHERE far_id = $3 AND (last_date_of_transaction IS NULL OR last_date_of_transaction <= $2)`,
+              [data.toLocation, data.transactionDate, data.farId]
+            );
             await client.query("COMMIT");
             processed++;
           } catch (err) {

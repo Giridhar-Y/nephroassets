@@ -59,6 +59,38 @@ describe("Transfers", () => {
     expect(rows[0].revised_location).toBe("Center-B");
   });
 
+  it("still records transfer history for a backdated transfer, but does not regress the denormalized current location", async () => {
+    await insertAsset("XFER-BACKDATE");
+    const later = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-BACKDATE"], toLocation: "Center-B", transactionDate: "2026-08-01" }
+    });
+    expect(later.statusCode).toBe(200);
+
+    // A late-entered historical correction, dated *before* the transfer already on file.
+    const earlier = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-BACKDATE"], toLocation: "Center-C", transactionDate: "2026-05-01" }
+    });
+    expect(earlier.statusCode).toBe(200);
+
+    const db = await getPool();
+    const { rows: transferRows } = await db.query(
+      `SELECT location, transaction_date FROM transfers WHERE far_id = 'XFER-BACKDATE' ORDER BY transaction_date`
+    );
+    // Both transfers are on record...
+    expect(transferRows.map((r) => r.location)).toEqual(["Center-C", "Center-B"]);
+    // ...but the denormalized "current" location still reflects the later (2026-08-01)
+    // transfer, not the backdated one entered second.
+    const { rows: assetRows } = await db.query(
+      `SELECT revised_location, last_date_of_transaction FROM assets WHERE far_id = 'XFER-BACKDATE'`
+    );
+    expect(assetRows[0].revised_location).toBe("Center-B");
+    expect(String(assetRows[0].last_date_of_transaction)).toMatch(/^2026-08-01/);
+  });
+
   it("rejects a transfer dated before the asset's capitalization date", async () => {
     await insertAsset("XFER-EARLY", "Transfer History Asset", "2026-04-01");
     const res = await authedInject(app, {
