@@ -17,7 +17,17 @@ import {
 } from "./masters.js";
 
 const centerRowSchema = z.object({ code: z.string().min(1), description: z.string().optional(), active: bulkActive });
-const subClassRowSchema = z.object({ name: z.string().min(1), active: bulkActive });
+// defaultUsefulLifeC1Years/C2Years mirror the single-entry Masters form (masters.ts's
+// subClassCreateSchema/subClassPatchSchema) — a blank cell is omitted entirely by
+// parseWorksheetRows (never an empty string), so it comes through as `undefined` here:
+// "no default" on create, "don't touch the existing default" on update, same as a blank
+// `active` cell already means today.
+const subClassRowSchema = z.object({
+  name: z.string().min(1),
+  defaultUsefulLifeC1Years: z.coerce.number().min(0).nullable().optional(),
+  defaultUsefulLifeC2Years: z.coerce.number().min(0).nullable().optional(),
+  active: bulkActive
+});
 const statusRowSchema = z.object({ name: z.string().min(1), active: bulkActive });
 
 interface MasterBulkConfig<Data extends { active?: boolean }, Row extends { id: number; active: boolean; usageCount: number }> {
@@ -150,9 +160,21 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       getKey: (d) => d.name,
       rowKey: (r) => r.name,
       fetchAll: fetchSubClassificationsWithUsage,
-      hasPatch: (d) => d.active !== undefined,
-      create: (db, d) => createSubClassification(db, { name: d.name, active: d.active }),
-      update: (db, id, d) => updateSubClassificationById(db, id, { active: d.active })
+      hasPatch: (d) =>
+        d.active !== undefined || d.defaultUsefulLifeC1Years !== undefined || d.defaultUsefulLifeC2Years !== undefined,
+      create: (db, d) =>
+        createSubClassification(db, {
+          name: d.name,
+          defaultUsefulLifeC1Years: d.defaultUsefulLifeC1Years,
+          defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
+          active: d.active
+        }),
+      update: (db, id, d) =>
+        updateSubClassificationById(db, id, {
+          defaultUsefulLifeC1Years: d.defaultUsefulLifeC1Years,
+          defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
+          active: d.active
+        })
     })
   );
 

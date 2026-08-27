@@ -97,6 +97,29 @@ describe("Bulk Masters", () => {
         { name: "X-Ray Machines", active: true }
       ]);
     });
+
+    it("sets defaultUsefulLifeC1Years/C2Years on create, and a blank cell leaves an existing value unchanged on update", async () => {
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO sub_classifications (name, default_useful_life_c1_years, default_useful_life_c2_years) VALUES ('IT Equipment', 7, 3)`
+      );
+
+      const csv = [
+        "name,defaultUsefulLifeC1Years,defaultUsefulLifeC2Years",
+        "IT Equipment,,", // blank cells on an existing row: leave its defaults untouched
+        "RO Water Plants,10,5"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications/bulk-upload", ...csvPayload(csv) });
+      expect(res.json()).toMatchObject({ added: 1, updated: 1, errors: [] });
+
+      const { rows } = await db.query(
+        `SELECT name, default_useful_life_c1_years, default_useful_life_c2_years FROM sub_classifications ORDER BY name`
+      );
+      expect(rows).toEqual([
+        { name: "IT Equipment", default_useful_life_c1_years: "7", default_useful_life_c2_years: "3" },
+        { name: "RO Water Plants", default_useful_life_c1_years: "10", default_useful_life_c2_years: "5" }
+      ]);
+    });
   });
 
   describe("Statuses: /api/masters/statuses/bulk-upload", () => {

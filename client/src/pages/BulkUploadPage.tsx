@@ -100,11 +100,11 @@ const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: str
     pillLabel: "Sub Classifications",
     description: "Add or update Sub Classifications, matched by Name. An unmatched name creates a new entry; a matched one updates it.",
     required: ["name"],
-    optional: ["active"],
+    optional: ["defaultUsefulLifeC1Years", "defaultUsefulLifeC2Years", "active"],
     keyColumnLabel: "Name",
     path: MASTERS_BULK_UPLOAD_PATHS.subClassifications,
     templateName: "sub-classifications",
-    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new entries to Active and leave existing ones unchanged."
+    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new entries to Active and leave existing ones unchanged. Leave defaultUsefulLifeC1Years/C2Years blank to leave them unset (new entries) or unchanged (existing ones)."
   },
   statuses: {
     label: "Statuses",
@@ -165,7 +165,12 @@ const EXAMPLE_ROWS: Record<Exclude<UploadType, "masters">, Record<string, string
 
 const MASTER_EXAMPLE_ROWS: Record<MasterListType, Record<string, string>> = {
   centers: { code: "Center-050", description: "Sample center", active: "true" },
-  subClassifications: { name: "Sample Sub Classification", active: "true" },
+  subClassifications: {
+    name: "Sample Sub Classification",
+    defaultUsefulLifeC1Years: "5",
+    defaultUsefulLifeC2Years: "5",
+    active: "true"
+  },
   statuses: { name: "Sample Status", active: "true" }
 };
 
