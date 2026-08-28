@@ -939,11 +939,14 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
       await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-2" } });
       const db = await getPool();
       await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-2'`);
-      await authedInject(app, {
-        method: "PATCH",
-        url: "/api/assets/DISP-CHILD-2/disposal",
-        payload: { dateOfDisposal: "2026-07-01", saleValue: 999 }
-      });
+      // Disposing a child directly via the API is now rejected by Rule 1 (2026-08-28) — a
+      // pre-existing independent disposal has to predate its parent_far_id being set (a
+      // legitimate real-world order: the child was disposed on its own, then later linked
+      // under a parent), so this writes the disposed state directly rather than going
+      // through the now-blocked PATCH .../disposal endpoint.
+      await db.query(
+        `UPDATE assets SET date_of_disposal = '2026-07-01', sale_value = 999, status = 'Disposed' WHERE far_id = 'DISP-CHILD-2'`
+      );
 
       const res = await authedInject(app, {
         method: "PATCH",
@@ -1005,6 +1008,57 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
       // The one deliberate exception — a cascaded child's Sale Value is always 0, never
       // the parent's sale value (500 here).
       expect(Number(rows[0].sale_value)).toBe(0);
+    });
+
+    it("(Rule 1, 2026-08-28) rejects a standalone disposal of a child asset", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-5" } });
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-5'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-CHILD-5/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 0 }
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatch(/child of "DISP-TEST-1".*dispose the parent instead/);
+
+      const { rows } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = 'DISP-CHILD-5'`);
+      expect(rows[0].date_of_disposal).toBeNull();
+    });
+
+    it("(Rule 2 safety net, 2026-08-28) rolls back the whole disposal if the cascade would leave an active child behind", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "DISP-CHILD-6" } });
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'DISP-TEST-1' WHERE far_id = 'DISP-CHILD-6'`);
+      // Gives the child its own addition dated AFTER the disposal date the parent will be
+      // disposed on below — applyFullDisposal's own date_of_addition <= dateOfDisposal
+      // guard then makes the cascade's per-child call silently fail (written: false),
+      // exactly the "cascade didn't cover this path" scenario the safety net exists for.
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-CHILD-6/addition",
+        payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-09-01" }
+      });
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/DISP-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-08-01", saleValue: 500 }
+      });
+      expect(res.statusCode).toBe(500);
+      // This test's bare Fastify instance (no app.ts's setErrorHandler) uses Fastify's own
+      // default error shape ({statusCode, error: "Internal Server Error", message}) for an
+      // uncaught throw — the real app reshapes this to {error: message} in production, but
+      // the actual thrown text is what matters for this test either way.
+      expect(res.json().message).toMatch(/would leave active child asset\(s\) not disposed: DISP-CHILD-6/);
+
+      // Rolled back — the parent itself must NOT be left disposed just because its child
+      // couldn't be, even though the parent's own applyFullDisposal call succeeded first.
+      const { rows } = await db.query(
+        `SELECT date_of_disposal FROM assets WHERE far_id IN ('DISP-TEST-1', 'DISP-CHILD-6')`
+      );
+      expect(rows.every((r: { date_of_disposal: string | null }) => r.date_of_disposal === null)).toBe(true);
     });
   });
 });
@@ -1138,6 +1192,20 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
       payload: { dateOfDisposal: "2026-08-05", saleValue: 0 }
     });
     expect(res.statusCode).toBe(409);
+  });
+
+  it("(Rule 1, 2026-08-28) 409s previewing a standalone disposal of a child asset", async () => {
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "PREV-CHILD-1" } });
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'PREV-TEST-1' WHERE far_id = 'PREV-CHILD-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/PREV-CHILD-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 0 }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/child of "PREV-TEST-1".*dispose the parent instead/);
   });
 });
 

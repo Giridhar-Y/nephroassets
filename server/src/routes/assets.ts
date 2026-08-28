@@ -7,7 +7,7 @@ import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { disposeWithChildren } from "./disposalWriteOff.js";
-import { validateParentLink } from "./parentLink.js";
+import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
 
 const disposalSchema = z.object({
@@ -666,6 +666,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
       return { error: `No asset found with FAR ID "${farId}".` };
     }
     const asset = mapAssetRow(row);
+    // Rule 1 (2026-08-28): a child asset can't be disposed directly — the only way it
+    // disposes is via its parent's own disposal cascading to it (disposeWithChildren).
+    if (asset.parentFarId !== null) {
+      reply.code(409);
+      return { error: `This asset is a child of "${asset.parentFarId}" — dispose the parent instead.` };
+    }
     if (asset.dateOfDisposal !== null) {
       reply.code(409);
       return { error: `Asset "${farId}" has already been disposed.` };
@@ -726,6 +732,13 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { farId } = paramsParsed.data;
     const { dateOfDisposal, saleValue } = bodyParsed.data;
     const db = await getPool();
+    // Rule 1 (2026-08-28): a child asset can't be disposed directly — see the identical
+    // check on the preview route above for the full comment.
+    const [childViolation] = await findDirectChildActionViolations(db, [farId]);
+    if (childViolation) {
+      reply.code(409);
+      return { error: `This asset is a child of "${childViolation.parentFarId}" — dispose the parent instead.` };
+    }
     const client = await db.connect();
     let result: { written: boolean; childrenDisposed: string[] };
     try {

@@ -72,5 +72,23 @@ export async function disposeWithChildren(
       childrenDisposed.push(row.far_id);
     }
   }
+
+  // Rule 2 safety net (2026-08-28): a hard assertion, not just trust in the loop above —
+  // if any child is still active after that loop ran (a disposal-date edge case the loop
+  // itself didn't catch, or a future bug in this function), throw rather than let the
+  // parent's disposal complete with an orphaned active child. Every caller of this
+  // function manages its own transaction around the call (see this function's own doc
+  // comment above), so a throw here rolls the whole disposal — parent included — back,
+  // instead of leaving a half-applied result.
+  const { rows: stillActive } = await client.query<{ far_id: string }>(
+    `SELECT far_id FROM assets WHERE parent_far_id = $1 AND date_of_disposal IS NULL`,
+    [farId]
+  );
+  if (stillActive.length > 0) {
+    throw new Error(
+      `Disposing "${farId}" would leave active child asset(s) not disposed: ${stillActive.map((r) => r.far_id).join(", ")}.`
+    );
+  }
+
   return { written: true, childrenDisposed };
 }

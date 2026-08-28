@@ -416,6 +416,24 @@ describe("Transfers", () => {
       expect(rows[0].cascaded_from_parent_far_id).toBe("XFER-PARENT-3");
     });
 
+    it("(Rule 1, 2026-08-28) rejects a standalone transfer of a child whose parent isn't also selected", async () => {
+      await insertAsset("XFER-PARENT-5");
+      await insertAsset("XFER-CHILD-5");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'XFER-PARENT-5' WHERE far_id = 'XFER-CHILD-5'`);
+
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["XFER-CHILD-5"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatch(/child of "XFER-PARENT-5".*transfer the parent instead/);
+
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-CHILD-5'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+
     it("marks a cascaded child's transfer row with the parent it cascaded from, and leaves the parent's own row null", async () => {
       await insertAsset("XFER-PARENT-4");
       await insertAsset("XFER-CHILD-4");

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
 
 const createTransferSchema = z.object({
@@ -47,6 +48,21 @@ export default async function transfersRoutes(app: FastifyInstance) {
       return { error: `Location "${parsed.data.toLocation}" not recognized — see Masters for valid values.` };
     }
     const { transactionDate } = parsed.data;
+
+    // Rule 1 (2026-08-28): a child asset can't be transferred directly on its own — but
+    // explicitly selecting a child ALONGSIDE its own parent in this same request is not
+    // "directly," it's equivalent to letting the cascade below handle it (and is already
+    // treated that way: see this route's own cascadedFrom comment). Only reject a child
+    // whose parent isn't also part of this same explicit selection.
+    const directChildViolations = await findDirectChildActionViolations(db, parsed.data.farIds, parsed.data.farIds);
+    if (directChildViolations.length > 0) {
+      reply.code(409);
+      return {
+        error: directChildViolations
+          .map((v) => `"${v.farId}" is a child of "${v.parentFarId}" — transfer the parent instead.`)
+          .join(" ")
+      };
+    }
 
     // Every still-active child of a selected asset moves with it automatically — a
     // parent/child pair (e.g. a machine and an accessory that must always be together)

@@ -64,3 +64,41 @@ export async function validateParentLink(
   const status = errors.some((e) => e.includes("disposed")) ? 409 : 400;
   return { ok: false, status, errors };
 }
+
+export interface ChildActionViolation {
+  farId: string;
+  parentFarId: string;
+}
+
+/**
+ * Rule 1 (2026-08-28): a child asset can't be transferred or disposed directly — the only
+ * way it moves/disposes is via its own parent's action cascading to it (see
+ * disposalWriteOff.ts's `disposeWithChildren` and transfers.ts's own cascade query).
+ * Batched: checks every FAR ID in `farIds` in one query, rather than one row at a time,
+ * so bulk Transfer/Disposal can call this once per file instead of once per row.
+ *
+ * `excludeIfParentAlsoIn` exists only for the single-item Transfer endpoint's batched
+ * multi-select (`POST /api/transfers`), which already treats "a child explicitly selected
+ * alongside its own parent in the same request" as equivalent to the cascade handling it —
+ * confirmed as existing, intentional, shipped behavior (see that route's own
+ * `cascadedFrom` comment), not something this new rule should regress. Every other caller
+ * (single Disposal, bulk Disposal, bulk Transfer) has no such batching concept — a row/
+ * request there always targets exactly one FAR ID with no "was the parent also in this
+ * same request" question to ask, so they call this with no third argument and a child's
+ * presence is rejected unconditionally.
+ */
+export async function findDirectChildActionViolations(
+  db: Pick<pg.Pool | pg.PoolClient, "query">,
+  farIds: string[],
+  excludeIfParentAlsoIn: string[] = []
+): Promise<ChildActionViolation[]> {
+  if (farIds.length === 0) return [];
+  const { rows } = await db.query<{ far_id: string; parent_far_id: string }>(
+    `SELECT far_id, parent_far_id FROM assets WHERE far_id = ANY($1) AND parent_far_id IS NOT NULL`,
+    [farIds]
+  );
+  const excludeSet = new Set(excludeIfParentAlsoIn);
+  return rows
+    .filter((r) => !excludeSet.has(r.parent_far_id))
+    .map((r) => ({ farId: r.far_id, parentFarId: r.parent_far_id }));
+}
