@@ -115,8 +115,9 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
        FROM pg_proc p WHERE p.proname = 'far_depreciation_as_of'`
     );
     expect(after.rows).toHaveLength(1);
-    expect(after.rows[0].nargs).toBe(11);
-    expect(after.rows[0].eol_type).toBe("boolean");
-    expect(after.rows[0].rem_life_type).toBe("numeric");
+    const row = after.rows[0]!;
+    expect(row.nargs).toBe(11);
+    expect(row.eol_type).toBe("boolean");
+    expect(row.rem_life_type).toBe("numeric");
   });
 });

@@ -1,3 +1,17 @@
+-- CALCULATION-CRITICAL — DO NOT MODIFY without explicit sign-off.
+--
+-- This logic is verified against the finance team's Excel reference formulas (FAR FY
+-- 2026-27 workbook) as of 2026-08-28 — taper logic, fractional useful-life support,
+-- step-8 additions-window fix, and the closingAccDep floor. Confirmed via live
+-- comparison at two different AS_AT dates (2026-07-31 and 2026-08-28), matching to the
+-- last decimal. Tagged `calc-engine-verified-2026-08-28`.
+--
+-- Any change here requires: (a) a written formula justification, (b) updated
+-- engine.test.ts + sqlParity.test.ts coverage, (c) a fresh before/after impact
+-- comparison against production data, (d) explicit user approval before merge.
+--
+-- TypeScript port: server/src/calc/engine.ts — kept in lock-step by sqlParity.test.ts.
+
 -- The `far_component_result` type and `far_calc_component` function, split out of
 -- schema.sql into their own file so they can be re-applied on *every* server boot, not
 -- just when bootstrapping a brand-new database. schema.sql's own body only ever runs
