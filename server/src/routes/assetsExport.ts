@@ -536,8 +536,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     // off the shared (pre-totals) `params`, so the two never share param indices.
     const totalsParams = [...params];
     const totalsCalcExtras = buildCalcCteExtras(totalsParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
-    const { rows: totalsRows } = await db.query(
-      `WITH calc_base AS (
+    const totalsSql = `WITH calc_base AS (
          SELECT assets.*,
            ${totalsCalcExtras}
          FROM assets ${whereClause}
@@ -571,9 +570,18 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
          ${SQL_SUM_EXPRESSIONS.assetProfitLoss} AS asset_profit_loss,
          ${SQL_SUM_EXPRESSIONS.c1Nbv} AS c1_nbv,
          ${SQL_SUM_EXPRESSIONS.c2Nbv} AS c2_nbv
-       FROM calc ${computedWhereClause}`,
-      totalsParams
-    );
+       FROM calc ${computedWhereClause}`;
+
+    let totalsRows: Record<string, string | null>[];
+    try {
+      ({ rows: totalsRows } = await db.query(totalsSql, totalsParams));
+    } catch (err) {
+      // Same reasoning as GET /api/assets's identical guard — a bad filter combination
+      // should never leak a raw Postgres error to whoever clicked Export.
+      req.log.error({ err, sql: totalsSql, params: totalsParams }, "Register export totals query failed");
+      reply.code(500);
+      return { error: "Could not export the register with these filters — try removing or adjusting one of them." };
+    }
     const t = totalsRows[0] as Record<string, string | null>;
     const num = (v: string | null | undefined): number => (v === null || v === undefined ? 0 : Number(v));
     const totals: Record<string, number> = {

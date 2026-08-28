@@ -4,14 +4,25 @@ import { z } from "zod";
 // client/src/lib/columns.ts's ALL_COLUMNS gets an entry here. `sql` is a raw SQL
 // expression valid inside assets.ts's `calc` CTE, which exposes every raw `assets`
 // column unchanged (via SELECT assets.*) plus these computed aliases: `c1`/`c2` (the
-// two far_calc_component() composites), `effective_location`, `last_date_of_transaction`,
-// `expiry_date_c1`/`expiry_date_c2`, `total_wdv`, `profit_loss` — see buildCalcCte there.
+// two far_calc_component() composites), `effective_location`,
+// `computed_last_date_of_transaction`, `expiry_date_c1`/`expiry_date_c2`, `total_wdv`,
+// `profit_loss` — see buildCalcCte there.
 //
 // This is filter-only: it decides which rows match, never what's displayed. The
 // response body is still built from mapAssetRow() + computeAsset() exactly as before —
 // two independent (but sqlParity.test.ts-verified-consistent) implementations of the
 // same math, kept that way deliberately so a filtering change here can never alter a
 // displayed figure.
+//
+// A computed alias here must never reuse the exact name of a real `assets` column —
+// `SELECT assets.*` pulls every raw column in unchanged, so a same-named computed alias
+// silently creates two identically-named columns in the CTE's output; Postgres only
+// complains once something references that name ("column reference is ambiguous",
+// 42702), which surfaced as a raw 500 on Register the first time
+// `computed_last_date_of_transaction` (originally misnamed `last_date_of_transaction`,
+// colliding with the real column of that name — see schema.sql) got a WHERE condition.
+// Every alias below has been checked against the real column list; if you add a new one,
+// check it again.
 export type ColumnFilterType = "text" | "number" | "date";
 
 export const REGISTER_COLUMNS: Record<string, ColumnFilterType> = {
@@ -64,7 +75,7 @@ const COLUMN_SQL: Record<string, string> = {
   subClassification: "sub_classification",
   dateAcquired: "date_acquired",
   location: "location",
-  lastDateOfTransaction: "last_date_of_transaction",
+  lastDateOfTransaction: "computed_last_date_of_transaction",
   effectiveLocation: "effective_location",
   serialNo: "serial_no",
   parentFarId: "parent_far_id",
@@ -253,7 +264,7 @@ function buildTyped(
 // SQL fragment appended to assets.ts's `calc` CTE, computing every filter-only column
 // this registry can reference beyond the raw `assets.*` passthrough — the two
 // far_calc_component() composites, plus the handful of derived fields
-// (effective_location/last_date_of_transaction/expiry dates/total_wdv/profit_loss) that
+// (effective_location/computed_last_date_of_transaction/expiry dates/total_wdv/profit_loss) that
 // exist in AssetGrid's column set but never had a SQL form until now. Every asAt/fy
 // param below is pushed fresh (not indexed against the caller's existing params) —
 // simpler than threading shared indices through, and cheap at this row count.
@@ -275,7 +286,18 @@ export function buildCalcCteExtras(params: unknown[], asAt: string, fy: { fyStar
         (SELECT MAX(t.transaction_date) FROM transfers t WHERE t.far_id = assets.far_id AND t.transaction_date <= ${transferAsAt}::date),
         date_acquired
       )
-    ) AS last_date_of_transaction,
+    -- NOT aliased "last_date_of_transaction" — the assets table already has a real,
+    -- actively-maintained column by that exact name (schema.sql, updated by every
+    -- transfer). SELECT assets.* pulls that raw column in unchanged; giving this
+    -- computed value the same name silently produced two identically-named columns in
+    -- the CTE's output, which Postgres only complains about once something actually
+    -- references the name — "column reference is ambiguous" (42702), surfaced as a raw
+    -- 500 the moment this column got its first WHERE-clause condition. The two aren't
+    -- interchangeable, either: the raw column just tracks "latest transfer ever written"
+    -- (never gated to AS_AT), while this GREATEST(...) is the correct, AS_AT-aware value
+    -- that matches computeLastDateOfTransaction() and what Register's own "Last Txn
+    -- Date" column displays — this one is the one filtering should use.
+    ) AS computed_last_date_of_transaction,
     CASE WHEN useful_life_c1_years > 0 THEN
       (date_acquired + (FLOOR(useful_life_c1_years) || ' years')::interval + (ROUND((useful_life_c1_years - FLOOR(useful_life_c1_years)) * 365.25) || ' days')::interval)::date
     ELSE NULL END AS expiry_date_c1,

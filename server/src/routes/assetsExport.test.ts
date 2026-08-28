@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import ExcelJS from "exceljs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import assetsExportRoutes from "./assetsExport.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
@@ -308,6 +308,51 @@ describe("Register Export: GET /api/assets/export", () => {
       expect(farIds.sort()).toEqual(
         Array.from({ length: 5 }, (_, i) => `EXP-COND-BATCH-MATCH-${i}`).sort()
       );
+    });
+
+    it("filters on Last Transaction Date (regression — shares assetColumnFilters.ts's buildCalcCteExtras with GET /api/assets, so the same column-name collision would have broken this route too)", async () => {
+      await insertAsset("EXP-LTD-OLD");
+      await insertAsset("EXP-LTD-NEW");
+      const db = await getPool();
+      await db.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ('EXP-LTD-NEW', '2026-08-01', 'Center-Other')`);
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "lastDateOfTransaction", op: "after", value: "2026-01-01" }])}`
+      });
+      expect(res.statusCode).toBe(200);
+      const worksheet = await readWorkbook(res.rawPayload);
+      expect(worksheet.rowCount).toBe(5);
+      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      expect(dataRow).toContain("EXP-LTD-NEW");
+      expect(dataRow).not.toContain("EXP-LTD-OLD");
+    });
+  });
+
+  describe("an unexpected DB-level query failure is reported gracefully, not as a raw 500", () => {
+    it("the totals query throwing returns a plain-language JSON error, never the raw driver error text", async () => {
+      await insertAsset("EXP-DBFAIL-1");
+      const db = await getPool();
+      const originalQuery = db.query.bind(db);
+      const spy = vi.spyOn(db, "query").mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("SUM(")) {
+          return Promise.reject(
+            Object.assign(new Error('column reference "some_column" is ambiguous'), { code: "42702" })
+          );
+        }
+        return (originalQuery as (...a: unknown[]) => unknown)(...args);
+      });
+
+      try {
+        const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+        expect(res.statusCode).toBe(500);
+        const body = res.json();
+        expect(body.error).not.toMatch(/ambiguous|42702|column reference/i);
+        expect(body.error).toMatch(/could not export the register/i);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
