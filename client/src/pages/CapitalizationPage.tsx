@@ -340,6 +340,7 @@ export function CapitalizationPage() {
                     id="cap-life-c1"
                     type="number"
                     min={0}
+                    step="0.01"
                     className={INPUT_CLASS}
                     value={form.usefulLifeC1Years}
                     onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
@@ -350,6 +351,7 @@ export function CapitalizationPage() {
                     id="cap-life-c2"
                     type="number"
                     min={0}
+                    step="0.01"
                     className={INPUT_CLASS}
                     value={form.usefulLifeC2Years}
                     onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}

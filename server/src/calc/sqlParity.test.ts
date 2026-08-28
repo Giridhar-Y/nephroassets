@@ -372,6 +372,40 @@ const fixtures: Fixture[] = [
       accDepOpening: 0
     },
     fy: { asAt: "2026-11-30", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+  },
+  // Fractional-useful-life regression (2026-08-28) — matches engine.test.ts's (j)/(k).
+  // Relabeled (l)/(m) here (not (k)/(l) as on the fractional-useful-life-fix branch) to
+  // avoid colliding with the step-8/floor fixture's own "taper (k)" name above, merged in
+  // from a different branch.
+  {
+    name: "taper (l): fractional useful life on the taper branch (TEST-101/C2)",
+    input: {
+      dateAcquired: "2024-04-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 2.5,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 0
+    },
+    fy: { asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+  },
+  {
+    name: "taper (m): fractional useful life on the flat-rate branch (eol well past FY end)",
+    input: {
+      dateAcquired: "2020-01-01",
+      openingCost: 100000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 7.75,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 20000
+    },
+    fy: FY
   }
 ];
 

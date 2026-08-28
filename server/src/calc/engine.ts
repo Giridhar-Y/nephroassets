@@ -1,4 +1,4 @@
-import { addDaysToIsoDate, daysHeldInclusive, isAfter, isOnOrBefore, maxIsoDate } from "./dates.js";
+import { daysHeldInclusive, isAfter, isOnOrBefore, maxIsoDate } from "./dates.js";
 import type {
   AssetCalculationResult,
   AssetInput,
@@ -148,11 +148,20 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // in this commit, so its output changes too wherever an addition and a disposal
   // coincide — that's expected here, and gets superseded in the very next commit, which
   // reverts step 8 to a flat-rate form that no longer calls this function at all.
-  const eol = hasUsefulLife
-    ? addDaysToIsoDate(input.dateAcquired, Math.round(usefulLife * daysInFy))
-    : input.dateAcquired;
-  const remLife = daysHeldInclusive(fyStart, eol);
-  const eolWithinFy = isOnOrBefore(eol, fyEnd);
+  // eol/remLife are kept as fractional day-counts *from dateAcquired*, never converted
+  // to an IsoDate — a fractional useful life (e.g. 2.5 years) needs a fractional eol
+  // (e.g. "day 912.5 of ownership"), which a whole-day calendar date can't represent. A
+  // prior version rounded usefulLife*daysInFy to the nearest whole day before computing
+  // eol, which silently mis-tapered any non-whole useful life (confirmed against a real
+  // Excel row: 2.5yr useful life computed remLife=184 instead of the correct 183.5,
+  // producing a periodDepreciation off by ~₹180). daysAcquiredToFyStart/FyEnd stay plain
+  // integers (real calendar dates on both sides), so only usefulLife*daysInFy itself
+  // needs to carry the fraction.
+  const daysAcquiredToFyStart = daysHeldInclusive(input.dateAcquired, fyStart) - 1;
+  const daysAcquiredToFyEnd = daysHeldInclusive(input.dateAcquired, fyEnd) - 1;
+  const eolDaysFromAcquired = hasUsefulLife ? usefulLife * daysInFy : 0;
+  const remLife = eolDaysFromAcquired - daysAcquiredToFyStart + 1;
+  const eolWithinFy = eolDaysFromAcquired <= daysAcquiredToFyEnd;
 
   // taperNbv is computed HERE (per viewEnd), not once at the top — it gates `additions`
   // by whether dateOfAddition has actually happened by viewEnd, same as the additions-
@@ -181,8 +190,11 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
       // up to viewEnd, reaching exactly zero NBV at end-of-life instead of stopping
       // short (flat-rate) or overshooting (previously only the generic cap prevented
       // that).
-      const cappedEffAt = isAfter(effAt, eol) ? eol : effAt;
-      const daysUsedAt = Math.max(0, daysHeldInclusive(fyStart, cappedEffAt));
+      // Equivalent to daysHeldInclusive(fyStart, MIN(effAt, eol)) without ever needing a
+      // fractional eol as a real date: remLife already equals (eol - fyStart + 1), so
+      // capping the inclusive day count at remLife is the same comparison in day-count
+      // space, and effAt itself is always a whole calendar date.
+      const daysUsedAt = Math.max(0, Math.min(daysHeldInclusive(fyStart, effAt), remLife));
       return remLife <= 0 ? taperNbvAt : (taperNbvAt * daysUsedAt) / remLife;
     }
     // Flat-rate SLM, no addition this period and useful life not yet expired this FY.

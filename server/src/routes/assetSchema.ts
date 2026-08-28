@@ -78,6 +78,11 @@ const assetCreateShape = z.object({
   status: z.string().min(1),
   dateAcquired: isoDate,
   location: z.string().min(1),
+  // Deliberately no .int() — a fractional useful life (e.g. a 2.5-year license or lease
+  // term) is a real, supported case; the calc engine's end-of-life taper handles
+  // fractional years correctly (see engine.ts's eol/remLife comment). 0 is also
+  // deliberately allowed: it means "not depreciated" (hasUsefulLife gate in engine.ts),
+  // a real case for e.g. land.
   usefulLifeC1Years: z.coerce.number().min(0),
   usefulLifeC2Years: z.coerce.number().min(0),
   c1OpeningCost: z.coerce.number().min(0).default(0),
