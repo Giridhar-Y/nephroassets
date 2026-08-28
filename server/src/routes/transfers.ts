@@ -1,9 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import type { SettingsRow } from "../db/mappers.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
+import { buildTransferConditionSql, transferConditionsQuerySchema } from "./transferColumnFilters.js";
 
 const createTransferSchema = z.object({
   farIds: z.array(z.string().min(1)).min(1),
@@ -24,7 +26,10 @@ const historyQuerySchema = z.object({
   transactionDateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   transactionDateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   cursor: z.coerce.number().int().optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(100)
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  // Excel-style per-column custom filter conditions — same mechanism as Register (see
+  // transferColumnFilters.ts). AND'd with every filter above, and with each other.
+  conditions: transferConditionsQuerySchema
 });
 
 export default async function transfersRoutes(app: FastifyInstance) {
@@ -152,6 +157,18 @@ export default async function transfersRoutes(app: FastifyInstance) {
       parsed.data;
     const db = await getPool();
 
+    // Only needed for the Transfer Date column's "this financial year"/"last financial
+    // year" relative-bucket operators (see buildTransferConditionSql below) — mirrors
+    // the same settings lookup GET /api/assets already does. Falls back to a span no
+    // real transfer date could ever exceed rather than 409ing the whole log if settings
+    // genuinely aren't configured yet, since thisFY/lastFY are just two of eleven date
+    // operators here, not the point of the request the way AS_AT is for Register.
+    let fy = { fyStart: "0001-01-01", fyEnd: "9999-12-31" };
+    if (parsed.data.conditions.some((c) => c.op === "thisFY" || c.op === "lastFY")) {
+      const { rows: settingsRows } = await db.query<SettingsRow>(`SELECT fy_start, fy_end FROM settings WHERE id = TRUE`);
+      if (settingsRows[0]) fy = { fyStart: settingsRows[0].fy_start, fyEnd: settingsRows[0].fy_end };
+    }
+
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (search) {
@@ -179,36 +196,68 @@ export default async function transfersRoutes(app: FastifyInstance) {
       conditions.push(`t.id < $${params.length}`);
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit);
 
-    const { rows } = await db.query<{
+    // Excel-style column-header conditions — same handling as GET /api/assets: resolved
+    // against the `log` CTE below (an explicit column list, not a `t.*`/`a.*` wildcard,
+    // so there's no risk of a computed alias silently colliding with a raw column the
+    // way Register's Last Transaction Date once did), applied in the outer query after
+    // the CTE exists.
+    const computedConditions: string[] = [];
+    for (const cond of parsed.data.conditions) {
+      const built = buildTransferConditionSql(cond, params, fy);
+      if ("error" in built) {
+        reply.code(400);
+        return { error: built.error };
+      }
+      computedConditions.push(built.sql);
+    }
+    const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+
+    params.push(limit);
+    const limitParamIndex = params.length;
+
+    let rows: {
       id: string | number;
       far_id: string;
       asset_description: string;
       transaction_date: string;
       location: string;
       from_location: string;
-    }>(
-      // from_location is a correlated subquery (not a window function) deliberately —
-      // it must find the true immediately-prior transfer for this far_id regardless of
-      // whatever filters are narrowing the outer result set (e.g. filtering to "Moved To:
-      // Center-B" would make a window function's LAG skip right over an excluded
-      // in-between transfer and report the wrong prior location). Falls back to the
-      // asset's own capitalized location when there is no prior transfer.
-      `SELECT t.id, t.far_id, a.asset_description, t.transaction_date, t.location,
-         COALESCE(
-           (SELECT t2.location FROM transfers t2
-            WHERE t2.far_id = t.far_id AND (t2.transaction_date, t2.id) < (t.transaction_date, t.id)
-            ORDER BY t2.transaction_date DESC, t2.id DESC LIMIT 1),
-           a.location
-         ) AS from_location
-       FROM transfers t
-       JOIN assets a ON a.far_id = t.far_id
-       ${whereClause}
-       ORDER BY t.id DESC
-       LIMIT $${params.length}`,
-      params
-    );
+    }[];
+    const sql = `
+      WITH log AS (
+        -- from_location is a correlated subquery (not a window function) deliberately —
+        -- it must find the true immediately-prior transfer for this far_id regardless of
+        -- whatever filters are narrowing the outer result set (e.g. filtering to "Moved
+        -- To: Center-B" would make a window function's LAG skip right over an excluded
+        -- in-between transfer and report the wrong prior location). Falls back to the
+        -- asset's own capitalized location when there is no prior transfer.
+        SELECT t.id, t.far_id, a.asset_description, t.transaction_date, t.location,
+          COALESCE(
+            (SELECT t2.location FROM transfers t2
+             WHERE t2.far_id = t.far_id AND (t2.transaction_date, t2.id) < (t.transaction_date, t.id)
+             ORDER BY t2.transaction_date DESC, t2.id DESC LIMIT 1),
+            a.location
+          ) AS from_location
+        FROM transfers t
+        JOIN assets a ON a.far_id = t.far_id
+        ${whereClause}
+      )
+      SELECT * FROM log
+      ${computedWhereClause}
+      ORDER BY id DESC
+      LIMIT $${limitParamIndex}
+    `;
+    try {
+      ({ rows } = await db.query(sql, params));
+    } catch (err) {
+      // A malformed or unsupported filter combination should never surface as a bare
+      // 500 with a raw Postgres error message — see the identical guard on
+      // GET /api/assets (assets.ts) for the incident this pattern is copied from.
+      req.log.error({ err, sql, params }, "GET /api/transfers query failed");
+      reply.code(500);
+      return { error: "Could not load the transfer log with these filters — try removing or adjusting one of them." };
+    }
 
     const items = rows.map((r) => ({
       id: Number(r.id),

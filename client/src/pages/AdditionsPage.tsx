@@ -7,12 +7,27 @@ import { AdditionModal } from "../components/AdditionModal.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
+import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
+import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
 
 type Tab = "new" | "log";
 
 const LOG_COLUMN_IDS = ["farId", "assetDescription", "subClassification", "additionsC1", "additionsC2", "dateOfAddition", "effectiveLocation"];
 const RAW_LOG_COLUMNS = LOG_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
+
+// Excel-style custom-condition filters for every log column (see conditionHeaderFilters.tsx) —
+// labels match assetColumnFilters.ts's COLUMN_LABELS server-side so the filter popover and
+// the export note (where applicable) read with the same names.
+const LOG_CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterType }> = [
+  { id: "farId", label: "FAR ID", type: "text" },
+  { id: "assetDescription", label: "Asset Description", type: "text" },
+  { id: "subClassification", label: "Sub Classification", type: "text" },
+  { id: "additionsC1", label: "C1 Additions", type: "number" },
+  { id: "additionsC2", label: "C2 Additions", type: "number" },
+  { id: "dateOfAddition", label: "Addition Date", type: "date" },
+  { id: "effectiveLocation", label: "Current Location", type: "text" }
+];
 
 function NewAdditionTab({ onDone }: { onDone: () => void }) {
   const { settings } = useSettings();
@@ -87,9 +102,12 @@ function NewAdditionTab({ onDone }: { onDone: () => void }) {
 
 function AdditionLogTab() {
   const { settings } = useSettings();
-  const filters = useMemo(() => ({ hasAddition: true }), []);
+  const [conditions, setConditions] = useState<ColumnCondition[]>([]);
+  const filters = useMemo(() => ({ hasAddition: true, conditions }), [conditions]);
+  const setCondition = makeSetCondition(conditions, setConditions);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
   const COLUMNS = resolveColumns(RAW_LOG_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
+  const headerFilters = buildConditionHeaderFilters(LOG_CONDITION_COLUMNS, conditions, setCondition);
 
   return (
     <AssetGrid
@@ -103,6 +121,7 @@ function AdditionLogTab() {
       emptyTitle="No additions recorded yet."
       emptyHint="Record an addition from the New Addition tab, or via Capitalization's own Mid-Year Additions section."
       getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+      headerFilters={headerFilters}
     />
   );
 }

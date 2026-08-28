@@ -9,6 +9,8 @@ import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { formatCurrency } from "../lib/format.js";
 import { useAuth } from "../lib/AuthContext.js";
 import type { AssetListItem } from "../lib/types.js";
+import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
+import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, UploadIcon } from "../lib/icons.js";
 
 type Tab = "new" | "log";
@@ -33,6 +35,18 @@ const RAW_COLUMNS = DISPOSAL_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id
   // it's frozen as of the disposal, so it reads more clearly as "Location at Disposal"
   // here specifically.
   .map((c) => (c.id === "effectiveLocation" ? { ...c, label: "Location at Disposal", tooltip: "Location at the time of disposal" } : c));
+
+// Excel-style custom-condition filters for every log column (see conditionHeaderFilters.tsx).
+const LOG_CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterType }> = [
+  { id: "farId", label: "FAR ID", type: "text" },
+  { id: "assetDescription", label: "Asset Description", type: "text" },
+  { id: "subClassification", label: "Sub Classification", type: "text" },
+  { id: "effectiveLocation", label: "Location at Disposal", type: "text" },
+  { id: "dateOfDisposal", label: "Disposal Date", type: "date" },
+  { id: "saleValue", label: "Sale Value", type: "number" },
+  { id: "totalWdv", label: "Total WDV", type: "number" },
+  { id: "profitLoss", label: "Profit/(Loss) on Disposal", type: "number" }
+];
 
 function NewDisposalTab({ onDone }: { onDone: () => void }) {
   const { settings } = useSettings();
@@ -94,9 +108,12 @@ function NewDisposalTab({ onDone }: { onDone: () => void }) {
 // WDV for the combined Total WDV.
 function DisposalLogTab() {
   const { settings } = useSettings();
-  const filters = useMemo(() => ({ status: ["Disposed"] }), []);
+  const [conditions, setConditions] = useState<ColumnCondition[]>([]);
+  const filters = useMemo(() => ({ status: ["Disposed"], conditions }), [conditions]);
+  const setCondition = makeSetCondition(conditions, setConditions);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
   const COLUMNS = resolveColumns(RAW_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
+  const headerFilters = buildConditionHeaderFilters(LOG_CONDITION_COLUMNS, conditions, setCondition);
 
   return (
     <AssetGrid
@@ -109,6 +126,7 @@ function DisposalLogTab() {
       onRetry={reload}
       emptyTitle="No disposed assets yet."
       emptyHint="Dispose an asset from the New Disposal tab, or from the Register (select rows, then Dispose Selected)."
+      headerFilters={headerFilters}
     />
   );
 }

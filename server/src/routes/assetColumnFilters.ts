@@ -1,4 +1,10 @@
-import { z } from "zod";
+import {
+  makeConditionBuilder,
+  makeConditionsQuerySchema,
+  pushParam,
+  type ColumnFilterType as CoreColumnFilterType,
+  type RawCondition as CoreRawCondition
+} from "./columnFilterCore.js";
 
 // Excel-style per-column custom filter conditions for Register — every column in
 // client/src/lib/columns.ts's ALL_COLUMNS gets an entry here. `sql` is a raw SQL
@@ -23,7 +29,12 @@ import { z } from "zod";
 // colliding with the real column of that name — see schema.sql) got a WHERE condition.
 // Every alias below has been checked against the real column list; if you add a new one,
 // check it again.
-export type ColumnFilterType = "text" | "number" | "date";
+//
+// The operator SQL-generation logic itself (text/number/date, blank/notBlank, the date
+// relative buckets) lives in columnFilterCore.ts, shared with transferColumnFilters.ts —
+// this file only supplies the Register-specific registry/SQL-map/labels.
+export type ColumnFilterType = CoreColumnFilterType;
+export type RawCondition = CoreRawCondition;
 
 export const REGISTER_COLUMNS: Record<string, ColumnFilterType> = {
   farId: "text",
@@ -115,151 +126,14 @@ const COLUMN_SQL: Record<string, string> = {
   c2Nbv: "(c2).nbv"
 };
 
-const rawConditionSchema = z.object({
-  columnId: z.string(),
-  op: z.string(),
-  value: z.union([z.string(), z.number()]).optional(),
-  valueTo: z.union([z.string(), z.number()]).optional()
-});
-export type RawCondition = z.infer<typeof rawConditionSchema>;
+// A JSON-encoded array in one query param (`conditions=<json>`) — see
+// columnFilterCore.ts's makeConditionsQuerySchema. Capped at the column count.
+export const conditionsQuerySchema = makeConditionsQuerySchema(Object.keys(REGISTER_COLUMNS).length);
 
-// A JSON-encoded array in one query param (`conditions=<json>`), same idea as the
-// existing comma-joined multi-value params but for structured objects a flat string
-// can't represent. Capped at the column count — there's never a legitimate reason to
-// send more than one condition per column.
-export const conditionsQuerySchema = z
-  .string()
-  .optional()
-  .transform((raw, ctx) => {
-    if (!raw) return [] as RawCondition[];
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "conditions must be valid JSON." });
-      return z.NEVER;
-    }
-    const result = z.array(rawConditionSchema).max(Object.keys(REGISTER_COLUMNS).length).safeParse(parsed);
-    if (!result.success) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "conditions must be an array of {columnId, op, value?, valueTo?}." });
-      return z.NEVER;
-    }
-    return result.data;
-  });
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function pushParam(params: unknown[], value: unknown): string {
-  params.push(value);
-  return `$${params.length}`;
-}
-
-/** Builds one SQL boolean expression for a single condition, pushing any bind values
- *  onto `params` (which already has earlier params on it — indices continue from
- *  wherever the caller's params array currently stands). Returns an error message
- *  instead of throwing so the route can turn it into a 400 with normal control flow. */
-export function buildConditionSql(
-  cond: RawCondition,
-  params: unknown[],
-  fy: { fyStart: string; fyEnd: string }
-): { sql: string } | { error: string } {
-  const type = REGISTER_COLUMNS[cond.columnId];
-  if (!type) return { error: `Unknown filter column "${cond.columnId}".` };
-  const sql = COLUMN_SQL[cond.columnId]!;
-  return buildTyped(type, sql, cond, params, fy);
-}
-
-function buildTyped(
-  type: ColumnFilterType,
-  sql: string,
-  cond: RawCondition,
-  params: unknown[],
-  fy: { fyStart: string; fyEnd: string }
-): { sql: string } | { error: string } {
-  if (cond.op === "blank") return { sql: type === "text" ? `(${sql} IS NULL OR ${sql} = '')` : `${sql} IS NULL` };
-  if (cond.op === "notBlank") return { sql: type === "text" ? `(${sql} IS NOT NULL AND ${sql} <> '')` : `${sql} IS NOT NULL` };
-
-  if (type === "text") {
-    const v = String(cond.value ?? "");
-    switch (cond.op) {
-      case "equals":
-        return { sql: `${sql} = ${pushParam(params, v)}` };
-      case "notEquals":
-        return { sql: `${sql} IS DISTINCT FROM ${pushParam(params, v)}` };
-      case "contains":
-        return { sql: `${sql} ILIKE ${pushParam(params, `%${v}%`)}` };
-      case "notContains":
-        return { sql: `COALESCE(${sql}, '') NOT ILIKE ${pushParam(params, `%${v}%`)}` };
-      case "beginsWith":
-        return { sql: `${sql} ILIKE ${pushParam(params, `${v}%`)}` };
-      case "endsWith":
-        return { sql: `${sql} ILIKE ${pushParam(params, `%${v}`)}` };
-      default:
-        return { error: `Unsupported text filter operator "${cond.op}" for column "${cond.columnId}".` };
-    }
-  }
-
-  if (type === "number") {
-    const n = Number(cond.value);
-    if (!Number.isFinite(n)) return { error: `Invalid numeric value for column "${cond.columnId}".` };
-    switch (cond.op) {
-      case "equals":
-        return { sql: `${sql} = ${pushParam(params, n)}` };
-      case "notEquals":
-        return { sql: `${sql} IS DISTINCT FROM ${pushParam(params, n)}` };
-      case "gt":
-        return { sql: `${sql} > ${pushParam(params, n)}` };
-      case "gte":
-        return { sql: `${sql} >= ${pushParam(params, n)}` };
-      case "lt":
-        return { sql: `${sql} < ${pushParam(params, n)}` };
-      case "lte":
-        return { sql: `${sql} <= ${pushParam(params, n)}` };
-      case "between": {
-        const n2 = Number(cond.valueTo);
-        if (!Number.isFinite(n2)) return { error: `Invalid "to" value for column "${cond.columnId}".` };
-        return { sql: `${sql} BETWEEN ${pushParam(params, n)} AND ${pushParam(params, n2)}` };
-      }
-      default:
-        return { error: `Unsupported number filter operator "${cond.op}" for column "${cond.columnId}".` };
-    }
-  }
-
-  // date
-  switch (cond.op) {
-    case "today":
-      return { sql: `${sql} = CURRENT_DATE` };
-    case "thisWeek":
-      return { sql: `${sql} BETWEEN date_trunc('week', CURRENT_DATE)::date AND (date_trunc('week', CURRENT_DATE) + INTERVAL '6 days')::date` };
-    case "thisMonth":
-      return { sql: `${sql} BETWEEN date_trunc('month', CURRENT_DATE)::date AND (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month' - INTERVAL '1 day')::date` };
-    case "thisFY":
-      return { sql: `${sql} BETWEEN ${pushParam(params, fy.fyStart)}::date AND ${pushParam(params, fy.fyEnd)}::date` };
-    case "lastFY":
-      // FY-anchored one year back, e.g. FY 2026-27 -> FY 2025-26 — matches this app's
-      // fixed one-year FY convention (fyStart/fyEnd are always a year apart).
-      return {
-        sql: `${sql} BETWEEN (${pushParam(params, fy.fyStart)}::date - INTERVAL '1 year')::date AND (${pushParam(params, fy.fyEnd)}::date - INTERVAL '1 year')::date`
-      };
-  }
-  const dateStr = z.string().regex(DATE_RE).safeParse(cond.value);
-  if (!dateStr.success) return { error: `Invalid date value for column "${cond.columnId}".` };
-  switch (cond.op) {
-    case "equals":
-      return { sql: `${sql} = ${pushParam(params, dateStr.data)}::date` };
-    case "before":
-      return { sql: `${sql} < ${pushParam(params, dateStr.data)}::date` };
-    case "after":
-      return { sql: `${sql} > ${pushParam(params, dateStr.data)}::date` };
-    case "between": {
-      const toStr = z.string().regex(DATE_RE).safeParse(cond.valueTo);
-      if (!toStr.success) return { error: `Invalid "to" date for column "${cond.columnId}".` };
-      return { sql: `${sql} BETWEEN ${pushParam(params, dateStr.data)}::date AND ${pushParam(params, toStr.data)}::date` };
-    }
-    default:
-      return { error: `Unsupported date filter operator "${cond.op}" for column "${cond.columnId}".` };
-  }
-}
+/** Builds one SQL boolean expression for a single Register condition — see
+ *  columnFilterCore.ts's makeConditionBuilder/buildConditionSqlCore for the actual
+ *  operator SQL generation, shared with transferColumnFilters.ts. */
+export const buildConditionSql = makeConditionBuilder(REGISTER_COLUMNS, COLUMN_SQL);
 
 // SQL fragment appended to assets.ts's `calc` CTE, computing every filter-only column
 // this registry can reference beyond the raw `assets.*` passthrough — the two

@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchCenters, fetchTransferHistory, type TransferHistoryFilters, type TransferHistoryItem } from "../api/client.js";
 import { formatDate } from "../lib/format.js";
-import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
+import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import type { AssetListItem } from "../lib/types.js";
+import type { ColumnCondition } from "../lib/columnFilters.js";
+import { makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
 
 const PAGE_SIZE = 100;
@@ -91,6 +93,9 @@ function TransferLogTab() {
     });
   };
 
+  const conditions = filters.conditions ?? [];
+  const setCondition = makeSetCondition(conditions, (next: ColumnCondition[]) => setFilter("conditions", next));
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -157,13 +162,14 @@ function TransferLogTab() {
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
                 <div className="flex items-center justify-between gap-1">
                   <span>FAR ID</span>
-                  <ColumnFilterPopover label="FAR ID" active={!!filters.search}>
+                  <ColumnFilterPopover label="FAR ID" active={!!conditions.find((c) => c.columnId === "farId")}>
                     {() => (
-                      <TextFilterPanel
+                      <ConditionFilterPanel
                         label="FAR ID"
-                        placeholder="e.g. FAR-000123"
-                        value={filters.search ?? ""}
-                        onChange={(v) => setFilter("search", v)}
+                        columnId="farId"
+                        type="text"
+                        condition={conditions.find((c) => c.columnId === "farId")}
+                        onChange={(next) => setCondition("farId", next)}
                       />
                     )}
                   </ColumnFilterPopover>
@@ -172,13 +178,14 @@ function TransferLogTab() {
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
                 <div className="flex items-center justify-between gap-1">
                   <span>Description</span>
-                  <ColumnFilterPopover label="Description" active={!!filters.descriptionSearch}>
+                  <ColumnFilterPopover label="Description" active={!!conditions.find((c) => c.columnId === "assetDescription")}>
                     {() => (
-                      <TextFilterPanel
+                      <ConditionFilterPanel
                         label="Description"
-                        placeholder="Search description…"
-                        value={filters.descriptionSearch ?? ""}
-                        onChange={(v) => setFilter("descriptionSearch", v)}
+                        columnId="assetDescription"
+                        type="text"
+                        condition={conditions.find((c) => c.columnId === "assetDescription")}
+                        onChange={(next) => setCondition("assetDescription", next)}
                       />
                     )}
                   </ColumnFilterPopover>
@@ -187,36 +194,52 @@ function TransferLogTab() {
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
                 <div className="flex items-center justify-between gap-1">
                   <span>Transfer Date</span>
-                  <ColumnFilterPopover
-                    label="Transfer Date"
-                    active={!!(filters.transactionDateFrom || filters.transactionDateTo)}
-                  >
+                  <ColumnFilterPopover label="Transfer Date" active={!!conditions.find((c) => c.columnId === "transactionDate")}>
                     {() => (
-                      <DateRangeFilterPanel
-                        fromLabel="From"
-                        toLabel="To"
-                        from={filters.transactionDateFrom ?? ""}
-                        to={filters.transactionDateTo ?? ""}
-                        onChangeFrom={(v) => setFilter("transactionDateFrom", v)}
-                        onChangeTo={(v) => setFilter("transactionDateTo", v)}
+                      <ConditionFilterPanel
+                        label="Transfer Date"
+                        columnId="transactionDate"
+                        type="date"
+                        condition={conditions.find((c) => c.columnId === "transactionDate")}
+                        onChange={(next) => setCondition("transactionDate", next)}
                       />
                     )}
                   </ColumnFilterPopover>
                 </div>
               </th>
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
-                From Location
+                <div className="flex items-center justify-between gap-1">
+                  <span>From Location</span>
+                  <ColumnFilterPopover label="From Location" active={!!conditions.find((c) => c.columnId === "fromLocation")}>
+                    {() => (
+                      <ConditionFilterPanel
+                        label="From Location"
+                        columnId="fromLocation"
+                        type="text"
+                        condition={conditions.find((c) => c.columnId === "fromLocation")}
+                        onChange={(next) => setCondition("fromLocation", next)}
+                      />
+                    )}
+                  </ColumnFilterPopover>
+                </div>
               </th>
               <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">
                 <div className="flex items-center justify-between gap-1">
                   <span>To Location</span>
-                  <ColumnFilterPopover label="To Location" active={(filters.location?.length ?? 0) > 0}>
+                  <ColumnFilterPopover
+                    label="To Location"
+                    active={(filters.location?.length ?? 0) > 0 || !!conditions.find((c) => c.columnId === "toLocation")}
+                  >
                     {() => (
-                      <SelectFilterPanel
+                      <DualModeFilterPanel
                         label="Center"
+                        columnId="toLocation"
+                        type="text"
                         options={centers}
-                        value={filters.location ?? []}
-                        onChange={(v) => setFilter("location", v)}
+                        selectValue={filters.location ?? []}
+                        onSelectChange={(v) => setFilter("location", v)}
+                        condition={conditions.find((c) => c.columnId === "toLocation")}
+                        onConditionChange={(next) => setCondition("toLocation", next)}
                       />
                     )}
                   </ColumnFilterPopover>
