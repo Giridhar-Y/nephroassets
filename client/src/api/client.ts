@@ -201,18 +201,16 @@ export function createTransfer(payload: {
 }
 
 // Register's "Export to Excel": builds the download URL for the current filters (no
-// filters applied exports the entire register). Not a fetch — the browser downloads it
-// directly via the Content-Disposition header, same as any other file download link.
-//
-// `conditions` (the Excel-style column-header custom filters) is deliberately skipped —
-// the export route doesn't parse it yet (it has its own separate query builder, unlike
-// the on-screen list's), so sending it would silently do nothing. Flagged as a known
-// gap rather than wired through half-working.
+// filters applied exports the entire register, with a note saying so). Not a fetch —
+// the browser downloads it directly via the Content-Disposition header, same as any
+// other file download link. `conditions` (the Excel-style column-header custom filters)
+// is included via the same array-of-objects JSON serialization fetchAssets uses — the
+// export route now parses and applies it exactly like GET /api/assets does.
 export function getExportUrl(params: { asAt: string } & AssetFilters): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (key !== "conditions" && value !== undefined && value !== null && value !== "") {
-      search.set(key, String(value));
+    if (value !== undefined && value !== null && value !== "") {
+      setFilterParam(search, key, value);
     }
   }
   return `/api/assets/export?${search.toString()}`;
