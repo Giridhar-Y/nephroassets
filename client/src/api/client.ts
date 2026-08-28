@@ -315,6 +315,8 @@ export interface TransferHistoryFilters {
   location?: string[];
   transactionDateFrom?: string;
   transactionDateTo?: string;
+  /** Excel-style column-header custom filters — see columnFilters.ts. */
+  conditions?: import("../lib/columnFilters.js").ColumnCondition[];
 }
 
 export function fetchTransferHistory(
@@ -323,7 +325,7 @@ export function fetchTransferHistory(
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== "") {
-      search.set(key, String(value));
+      setFilterParam(search, key, value);
     }
   }
   return request(`/api/transfers?${search.toString()}`);

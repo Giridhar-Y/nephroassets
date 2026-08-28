@@ -4,12 +4,13 @@ import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications } fro
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
-import { ColumnFilterPopover, TextFilterPanel } from "../components/ColumnFilterPopover.js";
 import { useToast } from "../components/Toast.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { useAuth } from "../lib/AuthContext.js";
 import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
+import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
+import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AddCircleIcon, ErrorIcon, UploadIcon } from "../lib/icons.js";
 
 type Tab = "add" | "log";
@@ -25,6 +26,18 @@ const LOG_COLUMN_IDS = [
   "status"
 ];
 const RAW_LOG_COLUMNS = LOG_COLUMN_IDS.map((id) => ALL_COLUMNS.find((c) => c.id === id)).filter((c) => !!c);
+
+// Excel-style custom-condition filters for every log column (see conditionHeaderFilters.tsx).
+const LOG_CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterType }> = [
+  { id: "farId", label: "FAR ID", type: "text" },
+  { id: "assetDescription", label: "Asset Description", type: "text" },
+  { id: "subClassification", label: "Sub Classification", type: "text" },
+  { id: "dateAcquired", label: "Date Acquired", type: "date" },
+  { id: "location", label: "Capitalized Location", type: "text" },
+  { id: "c1OpeningCost", label: "C1 Opening Gross Block", type: "number" },
+  { id: "c2OpeningCost", label: "C2 Opening Gross Block", type: "number" },
+  { id: "status", label: "Status", type: "text" }
+];
 
 function blankForm(defaultDate: string): AssetCreateInput {
   return {
@@ -87,7 +100,9 @@ export function CapitalizationPage() {
   // Kept fetching regardless of the active tab (like Disposals' own log) so the data is
   // already fresh — no loading flicker — the moment the user switches to the Log tab or
   // clicks "View in Log" in the success toast below.
-  const [logFilters, setLogFilters] = useState<AssetFilters>({});
+  const [logConditions, setLogConditions] = useState<ColumnCondition[]>([]);
+  const logFilters: AssetFilters = useMemo(() => ({ conditions: logConditions }), [logConditions]);
+  const setLogCondition = makeSetCondition(logConditions, setLogConditions);
   const logSort = useMemo(() => ({ sortBy: "dateAcquired" as const, sortDir: "desc" as const }), []);
   const LOG_COLUMNS = resolveColumns(RAW_LOG_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const {
@@ -111,42 +126,11 @@ export function CapitalizationPage() {
     setForm((prev) => ({ ...prev, ...patch }));
   };
 
-  const setLogFilter = <K extends keyof AssetFilters>(key: K, value: AssetFilters[K]) => {
-    setLogFilters((prev) => {
-      const next = { ...prev };
-      const isEmpty = !value || (Array.isArray(value) && value.length === 0);
-      if (!isEmpty) next[key] = value;
-      else delete next[key];
-      return next;
-    });
-  };
-
-  const logHeaderFilters: Partial<Record<string, ReactNode>> = {
-    farId: (
-      <ColumnFilterPopover label="FAR ID" active={!!logFilters.search}>
-        {() => (
-          <TextFilterPanel
-            label="FAR ID"
-            placeholder="e.g. FAR-000123"
-            value={logFilters.search ?? ""}
-            onChange={(v) => setLogFilter("search", v)}
-          />
-        )}
-      </ColumnFilterPopover>
-    ),
-    assetDescription: (
-      <ColumnFilterPopover label="Asset Description" active={!!logFilters.descriptionSearch}>
-        {() => (
-          <TextFilterPanel
-            label="Asset Description"
-            placeholder="Search description…"
-            value={logFilters.descriptionSearch ?? ""}
-            onChange={(v) => setLogFilter("descriptionSearch", v)}
-          />
-        )}
-      </ColumnFilterPopover>
-    )
-  };
+  const logHeaderFilters: Partial<Record<string, ReactNode>> = buildConditionHeaderFilters(
+    LOG_CONDITION_COLUMNS,
+    logConditions,
+    setLogCondition
+  );
 
   function validate(): string | null {
     if (!form.farId.trim()) return "FAR ID is required.";
@@ -187,7 +171,7 @@ export function CapitalizationPage() {
     }
   }
 
-  const logFilterCount = Object.keys(logFilters).length;
+  const logFilterCount = logConditions.length;
 
   return (
     <div className="flex h-full flex-col bg-white">
@@ -498,7 +482,7 @@ export function CapitalizationPage() {
               <button
                 type="button"
                 className="text-xs font-medium text-accent hover:underline"
-                onClick={() => setLogFilters({})}
+                onClick={() => setLogConditions([])}
               >
                 Clear all filters
               </button>
