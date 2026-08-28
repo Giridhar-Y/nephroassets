@@ -53,6 +53,8 @@ const editAssetSchema = z.object({
   subClassification: z.string().min(1),
   assetDescription: z.string().min(1),
   serialNo: z.string().optional().default(""),
+  // No .int() — fractional useful life is a real, supported case; see assetSchema.ts's
+  // identical field for why.
   usefulLifeC1Years: z.coerce.number().min(0),
   usefulLifeC2Years: z.coerce.number().min(0),
   accDepC1Opening: z.coerce.number().min(0),

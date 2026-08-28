@@ -241,6 +241,7 @@ export function EditAssetModal({
                   id="edit-life-c1"
                   type="number"
                   min={0}
+                  step="0.01"
                   className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                   value={form.usefulLifeC1Years}
                   onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
@@ -254,6 +255,7 @@ export function EditAssetModal({
                   id="edit-life-c2"
                   type="number"
                   min={0}
+                  step="0.01"
                   className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                   value={form.usefulLifeC2Years}
                   onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
