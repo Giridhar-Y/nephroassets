@@ -78,4 +78,45 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     );
     expect(Number(result.rows[0].gross_block)).toBe(100000);
   });
+
+  // Same class of regression, for far_depreciation_as_of's signature change (the
+  // fractional-useful-life fix, 2026-08-28): p_eol date -> p_eol_within_fy boolean,
+  // p_rem_life integer -> numeric. CREATE OR REPLACE cannot change an existing
+  // function's argument types — proves the explicit DROP FUNCTION IF EXISTS for the old
+  // 11-arg signature (see calcFunction.sql's header comment above it) actually does its
+  // job on a database that already booted with that old signature, not just that the
+  // DROP line is textually present.
+  it("removes a legacy far_depreciation_as_of(date,...,integer,...) overload and leaves one working (boolean,...,numeric,...) function", async () => {
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION far_depreciation_as_of(
+        p_view_end date, p_fy_start date, p_fy_end date, p_eol date, p_rem_life integer,
+        p_opening_cost numeric, p_additions numeric, p_date_of_addition date,
+        p_acc_dep_opening numeric, p_dep_on_opening_at numeric, p_dep_on_additions_at numeric
+      ) RETURNS numeric
+      LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+      BEGIN
+        RETURN NULL;
+      END;
+      $$;
+    `);
+
+    const before = await pool.query<{ nargs: number }>(
+      `SELECT pronargs AS nargs FROM pg_proc WHERE proname = 'far_depreciation_as_of' ORDER BY pronargs`
+    );
+    expect(before.rows).toHaveLength(2);
+
+    const calcSql = readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8");
+    await pool.query(calcSql);
+
+    const after = await pool.query<{ nargs: number; eol_type: string; rem_life_type: string }>(
+      `SELECT p.pronargs AS nargs,
+              format_type(p.proargtypes[3], NULL) AS eol_type,
+              format_type(p.proargtypes[4], NULL) AS rem_life_type
+       FROM pg_proc p WHERE p.proname = 'far_depreciation_as_of'`
+    );
+    expect(after.rows).toHaveLength(1);
+    expect(after.rows[0].nargs).toBe(11);
+    expect(after.rows[0].eol_type).toBe("boolean");
+    expect(after.rows[0].rem_life_type).toBe("numeric");
+  });
 });
