@@ -75,4 +75,50 @@ describe("BulkUploadPage preview: virtualization", () => {
     const mountedRows = document.querySelectorAll('[data-testid="bulk-preview-row"]');
     expect(mountedRows.length).toBeLessThan(totalRows);
   });
+
+  // Regression test for a follow-up report: virtualization must never make the tail of a
+  // large file unreachable — a hard row cap, a stale `count`, or a query that only fetched
+  // a subset would all look identical to the "fast, bounded DOM" test above (which only
+  // proves rendering is windowed, not that the window covers the WHOLE file). The
+  // scrollable range's total height is `count * rowHeight`, computed from the same
+  // `previewRows` array the table reads from — independent of jsdom's inability to lay out
+  // real pixels — so asserting it matches the full row count directly catches any bug that
+  // silently shrinks what's actually scrollable to less than the full parsed dataset.
+  it("keeps the full parsed row count scrollable, not just fast to render", async () => {
+    const totalRows = 5000;
+    const rows = Array.from({ length: totalRows }, (_, i) => ({
+      row: i + 2,
+      farId: `FAR-${i}`,
+      status: "error" as const,
+      message: "No asset found."
+    }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({
+        totalRows,
+        summary: { new: 0, update: 0, error: totalRows },
+        rows
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
+        <ToastProvider>
+          <BulkUploadPage />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    const file = new File(["farId,toLocation,transactionDate\n"], "big.csv", { type: "text/csv" });
+    const input = document.querySelector("#bulk-file-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText(/out of 5000 rows/)).toBeTruthy());
+    expect(screen.getByText(/Showing all 5000 rows/)).toBeTruthy();
+
+    const ROW_HEIGHT = 28;
+    const spacer = document.querySelector('[data-testid="bulk-preview-scroll-spacer"]') as HTMLElement;
+    expect(spacer.style.height).toBe(`${totalRows * ROW_HEIGHT}px`);
+  });
 });

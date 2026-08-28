@@ -468,6 +468,10 @@ export function BulkUploadPage() {
               </span>{" "}
               out of {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"}.
             </p>
+            <p className="mt-1 text-xs text-gray-500">
+              Showing all {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"} below — scroll to review every one
+              before confirming.
+            </p>
             {preview.summary.error > 0 && (
               <p className="mt-1 text-xs text-gray-500">
                 {canConfirm
@@ -499,7 +503,10 @@ export function BulkUploadPage() {
                 <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</div>
                 <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Details</div>
               </div>
-              <div style={{ height: previewVirtualizer.getTotalSize(), position: "relative" }}>
+              <div
+                data-testid="bulk-preview-scroll-spacer"
+                style={{ height: previewVirtualizer.getTotalSize(), position: "relative" }}
+              >
                 {previewVirtualizer.getVirtualItems().map((virtualRow) => {
                   const r = previewRows[virtualRow.index]!;
                   return (
