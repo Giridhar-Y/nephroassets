@@ -1,5 +1,6 @@
 import { useRef, useState, type DragEvent } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   BULK_UPLOAD_PATHS,
   MASTERS_BULK_UPLOAD_PATHS,
@@ -229,9 +230,21 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
 
 const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "merge", "masters"];
 
+// Fixed row height + fixed column widths (rather than the browser's table auto-layout)
+// are required for virtualization: only the rows actually in the viewport ever mount, so
+// nothing is on-screen to measure content-based column widths against. Same tradeoff
+// AssetGrid already makes for Register. A row's Details/Problem text is truncated to one
+// line with a title tooltip for the full text, rather than wrapping — wrapping would make
+// row height variable, which the virtualizer can't size ahead of a row being rendered.
+const PREVIEW_ROW_HEIGHT = 28;
+const PREVIEW_GRID_COLS = "grid-cols-[56px_180px_100px_1fr]";
+const RESULT_GRID_COLS = "grid-cols-[56px_180px_1fr]";
+
 export function BulkUploadPage() {
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewScrollRef = useRef<HTMLDivElement>(null);
+  const resultScrollRef = useRef<HTMLDivElement>(null);
   const [searchParams] = useSearchParams();
   const [type, setType] = useState<UploadType>(() => {
     const requested = searchParams.get("type");
@@ -317,6 +330,22 @@ export function BulkUploadPage() {
   }
 
   const canConfirm = preview !== null && preview.summary.new + preview.summary.update > 0;
+
+  const previewRows = preview ? (showOnlyErrors ? preview.rows.filter((r) => r.status === "error") : preview.rows) : [];
+  const previewVirtualizer = useVirtualizer({
+    count: previewRows.length,
+    getScrollElement: () => previewScrollRef.current,
+    estimateSize: () => PREVIEW_ROW_HEIGHT,
+    overscan: 12
+  });
+
+  const resultErrors = result?.errors ?? [];
+  const resultVirtualizer = useVirtualizer({
+    count: resultErrors.length,
+    getScrollElement: () => resultScrollRef.current,
+    estimateSize: () => PREVIEW_ROW_HEIGHT,
+    overscan: 12
+  });
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
@@ -463,29 +492,37 @@ export function BulkUploadPage() {
               </label>
             )}
 
-            <div className="mt-3 max-h-80 overflow-auto rounded-md border border-gray-200">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-gray-50">
-                  <tr>
-                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</th>
-                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">{config.keyColumnLabel}</th>
-                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</th>
-                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Details</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(showOnlyErrors ? preview.rows.filter((r) => r.status === "error") : preview.rows).map((r) => (
-                    <tr key={r.row} className="border-t border-gray-100">
-                      <td className="px-3 py-1.5 text-gray-500">{r.row}</td>
-                      <td className="px-3 py-1.5 font-medium text-ink">{r.farId ?? "—"}</td>
-                      <td className="px-3 py-1.5">
+            <div ref={previewScrollRef} className="mt-3 max-h-80 overflow-auto rounded-md border border-gray-200 text-xs">
+              <div className={`sticky top-0 z-10 grid ${PREVIEW_GRID_COLS} bg-gray-50`}>
+                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</div>
+                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">{config.keyColumnLabel}</div>
+                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</div>
+                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Details</div>
+              </div>
+              <div style={{ height: previewVirtualizer.getTotalSize(), position: "relative" }}>
+                {previewVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const r = previewRows[virtualRow.index]!;
+                  return (
+                    <div
+                      key={r.row}
+                      data-testid="bulk-preview-row"
+                      className={`absolute left-0 top-0 grid w-full ${PREVIEW_GRID_COLS} border-t border-gray-100`}
+                      style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <div className="flex items-center px-3 py-1.5 text-gray-500">{r.row}</div>
+                      <div className="flex items-center truncate px-3 py-1.5 font-medium text-ink" title={r.farId ?? undefined}>
+                        {r.farId ?? "—"}
+                      </div>
+                      <div className="flex items-center px-3 py-1.5">
                         <PreviewStatusBadge status={r.status} />
-                      </td>
-                      <td className="px-3 py-1.5 text-gray-600">{r.message ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                      <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={r.message}>
+                        {r.message ?? "—"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {error && (
@@ -542,25 +579,33 @@ export function BulkUploadPage() {
                 <p className="text-sm font-medium text-red-700">
                   {result.errors.length} row{result.errors.length === 1 ? "" : "s"} could not be processed:
                 </p>
-                <div className="mt-2 max-h-64 overflow-auto rounded-md border border-red-100">
-                  <table className="w-full text-xs">
-                    <thead className="bg-red-50">
-                      <tr>
-                        <th className="px-3 py-1.5 text-left font-semibold text-red-700">Row</th>
-                        <th className="px-3 py-1.5 text-left font-semibold text-red-700">{config.keyColumnLabel}</th>
-                        <th className="px-3 py-1.5 text-left font-semibold text-red-700">Problem</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.errors.map((e) => (
-                        <tr key={e.row} className="border-t border-red-100">
-                          <td className="px-3 py-1.5 text-gray-600">{e.row}</td>
-                          <td className="px-3 py-1.5 text-gray-600">{e.farId ?? "—"}</td>
-                          <td className="px-3 py-1.5 text-gray-600">{e.message}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div ref={resultScrollRef} className="mt-2 max-h-64 overflow-auto rounded-md border border-red-100 text-xs">
+                  <div className={`sticky top-0 z-10 grid ${RESULT_GRID_COLS} bg-red-50`}>
+                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">Row</div>
+                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">{config.keyColumnLabel}</div>
+                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">Problem</div>
+                  </div>
+                  <div style={{ height: resultVirtualizer.getTotalSize(), position: "relative" }}>
+                    {resultVirtualizer.getVirtualItems().map((virtualRow) => {
+                      const e = resultErrors[virtualRow.index]!;
+                      return (
+                        <div
+                          key={e.row}
+                          data-testid="bulk-result-error-row"
+                          className={`absolute left-0 top-0 grid w-full ${RESULT_GRID_COLS} border-t border-red-100`}
+                          style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                        >
+                          <div className="flex items-center px-3 py-1.5 text-gray-600">{e.row}</div>
+                          <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.farId ?? undefined}>
+                            {e.farId ?? "—"}
+                          </div>
+                          <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.message}>
+                            {e.message}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
