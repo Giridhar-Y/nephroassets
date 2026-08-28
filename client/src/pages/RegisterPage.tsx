@@ -12,10 +12,58 @@ import { MergeModal } from "../components/MergeModal.js";
 import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
-import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
+import { Tooltip } from "../components/Tooltip.js";
+import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { ExportIcon, SearchIcon, UploadIcon } from "../lib/icons.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
+import { isConditionComplete, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
+
+// Every Register column that gets a plain Excel-style custom-condition filter (operator
+// + value, no "distinct values" checklist) — the four columns that also get a checklist
+// (Sub Classification, Status, the two Location columns) are wired up separately below
+// via DualModeFilterPanel, since those need extra props (the options list, the existing
+// multi-select filter state) this generic table doesn't have.
+const CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterType }> = [
+  { id: "farId", label: "FAR ID", type: "text" },
+  { id: "assetDescription", label: "Asset Description", type: "text" },
+  { id: "dateAcquired", label: "Date Acquired", type: "date" },
+  { id: "lastDateOfTransaction", label: "Last Transaction Date", type: "date" },
+  { id: "serialNo", label: "Serial No", type: "text" },
+  { id: "parentFarId", label: "Parent FAR ID", type: "text" },
+  { id: "qty", label: "Qty", type: "number" },
+  { id: "usefulLifeC1Years", label: "Useful Life C1 (Years)", type: "number" },
+  { id: "usefulLifeC2Years", label: "Useful Life C2 (Years)", type: "number" },
+  { id: "expiryDateC1", label: "Expiry Date C1", type: "date" },
+  { id: "expiryDateC2", label: "Expiry Date C2", type: "date" },
+  { id: "c1OpeningCost", label: "C1 Opening Gross Block", type: "number" },
+  { id: "c2OpeningCost", label: "C2 Opening Gross Block", type: "number" },
+  { id: "additionsC1", label: "C1 Additions", type: "number" },
+  { id: "additionsC2", label: "C2 Additions", type: "number" },
+  { id: "dateOfAddition", label: "Addition Date", type: "date" },
+  { id: "dateOfDisposal", label: "Disposal Date", type: "date" },
+  { id: "deletionsC1", label: "C1 Deletions", type: "number" },
+  { id: "deletionsC2", label: "C2 Deletions", type: "number" },
+  { id: "saleValue", label: "Sale Value", type: "number" },
+  { id: "c1GrossBlock", label: "C1 Gross Block", type: "number" },
+  { id: "c2GrossBlock", label: "C2 Gross Block", type: "number" },
+  { id: "accDepC1Opening", label: "C1 Opening Acc. Dep.", type: "number" },
+  { id: "accDepC2Opening", label: "C2 Opening Acc. Dep.", type: "number" },
+  { id: "c1PeriodDep", label: "C1 Depreciation (Period)", type: "number" },
+  { id: "c2PeriodDep", label: "C2 Depreciation (Period)", type: "number" },
+  { id: "accDepOnDisposedC1", label: "C1 Acc. Dep. on Disposed", type: "number" },
+  { id: "accDepOnDisposedC2", label: "C2 Acc. Dep. on Disposed", type: "number" },
+  { id: "c1AccDep", label: "C1 Acc. Dep.", type: "number" },
+  { id: "c2AccDep", label: "C2 Acc. Dep.", type: "number" },
+  { id: "c1Wdv", label: "C1 WDV", type: "number" },
+  { id: "c2Wdv", label: "C2 WDV", type: "number" },
+  { id: "totalWdv", label: "Total WDV", type: "number" },
+  { id: "profitLoss", label: "Profit/(Loss) on Disposal", type: "number" },
+  { id: "c1NbvOpening", label: "C1 Opening NBV", type: "number" },
+  { id: "c2NbvOpening", label: "C2 Opening NBV", type: "number" },
+  { id: "c1Nbv", label: "C1 NBV", type: "number" },
+  { id: "c2Nbv", label: "C2 NBV", type: "number" }
+];
 
 export function RegisterPage() {
   const navigate = useNavigate();
@@ -63,96 +111,111 @@ export function RegisterPage() {
     );
   };
 
-  const hasActiveFilters = Object.keys(filters).length > 0;
+  // Filter count for the toolbar badge: every named field (the four checklist filters,
+  // plus the global search box) counts as one, and the `conditions` array — however many
+  // custom column conditions are active — counts as its own bucket rather than one-per-
+  // condition, so it reads as "N kinds of filter applied", matching how the rest of the
+  // filters are counted (one multi-select is one filter regardless of how many values are
+  // checked).
+  const activeFilterCount = Object.keys(filters).length;
+  const hasActiveFilters = activeFilterCount > 0;
+
+  const conditions = filters.conditions ?? [];
+  const setConditions = (next: ColumnCondition[]) => (next.length > 0 ? setFilter("conditions", next) : clearFilter("conditions"));
+  const setCondition = (columnId: string, next: ColumnCondition | undefined) => {
+    const rest = conditions.filter((c) => c.columnId !== columnId);
+    setConditions(isConditionComplete(next) ? [...rest, next] : rest);
+  };
 
   const headerFilters: Partial<Record<string, ReactNode>> = {
-    farId: (
-      <ColumnFilterPopover label="FAR ID" active={!!filters.search}>
-        {() => (
-          <TextFilterPanel
-            label="FAR ID"
-            placeholder="e.g. FAR-000123"
-            value={filters.search ?? ""}
-            onChange={(v) => (v ? setFilter("search", v) : clearFilter("search"))}
-          />
-        )}
-      </ColumnFilterPopover>
-    ),
-    assetDescription: (
-      <ColumnFilterPopover label="Asset Description" active={!!filters.descriptionSearch}>
-        {() => (
-          <TextFilterPanel
-            label="Asset Description"
-            placeholder="Search description…"
-            value={filters.descriptionSearch ?? ""}
-            onChange={(v) => (v ? setFilter("descriptionSearch", v) : clearFilter("descriptionSearch"))}
-          />
-        )}
-      </ColumnFilterPopover>
-    ),
     subClassification: (
-      <ColumnFilterPopover label="Sub Classification" active={(filters.subClassification?.length ?? 0) > 0}>
+      <ColumnFilterPopover
+        label="Sub Classification"
+        active={(filters.subClassification?.length ?? 0) > 0 || !!conditions.find((c) => c.columnId === "subClassification")}
+      >
         {() => (
-          <SelectFilterPanel
+          <DualModeFilterPanel
             label="Sub Classification"
+            columnId="subClassification"
+            type="text"
             options={subClassifications}
-            value={filters.subClassification ?? []}
-            onChange={(v) => (v.length > 0 ? setFilter("subClassification", v) : clearFilter("subClassification"))}
+            selectValue={filters.subClassification ?? []}
+            onSelectChange={(v) => (v.length > 0 ? setFilter("subClassification", v) : clearFilter("subClassification"))}
+            condition={conditions.find((c) => c.columnId === "subClassification")}
+            onConditionChange={(next) => setCondition("subClassification", next)}
           />
         )}
       </ColumnFilterPopover>
     ),
     status: (
-      <ColumnFilterPopover label="Status" active={(filters.status?.length ?? 0) > 0}>
+      <ColumnFilterPopover
+        label="Status"
+        active={(filters.status?.length ?? 0) > 0 || !!conditions.find((c) => c.columnId === "status")}
+      >
         {() => (
-          <SelectFilterPanel
+          <DualModeFilterPanel
             label="Status"
+            columnId="status"
+            type="text"
             options={statuses}
-            value={filters.status ?? []}
-            onChange={(v) => (v.length > 0 ? setFilter("status", v) : clearFilter("status"))}
+            selectValue={filters.status ?? []}
+            onSelectChange={(v) => (v.length > 0 ? setFilter("status", v) : clearFilter("status"))}
+            condition={conditions.find((c) => c.columnId === "status")}
+            onConditionChange={(next) => setCondition("status", next)}
           />
         )}
       </ColumnFilterPopover>
     ),
     effectiveLocation: (
-      <ColumnFilterPopover label="Current Location" active={(filters.center?.length ?? 0) > 0}>
+      <ColumnFilterPopover
+        label="Current Location"
+        active={(filters.center?.length ?? 0) > 0 || !!conditions.find((c) => c.columnId === "effectiveLocation")}
+      >
         {() => (
-          <SelectFilterPanel
+          <DualModeFilterPanel
             label="Center"
+            columnId="effectiveLocation"
+            type="text"
             options={centers}
-            value={filters.center ?? []}
-            onChange={(v) => (v.length > 0 ? setFilter("center", v) : clearFilter("center"))}
+            selectValue={filters.center ?? []}
+            onSelectChange={(v) => (v.length > 0 ? setFilter("center", v) : clearFilter("center"))}
+            condition={conditions.find((c) => c.columnId === "effectiveLocation")}
+            onConditionChange={(next) => setCondition("effectiveLocation", next)}
           />
         )}
       </ColumnFilterPopover>
     ),
     location: (
-      <ColumnFilterPopover label="Capitalized Location" active={(filters.capLocation?.length ?? 0) > 0}>
+      <ColumnFilterPopover
+        label="Capitalized Location"
+        active={(filters.capLocation?.length ?? 0) > 0 || !!conditions.find((c) => c.columnId === "location")}
+      >
         {() => (
-          <SelectFilterPanel
+          <DualModeFilterPanel
             label="Center"
+            columnId="location"
+            type="text"
             options={centers}
-            value={filters.capLocation ?? []}
-            onChange={(v) => (v.length > 0 ? setFilter("capLocation", v) : clearFilter("capLocation"))}
-          />
-        )}
-      </ColumnFilterPopover>
-    ),
-    dateAcquired: (
-      <ColumnFilterPopover label="Date Acquired" active={!!(filters.dateAcquiredFrom || filters.dateAcquiredTo)}>
-        {() => (
-          <DateRangeFilterPanel
-            fromLabel="Acquired From"
-            toLabel="Acquired To"
-            from={filters.dateAcquiredFrom ?? ""}
-            to={filters.dateAcquiredTo ?? ""}
-            onChangeFrom={(v) => (v ? setFilter("dateAcquiredFrom", v) : clearFilter("dateAcquiredFrom"))}
-            onChangeTo={(v) => (v ? setFilter("dateAcquiredTo", v) : clearFilter("dateAcquiredTo"))}
+            selectValue={filters.capLocation ?? []}
+            onSelectChange={(v) => (v.length > 0 ? setFilter("capLocation", v) : clearFilter("capLocation"))}
+            condition={conditions.find((c) => c.columnId === "location")}
+            onConditionChange={(next) => setCondition("location", next)}
           />
         )}
       </ColumnFilterPopover>
     )
   };
+
+  for (const col of CONDITION_COLUMNS) {
+    const current = conditions.find((c) => c.columnId === col.id);
+    headerFilters[col.id] = (
+      <ColumnFilterPopover label={col.label} active={!!current}>
+        {() => (
+          <ConditionFilterPanel label={col.label} columnId={col.id} type={col.type} condition={current} onChange={(next) => setCondition(col.id, next)} />
+        )}
+      </ColumnFilterPopover>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -187,7 +250,7 @@ export function RegisterPage() {
           {hasActiveFilters && (
             <>
               <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
-                {Object.keys(filters).length} filter{Object.keys(filters).length === 1 ? "" : "s"} applied
+                {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"} applied
               </span>
               <button type="button" className="font-medium text-accent hover:underline" onClick={clearAll}>
                 Clear all filters
@@ -224,6 +287,11 @@ export function RegisterPage() {
             <ExportIcon fontSize={14} />
             Export to Excel
           </a>
+          {hasActiveFilters && (
+            <Tooltip text="Export downloads the full, unfiltered register — these column filters aren't applied to it yet.">
+              <span />
+            </Tooltip>
+          )}
           <ColumnPicker prefs={columnPrefs} />
         </div>
       </div>

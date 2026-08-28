@@ -146,11 +146,24 @@ export interface FetchAssetsParams extends AssetFilters {
   limit?: number;
 }
 
+// Every other array-valued filter (center, status, ...) is a plain string[], which
+// String() already comma-joins into the "a,b,c" shape the server's multiValue schema
+// expects. `conditions` is the one array of *objects* — needs real JSON, or it'd
+// serialize as the useless literal "[object Object]".
+function setFilterParam(search: URLSearchParams, key: string, value: unknown): void {
+  if (value === undefined || value === null || value === "") return;
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object") {
+    search.set(key, JSON.stringify(value));
+    return;
+  }
+  search.set(key, String(value));
+}
+
 export function fetchAssets(params: FetchAssetsParams): Promise<AssetListResponse> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== "") {
-      search.set(key, String(value));
+      setFilterParam(search, key, value);
     }
   }
   return request<AssetListResponse>(`/api/assets?${search.toString()}`);
@@ -190,10 +203,15 @@ export function createTransfer(payload: {
 // Register's "Export to Excel": builds the download URL for the current filters (no
 // filters applied exports the entire register). Not a fetch — the browser downloads it
 // directly via the Content-Disposition header, same as any other file download link.
+//
+// `conditions` (the Excel-style column-header custom filters) is deliberately skipped —
+// the export route doesn't parse it yet (it has its own separate query builder, unlike
+// the on-screen list's), so sending it would silently do nothing. Flagged as a known
+// gap rather than wired through half-working.
 export function getExportUrl(params: { asAt: string } & AssetFilters): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== "") {
+    if (key !== "conditions" && value !== undefined && value !== null && value !== "") {
       search.set(key, String(value));
     }
   }
