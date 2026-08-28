@@ -38,6 +38,19 @@ async function readWorkbook(payload: Buffer) {
   return workbook.worksheets[0]!;
 }
 
+function conditionsParam(conditions: unknown[]): string {
+  return `conditions=${encodeURIComponent(JSON.stringify(conditions))}`;
+}
+
+// Row layout as of the filter-summary note (this round): 1 = note, 2 = totals,
+// 3 = group band, 4 = column names, 5+ = data. Every row-number assertion below is
+// relative to NOTE_ROW so a future layout change only needs updating in one place.
+const NOTE_ROW = 1;
+const TOTALS_ROW = 2;
+const GROUP_ROW = 3;
+const HEADER_ROW = 4;
+const FIRST_DATA_ROW = 5;
+
 describe("Register Export: GET /api/assets/export", () => {
   let app: FastifyInstance;
 
@@ -75,25 +88,25 @@ describe("Register Export: GET /api/assets/export", () => {
     expect(res.headers["content-disposition"]).toContain("attachment");
 
     const worksheet = await readWorkbook(res.rawPayload);
-    // totals row + group band row + column name row + 3 data rows
-    expect(worksheet.rowCount).toBe(6);
-    expect(worksheet.getRow(1).getCell(1).value).toBe("TOTAL");
-    expect(worksheet.getRow(2).getCell(1).value).toBe("Asset Identification");
-    const headerRow = worksheet.getRow(3).values as unknown[];
+    // note row + totals row + group band row + column name row + 3 data rows
+    expect(worksheet.rowCount).toBe(7);
+    expect(worksheet.getRow(TOTALS_ROW).getCell(1).value).toBe("TOTAL");
+    expect(worksheet.getRow(GROUP_ROW).getCell(1).value).toBe("Asset Identification");
+    const headerRow = worksheet.getRow(HEADER_ROW).values as unknown[];
     expect(headerRow).toContain("FAR ID");
-    expect(worksheet.getRow(1).getCell(1).font?.bold).toBe(true);
-    expect(worksheet.getRow(2).getCell(1).font?.bold).toBe(true);
-    expect(worksheet.getRow(3).getCell(1).font?.bold).toBe(true);
+    expect(worksheet.getRow(TOTALS_ROW).getCell(1).font?.bold).toBe(true);
+    expect(worksheet.getRow(GROUP_ROW).getCell(1).font?.bold).toBe(true);
+    expect(worksheet.getRow(HEADER_ROW).getCell(1).font?.bold).toBe(true);
     // Group band keeps a distinct fill per group (color stays in the export even though
     // the on-screen Register table dropped it) — column 1 (Asset ID) and column 14 (C1
     // Opening, Gross Block group) must differ.
-    const g1Fill = worksheet.getRow(2).getCell(1).fill as { fgColor?: { argb?: string } };
-    const g2Fill = worksheet.getRow(2).getCell(14).fill as { fgColor?: { argb?: string } };
+    const g1Fill = worksheet.getRow(GROUP_ROW).getCell(1).fill as { fgColor?: { argb?: string } };
+    const g2Fill = worksheet.getRow(GROUP_ROW).getCell(14).fill as { fgColor?: { argb?: string } };
     expect(g1Fill.fgColor?.argb).toBeTruthy();
     expect(g1Fill.fgColor?.argb).not.toBe(g2Fill.fgColor?.argb);
     // 40 columns, dates as DD-MM-YYYY, currency with 2 decimals
-    expect((worksheet.getRow(3).values as unknown[]).length - 1).toBe(40);
-    const firstDataRow = worksheet.getRow(4);
+    expect((worksheet.getRow(HEADER_ROW).values as unknown[]).length - 1).toBe(40);
+    const firstDataRow = worksheet.getRow(FIRST_DATA_ROW);
     expect(firstDataRow.getCell(3).value).toBe("01-01-2020"); // Date Acquired
     expect(worksheet.getColumn(14).numFmt).toBe("#,##0.00"); // C1 Opening (a numeric column)
   });
@@ -104,9 +117,9 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?asAt=2026-03-31" });
     const worksheet = await readWorkbook(res.rawPayload);
-    // totals + group band + header + only EXP-OLD (EXP-NEW isn't capitalized yet as at 2026-03-31)
-    expect(worksheet.rowCount).toBe(4);
-    const dataRow = worksheet.getRow(4).values as unknown[];
+    // note + totals + group band + header + only EXP-OLD (EXP-NEW isn't capitalized yet)
+    expect(worksheet.rowCount).toBe(5);
+    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
     expect(dataRow).toContain("EXP-OLD");
     expect(dataRow).not.toContain("EXP-NEW");
   });
@@ -117,8 +130,8 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
-    expect(worksheet.rowCount).toBe(4);
-    const dataRow = worksheet.getRow(4).values as unknown[];
+    expect(worksheet.rowCount).toBe(5);
+    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
     expect(dataRow).toContain("EXP-4");
   });
 
@@ -133,8 +146,8 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?capLocation=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
-    expect(worksheet.rowCount).toBe(4);
-    const dataRow = worksheet.getRow(4).values as unknown[];
+    expect(worksheet.rowCount).toBe(5);
+    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
     expect(dataRow).toContain("EXP-CAPLOC-1");
   });
 
@@ -144,7 +157,7 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
     const worksheet = await readWorkbook(res.rawPayload);
-    const totalsRow = worksheet.getRow(1);
+    const totalsRow = worksheet.getRow(TOTALS_ROW);
     // Qty is column 11, C1 Opening Cost is column 14 (see EXPORT_COLUMNS order).
     expect(totalsRow.getCell(11).value).toBe(2);
     expect(totalsRow.getCell(14).value).toBe(10000);
@@ -154,7 +167,7 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-BLANK-1", { useful_life_c1_years: 7 });
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
     const worksheet = await readWorkbook(res.rawPayload);
-    const totalsRow = worksheet.getRow(1);
+    const totalsRow = worksheet.getRow(TOTALS_ROW);
     expect(totalsRow.getCell(2).value).toBeNull(); // Sub Classification
     expect(totalsRow.getCell(12).value).toBeNull(); // Useful Life C1 (Yrs)
   });
@@ -169,5 +182,132 @@ describe("Register Export: GET /api/assets/export", () => {
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)`,
       [AS_AT, FY_START, FY_END, DAYS_IN_FY]
     );
+  });
+
+  describe("filter-summary note (row 1)", () => {
+    it("reads 'No filters applied' plus an export timestamp when nothing is filtered", async () => {
+      await insertAsset("EXP-NOTE-1");
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toContain("Filters applied: No filters applied");
+      expect(note).toMatch(/Exported: \d{2}-\d{2}-\d{4} \d{2}:\d{2} IST/);
+    });
+
+    it("describes an applied named filter (Status)", async () => {
+      await insertAsset("EXP-NOTE-2", { status: "Disposed" });
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export?status=Disposed" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toContain("Filters applied: Status: Disposed");
+    });
+
+    it("describes an applied column condition, including a computed column (C1 NBV)", async () => {
+      await insertAsset("EXP-NOTE-3", { c1_opening_cost: 900000, useful_life_c1_years: 1000 });
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toContain("Filters applied: C1 NBV: greater than ₹5,00,000");
+    });
+
+    it("combines a named filter and a condition in one note, semicolon-separated", async () => {
+      await insertAsset("EXP-NOTE-4", { status: "Active", c1_opening_cost: 900000, useful_life_c1_years: 1000 });
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?status=Active&${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toContain("Filters applied: Status: Active; C1 NBV: greater than ₹5,00,000");
+    });
+
+    it("is styled as italic metadata, not a bold data/header row", async () => {
+      await insertAsset("EXP-NOTE-STYLE-1");
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const noteCell = worksheet.getRow(NOTE_ROW).getCell(1);
+      expect(noteCell.font?.italic).toBe(true);
+      expect(noteCell.font?.bold).not.toBe(true);
+    });
+  });
+
+  describe("column-condition filtering (conditions param)", () => {
+    it("a text condition (contains) filters the exported rows, same as the named filters", async () => {
+      await insertAsset("EXP-COND-1", { asset_description: "Dialysis Machine" });
+      await insertAsset("EXP-COND-2", { asset_description: "Office Chair" });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "assetDescription", op: "contains", value: "dialysis" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      expect(worksheet.rowCount).toBe(5);
+      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      expect(dataRow).toContain("EXP-COND-1");
+    });
+
+    it("a number condition on a computed field (C1 NBV) filters via the same far_calc_component CTE the grid uses", async () => {
+      await insertAsset("EXP-COND-LOW", { c1_opening_cost: 50000, useful_life_c1_years: 1000 });
+      await insertAsset("EXP-COND-HIGH", { c1_opening_cost: 900000, useful_life_c1_years: 1000 });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      expect(worksheet.rowCount).toBe(5);
+      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      expect(dataRow).toContain("EXP-COND-HIGH");
+      expect(dataRow).not.toContain("EXP-COND-LOW");
+    });
+
+    it("the totals row reflects the computed-column-filtered subset, not the whole table", async () => {
+      await insertAsset("EXP-COND-TOT-LOW", { qty: 100, c1_opening_cost: 50000, useful_life_c1_years: 1000 });
+      await insertAsset("EXP-COND-TOT-HIGH", { qty: 3, c1_opening_cost: 900000, useful_life_c1_years: 1000 });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const totalsRow = worksheet.getRow(TOTALS_ROW);
+      expect(totalsRow.getCell(11).value).toBe(3); // Qty total — only the HIGH asset counted
+    });
+
+    it("an unknown columnId is rejected with 400, matching GET /api/assets", async () => {
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "notARealColumn", op: "equals", value: "x" }])}`
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("more than EXPORT_BATCH_SIZE-spanning results still all export correctly under a computed filter (batch loop composes with filtering)", async () => {
+      // Small enough to run fast, big enough to exercise more than a trivial one-row
+      // result — proves the per-batch CTE + WHERE + cursor combination doesn't drop or
+      // duplicate rows across iterations, not just that it filters within one page.
+      for (let i = 0; i < 5; i++) {
+        await insertAsset(`EXP-COND-BATCH-MATCH-${i}`, { c1_opening_cost: 900000, useful_life_c1_years: 1000 });
+      }
+      for (let i = 0; i < 5; i++) {
+        await insertAsset(`EXP-COND-BATCH-SKIP-${i}`, { c1_opening_cost: 1000 });
+      }
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const farIds: string[] = [];
+      for (let r = FIRST_DATA_ROW; r <= worksheet.rowCount; r++) {
+        farIds.push(worksheet.getRow(r).getCell(1).value as string);
+      }
+      expect(farIds.sort()).toEqual(
+        Array.from({ length: 5 }, (_, i) => `EXP-COND-BATCH-MATCH-${i}`).sort()
+      );
+    });
   });
 });

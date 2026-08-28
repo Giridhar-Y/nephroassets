@@ -294,3 +294,184 @@ export const TOTAL_WDV_AND_PROFIT_LOSS_SQL = `
   CASE WHEN (c1).wdv_at_disposal IS NOT NULL AND (c2).wdv_at_disposal IS NOT NULL
     THEN sale_value - ((c1).wdv_at_disposal + (c2).wdv_at_disposal) ELSE NULL END AS profit_loss
 `;
+
+// --- Plain-language filter descriptions, for the Register export's "what is this file"
+// note (see assetsExport.ts). Mirrors RegisterPage.tsx's CONDITION_COLUMNS labels and
+// DualModeFilterPanel column labels exactly — kept as a parallel definition (same
+// no-shared-package convention as GROUP_INFO in assetsExport.ts) so the export's summary
+// reads with the same names the user just saw on screen.
+const COLUMN_LABELS: Record<string, string> = {
+  farId: "FAR ID",
+  subClassification: "Sub Classification",
+  dateAcquired: "Date Acquired",
+  location: "Capitalized Location",
+  lastDateOfTransaction: "Last Transaction Date",
+  effectiveLocation: "Current Location",
+  serialNo: "Serial No",
+  parentFarId: "Parent FAR ID",
+  status: "Status",
+  assetDescription: "Asset Description",
+  qty: "Qty",
+  usefulLifeC1Years: "Useful Life C1 (Years)",
+  usefulLifeC2Years: "Useful Life C2 (Years)",
+  expiryDateC1: "Expiry Date C1",
+  expiryDateC2: "Expiry Date C2",
+  c1OpeningCost: "C1 Opening Gross Block",
+  c2OpeningCost: "C2 Opening Gross Block",
+  additionsC1: "C1 Additions",
+  additionsC2: "C2 Additions",
+  dateOfAddition: "Addition Date",
+  dateOfDisposal: "Disposal Date",
+  deletionsC1: "C1 Deletions",
+  deletionsC2: "C2 Deletions",
+  saleValue: "Sale Value",
+  c1GrossBlock: "C1 Gross Block",
+  c2GrossBlock: "C2 Gross Block",
+  accDepC1Opening: "C1 Opening Acc. Dep.",
+  accDepC2Opening: "C2 Opening Acc. Dep.",
+  c1PeriodDep: "C1 Depreciation (Period)",
+  c2PeriodDep: "C2 Depreciation (Period)",
+  accDepOnDisposedC1: "C1 Acc. Dep. on Disposed",
+  accDepOnDisposedC2: "C2 Acc. Dep. on Disposed",
+  c1AccDep: "C1 Acc. Dep.",
+  c2AccDep: "C2 Acc. Dep.",
+  c1Wdv: "C1 WDV",
+  c2Wdv: "C2 WDV",
+  totalWdv: "Total WDV",
+  profitLoss: "Profit/(Loss) on Disposal",
+  c1NbvOpening: "C1 Opening NBV",
+  c2NbvOpening: "C2 Opening NBV",
+  c1Nbv: "C1 NBV",
+  c2Nbv: "C2 NBV"
+};
+
+// Number columns that are counts/rates, not money — everything else numeric in
+// REGISTER_COLUMNS is a currency figure (cost, depreciation, NBV, WDV, ...).
+const NON_MONEY_NUMBER_COLUMNS = new Set(["qty", "usefulLifeC1Years", "usefulLifeC2Years"]);
+
+const rupeeFormatter = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+
+function formatFilterDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}-${m}-${y}`;
+}
+
+function formatFilterNumber(columnId: string, raw: string | number | undefined): string {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return String(raw ?? "");
+  return NON_MONEY_NUMBER_COLUMNS.has(columnId) ? String(n) : rupeeFormatter.format(n);
+}
+
+const TEXT_OP_PHRASES: Record<string, string> = {
+  equals: "is",
+  notEquals: "is not",
+  contains: "contains",
+  notContains: "does not contain",
+  beginsWith: "begins with",
+  endsWith: "ends with",
+  blank: "is blank",
+  notBlank: "is not blank"
+};
+
+const NUMBER_OP_PHRASES: Record<string, string> = {
+  equals: "equals",
+  notEquals: "does not equal",
+  gt: "greater than",
+  gte: "greater than or equal to",
+  lt: "less than",
+  lte: "less than or equal to",
+  blank: "is blank",
+  notBlank: "is not blank"
+};
+
+const DATE_OP_PHRASES: Record<string, string> = {
+  equals: "on",
+  before: "before",
+  after: "after",
+  today: "today",
+  thisWeek: "this week",
+  thisMonth: "this month",
+  thisFY: "this financial year",
+  lastFY: "last financial year",
+  blank: "is blank",
+  notBlank: "is not blank"
+};
+
+/** One plain-English line per condition, e.g. "C1 NBV: greater than ₹2,00,000" or
+ *  "Disposal Date: between 01-04-2026 and 30-06-2026" — for the export's filter-summary
+ *  note. Falls back to the raw columnId/op if either isn't recognized (defensive only;
+ *  buildConditionSql already rejects an unknown column/op pair before this ever runs on
+ *  a real request). */
+export function describeCondition(cond: RawCondition): string {
+  const label = COLUMN_LABELS[cond.columnId] ?? cond.columnId;
+  const type = REGISTER_COLUMNS[cond.columnId];
+
+  if (type === "text") {
+    const phrase = TEXT_OP_PHRASES[cond.op] ?? cond.op;
+    if (cond.op === "blank" || cond.op === "notBlank") return `${label}: ${phrase}`;
+    return `${label}: ${phrase} "${cond.value ?? ""}"`;
+  }
+  if (type === "number") {
+    const phrase = NUMBER_OP_PHRASES[cond.op];
+    if (cond.op === "blank" || cond.op === "notBlank") return `${label}: ${phrase}`;
+    if (cond.op === "between") {
+      return `${label}: between ${formatFilterNumber(cond.columnId, cond.value)} and ${formatFilterNumber(cond.columnId, cond.valueTo)}`;
+    }
+    return `${label}: ${phrase ?? cond.op} ${formatFilterNumber(cond.columnId, cond.value)}`;
+  }
+  // date
+  const phrase = DATE_OP_PHRASES[cond.op];
+  if (cond.op === "blank" || cond.op === "notBlank" || cond.op === "today" || cond.op === "thisWeek" || cond.op === "thisMonth" || cond.op === "thisFY" || cond.op === "lastFY") {
+    return `${label}: ${phrase ?? cond.op}`;
+  }
+  if (cond.op === "between") {
+    return `${label}: between ${formatFilterDate(String(cond.value ?? ""))} and ${formatFilterDate(String(cond.valueTo ?? ""))}`;
+  }
+  return `${label}: ${phrase ?? cond.op} ${formatFilterDate(String(cond.value ?? ""))}`;
+}
+
+/** The subset of a Register/export query's named (non-`conditions`) filters that are
+ *  worth describing in the export note — mirrors the fields RegisterPage's UI can
+ *  actually set (center, capLocation, subClassification, status, globalSearch) plus the
+ *  older search/descriptionSearch/dateAcquiredFrom/dateAcquiredTo fields, kept for any
+ *  caller that still sends them directly (e.g. a saved link from before this round). */
+export interface NamedFilterQuery {
+  center?: string[];
+  capLocation?: string[];
+  subClassification?: string[];
+  status?: string[];
+  dateAcquiredFrom?: string;
+  dateAcquiredTo?: string;
+  search?: string;
+  descriptionSearch?: string;
+  globalSearch?: string;
+}
+
+function describeNamedFilters(q: NamedFilterQuery): string[] {
+  const lines: string[] = [];
+  if (q.center?.length) lines.push(`Current Location: ${q.center.join(", ")}`);
+  if (q.capLocation?.length) lines.push(`Capitalized Location: ${q.capLocation.join(", ")}`);
+  if (q.subClassification?.length) lines.push(`Sub Classification: ${q.subClassification.join(", ")}`);
+  if (q.status?.length) lines.push(`Status: ${q.status.join(", ")}`);
+  if (q.dateAcquiredFrom || q.dateAcquiredTo) {
+    if (q.dateAcquiredFrom && q.dateAcquiredTo) {
+      lines.push(`Date Acquired: between ${formatFilterDate(q.dateAcquiredFrom)} and ${formatFilterDate(q.dateAcquiredTo)}`);
+    } else if (q.dateAcquiredFrom) {
+      lines.push(`Date Acquired: after ${formatFilterDate(q.dateAcquiredFrom)}`);
+    } else {
+      lines.push(`Date Acquired: before ${formatFilterDate(q.dateAcquiredTo!)}`);
+    }
+  }
+  if (q.search) lines.push(`FAR ID: begins with "${q.search}"`);
+  if (q.descriptionSearch) lines.push(`Asset Description: contains "${q.descriptionSearch}"`);
+  if (q.globalSearch) lines.push(`Search: "${q.globalSearch}"`);
+  return lines;
+}
+
+/** Full "Filters applied: ..." line for the export note, plus "No filters applied" when
+ *  nothing is active — see assetsExport.ts for where this gets written into the sheet.
+ *  Pure/no I/O, so it's directly unit-testable without a database. */
+export function buildFilterSummaryText(q: NamedFilterQuery, conditions: RawCondition[]): string {
+  const lines = [...describeNamedFilters(q), ...conditions.map(describeCondition)];
+  return lines.length > 0 ? lines.join("; ") : "No filters applied";
+}

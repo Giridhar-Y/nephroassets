@@ -12,7 +12,6 @@ import { MergeModal } from "../components/MergeModal.js";
 import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
-import { Tooltip } from "../components/Tooltip.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { ExportIcon, SearchIcon, UploadIcon } from "../lib/icons.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
@@ -287,11 +286,6 @@ export function RegisterPage() {
             <ExportIcon fontSize={14} />
             Export to Excel
           </a>
-          {hasActiveFilters && (
-            <Tooltip text="Export downloads the full, unfiltered register — these column filters aren't applied to it yet.">
-              <span />
-            </Tooltip>
-          )}
           <ColumnPicker prefs={columnPrefs} />
         </div>
       </div>

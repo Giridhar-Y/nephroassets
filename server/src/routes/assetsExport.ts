@@ -7,6 +7,13 @@ import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import type { AssetCalculationResult, AssetInput } from "../calc/types.js";
+import {
+  buildCalcCteExtras,
+  buildConditionSql,
+  buildFilterSummaryText,
+  conditionsQuerySchema,
+  TOTAL_WDV_AND_PROFIT_LOSS_SQL
+} from "./assetColumnFilters.js";
 
 // Matched to a keyset page at a time (ordered by far_id) rather than one giant query, so
 // exporting the full 2,50,000+ row register doesn't hold the whole result set in memory
@@ -31,7 +38,11 @@ const exportQuerySchema = z.object({
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   search: z.string().optional(),
   descriptionSearch: z.string().optional(),
-  globalSearch: z.string().optional()
+  globalSearch: z.string().optional(),
+  // Excel-style per-column custom filter conditions — same mechanism and validation as
+  // GET /api/assets (see assetColumnFilters.ts). Required so the export reflects
+  // exactly the filtered result set Register's grid is showing, not the whole table.
+  conditions: conditionsQuerySchema
 });
 
 interface LabelContext {
@@ -392,11 +403,15 @@ const SQL_SUM_EXPRESSIONS: Record<string, string> = {
 };
 
 export default async function assetsExportRoutes(app: FastifyInstance) {
-  // Register's "Export to Excel": same filters as GET /api/assets (center, sub
-  // classification, status, date range, FAR ID search), but every matching row rather
-  // than one page — no filters applied means the entire register is exported. Full
-  // 39-column/10-group parity with the on-screen Register table (see columns.ts on the
-  // client) — a totals row, then the grouped header (merged, bold, no fill color), then
+  // Register's "Export to Excel": exactly the same filters as GET /api/assets — the
+  // named fields (center, sub classification, status, date range, FAR ID search) plus
+  // the Excel-style `conditions` array (including computed columns like NBV, via the
+  // same far_calc_component-backed calc CTE) — but every matching row rather than one
+  // page. No filters applied means the entire register is exported; either way, a
+  // filter-summary note row states exactly what was applied so the file is never
+  // mistaken for the full register once it's out of context. Full 39-column/10-group
+  // parity with the on-screen Register table (see columns.ts on the
+  // client) — a filter-summary note, a totals row, then the grouped header (merged, bold, no fill color), then
   // one streamed row per matching asset.
   app.get("/api/assets/export", async (req, reply) => {
     const parsed = exportQuerySchema.safeParse(req.query);
@@ -479,24 +494,56 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
+    // Excel-style column-header conditions — same handling as GET /api/assets: resolved
+    // against the calc CTE (far_calc_component's c1/c2 plus the derived columns), applied
+    // in the outer query after the CTE exists. Built once here and reused by both the
+    // totals query and every row-fetching batch below, so the totals row and the exported
+    // rows are always the same filtered set.
+    const computedConditions: string[] = [];
+    for (const cond of q.conditions) {
+      const built = buildConditionSql(cond, params, { fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+      if ("error" in built) {
+        reply.code(400);
+        return { error: built.error };
+      }
+      computedConditions.push(built.sql);
+    }
+    const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+    const filterSummaryText = buildFilterSummaryText(q, q.conditions);
+    // DD-MM-YYYY HH:MM, matching the app's own date convention (ddmmyyyy() above) —
+    // built from Intl's individual parts rather than trusting a locale's default
+    // separator (en-IN renders DD/MM/YYYY with slashes, not the dashes used everywhere
+    // else in this app), pinned to IST so the timestamp is unambiguous regardless of
+    // which timezone the server process itself happens to run in.
+    const exportedAtParts = new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Kolkata"
+    }).formatToParts(new Date());
+    const part = (type: string) => exportedAtParts.find((p) => p.type === type)?.value ?? "";
+    const exportedAtText = `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}`;
+
     // Totals row: one aggregate pass over every matching row (same filters, no cursor),
     // computed in Postgres via the same `far_calc_component` SQL port of the calc engine
     // the other reports already use — reading all 2,50,000+ rows into Node just to sum
-    // them would defeat the point of streaming the export in the first place.
-    const totalsParams = [...params, fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
-    const asAtPh = params.length + 1;
-    const fyStartPh = params.length + 2;
-    const daysPh = params.length + 3;
-    const fyEndPh = params.length + 4;
+    // them would defeat the point of streaming the export in the first place. Uses its
+    // own copy of `params` (not the shared one) since its calc-CTE params are specific to
+    // this one query — the per-batch loop below builds an identical CTE fresh per batch,
+    // off the shared (pre-totals) `params`, so the two never share param indices.
+    const totalsParams = [...params];
+    const totalsCalcExtras = buildCalcCteExtras(totalsParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
     const { rows: totalsRows } = await db.query(
-      `WITH calc AS (
-         SELECT qty, acc_dep_c1_opening, acc_dep_c2_opening,
-           far_calc_component(c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years,
-             date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $${asAtPh}::date, $${fyStartPh}::date, $${fyEndPh}::date, $${daysPh}::integer, date_acquired) AS c1,
-           far_calc_component(c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
-             date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $${asAtPh}::date, $${fyStartPh}::date, $${fyEndPh}::date, $${daysPh}::integer, date_acquired) AS c2,
-           deletions_c1, deletions_c2, sale_value
+      `WITH calc_base AS (
+         SELECT assets.*,
+           ${totalsCalcExtras}
          FROM assets ${whereClause}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
        )
        SELECT
          ${SQL_SUM_EXPRESSIONS.qty} AS qty,
@@ -524,7 +571,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
          ${SQL_SUM_EXPRESSIONS.assetProfitLoss} AS asset_profit_loss,
          ${SQL_SUM_EXPRESSIONS.c1Nbv} AS c1_nbv,
          ${SQL_SUM_EXPRESSIONS.c2Nbv} AS c2_nbv
-       FROM calc`,
+       FROM calc ${computedWhereClause}`,
       totalsParams
     );
     const t = totalsRows[0] as Record<string, string | null>;
@@ -575,7 +622,18 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
         style: c.kind === "number" ? { numFmt: "#,##0.00" } : undefined
       }));
 
-      // Row 1: totals — "TOTAL" in the first column, a sum under every totalable numeric
+      // Row 1: filter-summary note — what this file represents and when it was pulled,
+      // so it's never mistaken for the full register once it's out of context (e.g.
+      // forwarded, or opened weeks later). Merged across every column, styled as a
+      // distinct metadata line rather than a data row. Placed above the totals row
+      // (which every later row number below now accounts for via `.number`, not a
+      // hardcoded row index) instead of disrupting the column layout itself.
+      const noteRow = worksheet.addRow([`Filters applied: ${filterSummaryText}  —  Exported: ${exportedAtText} IST`]);
+      noteRow.font = { italic: true, color: { argb: "FF52525B" } };
+      worksheet.mergeCells(noteRow.number, 1, noteRow.number, EXPORT_COLUMNS.length);
+      noteRow.commit();
+
+      // Row 2: totals — "TOTAL" in the first column, a sum under every totalable numeric
       // column, blank everywhere else (text/date columns, and non-totalable numbers like
       // Useful Life).
       const totalsRowValues = EXPORT_COLUMNS.map((c, i) => {
@@ -587,7 +645,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       totalsRow.font = { bold: true };
       totalsRow.commit();
 
-      // Row 2: group band — merged across each contiguous same-group run, bold, with a
+      // Row 3: group band — merged across each contiguous same-group run, bold, with a
       // distinct muted fill per group (every cell in the run gets it, not just the
       // merged range's top-left, so it renders correctly regardless of how a given
       // reader handles merge-range styling).
@@ -598,12 +656,12 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
         for (let c = run.startCol; c <= run.endCol; c++) {
           groupRow.getCell(c).fill = { type: "pattern", pattern: "solid", fgColor: { argb: info.fill } };
         }
-        if (run.endCol > run.startCol) worksheet.mergeCells(2, run.startCol, 2, run.endCol);
+        if (run.endCol > run.startCol) worksheet.mergeCells(groupRow.number, run.startCol, groupRow.number, run.endCol);
       }
       groupRow.font = { bold: true };
       groupRow.commit();
 
-      // Row 3: column names — resolves each column's live "as at ..." date text.
+      // Row 4: column names — resolves each column's live "as at ..." date text.
       const headerRow = worksheet.addRow(EXPORT_COLUMNS.map((c) => resolveLabel(c, ctx)));
       headerRow.font = { bold: true };
       headerRow.commit();
@@ -617,10 +675,33 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           batchConditions.push(`far_id > $${batchParams.length}`);
         }
         const batchWhereClause = batchConditions.length > 0 ? `WHERE ${batchConditions.join(" AND ")}` : "";
+        // Same two-stage calc CTE as the totals query above (and GET /api/assets) — built
+        // fresh each batch since the cursor condition above changes every iteration, but
+        // `computedWhereClause`'s own SQL text (built once, outside this loop) still
+        // resolves correctly against whatever fresh params this batch pushes, since it
+        // only ever appends to `batchParams`, never renumbers what's already there.
+        // ponytail: a computed-column filter (e.g. C1 NBV > X) means Postgres can't stop
+        // at EXPORT_BATCH_SIZE raw rows the way the old unfiltered query could — it has to
+        // compute far_calc_component for every remaining row past the cursor to know
+        // which ones pass, every batch iteration, until it collects a full page or
+        // exhausts the table. Fine at this app's current ~3,015-row scale (matches the
+        // cost GET /api/assets already accepted for the same reason); if the register
+        // grows toward the 250k figure the other reports are built for and a heavily
+        // selective computed filter makes this visibly slow, revisit with a covering
+        // index or a materialized computed-value column.
+        const batchCalcExtras = buildCalcCteExtras(batchParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
         batchParams.push(EXPORT_BATCH_SIZE);
 
         const { rows } = await db.query<AssetRow>(
-          `SELECT * FROM assets ${batchWhereClause} ORDER BY far_id LIMIT $${batchParams.length}`,
+          `WITH calc_base AS (
+             SELECT assets.*,
+               ${batchCalcExtras}
+             FROM assets ${batchWhereClause}
+           ), calc AS (
+             SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+             FROM calc_base
+           )
+           SELECT * FROM calc ${computedWhereClause} ORDER BY far_id LIMIT $${batchParams.length}`,
           batchParams
         );
         if (rows.length === 0) break;
