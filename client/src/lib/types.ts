@@ -115,4 +115,8 @@ export interface AssetFilters {
   search?: string;
   descriptionSearch?: string;
   globalSearch?: string;
+  /** Excel-style per-column custom filter conditions — see columnFilters.ts. Additive to
+   *  every field above (AND'd in), not a replacement — Register uses this for every
+   *  column beyond the handful the named fields above already cover. */
+  conditions?: import("./columnFilters.js").ColumnCondition[];
 }

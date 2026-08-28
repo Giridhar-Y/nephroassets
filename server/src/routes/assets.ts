@@ -9,6 +9,7 @@ import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkPars
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
+import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -119,7 +120,11 @@ const querySchema = z.object({
   sortBy: z.enum(["farId", "dateAcquired", "subClassification", "status", "location"]).default("farId"),
   sortDir: z.enum(["asc", "desc"]).default("asc"),
   cursor: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(100)
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  // Excel-style per-column custom filter conditions (Register's column-header
+  // filters) — see assetColumnFilters.ts. AND'd with every filter above, and with each
+  // other, same as every existing condition in this route.
+  conditions: conditionsQuerySchema
 });
 
 function decodeCursor(cursor: string | undefined): [string, string] | null {
@@ -249,13 +254,45 @@ export default async function assetsRoutes(app: FastifyInstance) {
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    // Excel-style column-header conditions — resolved against the calc CTE below (which
+    // exposes far_calc_component's c1/c2 composites plus the handful of other derived
+    // columns AssetGrid renders), so a filter on a computed field like NBV or Acc Dep
+    // works the same as one on a raw stored column. Applied in the outer query, after
+    // the CTE, not folded into `conditions` above — those are evaluated pre-calc for
+    // cheapness, these need the calc to exist first.
+    const computedConditions: string[] = [];
+    for (const cond of q.conditions) {
+      const built = buildConditionSql(cond, params, { fyStart: fySettings.fy_start, fyEnd: fySettings.fy_end });
+      if ("error" in built) {
+        reply.code(400);
+        return { error: built.error };
+      }
+      computedConditions.push(built.sql);
+    }
+    const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+
+    const calcExtras = buildCalcCteExtras(params, asAt, {
+      fyStart: fySettings.fy_start,
+      fyEnd: fySettings.fy_end,
+      daysInFy: fySettings.days_in_fy
+    });
+
     params.push(q.limit);
     const limitParamIndex = params.length;
 
     const sql = `
-      SELECT *, EXISTS(SELECT 1 FROM assets c WHERE c.parent_far_id = assets.far_id) AS has_children
-      FROM assets
-      ${whereClause}
+      WITH calc_base AS (
+        SELECT assets.*, EXISTS(SELECT 1 FROM assets c WHERE c.parent_far_id = assets.far_id) AS has_children,
+          ${calcExtras}
+        FROM assets
+        ${whereClause}
+      ), calc AS (
+        SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+        FROM calc_base
+      )
+      SELECT * FROM calc
+      ${computedWhereClause}
       ORDER BY ${sortColumn} ${q.sortDir}, far_id ${q.sortDir}
       LIMIT $${limitParamIndex}
     `;
