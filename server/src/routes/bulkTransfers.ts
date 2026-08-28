@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type pg from "pg";
 import { getPool } from "../db/pool.js";
 import { bulkDate, isoToDDMMYYYY, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
 
 const transferRowSchema = z.object({
@@ -9,6 +11,46 @@ const transferRowSchema = z.object({
   toLocation: z.string().min(1),
   transactionDate: bulkDate
 });
+
+/**
+ * Writes one row's transfer (history row + denormalized location update), then cascades
+ * to every still-active child of `farId` — same rule as POST /api/transfers's own cascade
+ * (transfers.ts), ported here rather than shared as one function since that route's shape
+ * is genuinely different (one shared destination for a whole multi-select batch, cascade
+ * detected once up front) from this one (each row can have its own destination/date, so
+ * cascade has to be resolved per row instead). Fixes a real gap: this route previously
+ * moved only the exact FAR ID in each row, silently leaving children behind at their old
+ * location when a parent was bulk-transferred.
+ */
+async function transferWithChildren(
+  client: pg.PoolClient,
+  farId: string,
+  toLocation: string,
+  transactionDate: string,
+  cascadedFromParentFarId: string | null = null
+): Promise<string[]> {
+  await client.query(
+    `INSERT INTO transfers (far_id, transaction_date, location, cascaded_from_parent_far_id) VALUES ($1, $2, $3, $4)`,
+    [farId, transactionDate, toLocation, cascadedFromParentFarId]
+  );
+  await client.query(
+    `UPDATE assets SET revised_location = $1, last_date_of_transaction = $2
+     WHERE far_id = $3 AND (last_date_of_transaction IS NULL OR last_date_of_transaction <= $2)`,
+    [toLocation, transactionDate, farId]
+  );
+
+  if (cascadedFromParentFarId !== null) return []; // one level only — a child never has its own children to cascade to.
+  const { rows: children } = await client.query<{ far_id: string }>(
+    `SELECT far_id FROM assets WHERE parent_far_id = $1 AND date_of_disposal IS NULL`,
+    [farId]
+  );
+  const childrenTransferred: string[] = [];
+  for (const child of children) {
+    await transferWithChildren(client, child.far_id, toLocation, transactionDate, farId);
+    childrenTransferred.push(child.far_id);
+  }
+  return childrenTransferred;
+}
 
 export default async function bulkTransfersRoutes(app: FastifyInstance) {
   // Bulk Transfers: same effect as POST /api/transfers (one transfer history row plus a
@@ -70,10 +112,23 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             ).rows.map((r) => [r.far_id, r.date_acquired])
           : []
       );
+      // Rule 1 (2026-08-28): a child asset can't be transferred directly via a bulk row —
+      // every row here is its own standalone instruction; a parent's own row, if also
+      // present, cascades to its children anyway.
+      const childViolations = new Map(
+        (await findDirectChildActionViolations(db, farIds)).map((v) => [v.farId, v.parentFarId])
+      );
       const classified: Array<{ row: number; farId: string; status: "update" }> = [];
       for (const { row, data } of validRows) {
         const dateAcquired = dateAcquiredByFarId.get(data.farId);
-        if (dateAcquired === undefined) {
+        const violatingParent = childViolations.get(data.farId);
+        if (violatingParent) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`
+          });
+        } else if (dateAcquired === undefined) {
           errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
         } else if (data.transactionDate < dateAcquired) {
           errors.push({
@@ -92,17 +147,33 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     let processed = 0;
     if (validRows.length > 0) {
       const db = await getPool();
+      // Rule 1, same batched check as preview mode above — a child's row never reaches
+      // transferWithChildren at all.
+      const childViolations = new Map(
+        (await findDirectChildActionViolations(db, validRows.map(({ data }) => data.farId))).map((v) => [
+          v.farId,
+          v.parentFarId
+        ])
+      );
       const client = await db.connect();
-      // Each row writes two statements (the transfer history row, then the asset's
-      // denormalized current-location columns) that must land together or not at all —
-      // so each row gets its own BEGIN...COMMIT/ROLLBACK, rather than one transaction for
-      // the whole loop as this used to be. That isolates a DB-level failure on one row to
-      // just that row (reported as an error, already-succeeded rows stand) while still
-      // keeping each row's own two writes atomic. Mirrors bulkMasters.ts's per-row
-      // isolation, adapted for the one route here whose row-level write isn't a single
-      // statement.
+      // Each row's write (transferWithChildren: the transfer history row, the asset's
+      // denormalized current-location columns, and now the same two writes cascaded to
+      // every active child) must land together or not at all — so each row gets its own
+      // BEGIN...COMMIT/ROLLBACK, rather than one transaction for the whole loop. That
+      // isolates a DB-level failure on one row to just that row (reported as an error,
+      // already-succeeded rows stand) while still keeping one row's full cascade atomic.
+      // Mirrors bulkMasters.ts's per-row isolation.
       try {
         for (const { row, data } of validRows) {
+          const violatingParent = childViolations.get(data.farId);
+          if (violatingParent) {
+            errors.push({
+              row,
+              farId: data.farId,
+              message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`
+            });
+            continue;
+          }
           const { rows: exists } = await client.query<{ date_acquired: string }>(
             `SELECT date_acquired FROM assets WHERE far_id = $1`,
             [data.farId]
@@ -121,19 +192,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
           }
           try {
             await client.query("BEGIN");
-            await client.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`, [
-              data.farId,
-              data.transactionDate,
-              data.toLocation
-            ]);
-            // Guarded the same way as POST /api/transfers — a backdated/out-of-order row
-            // still gets recorded in transfer history but doesn't regress the denormalized
-            // "current location" cache that filtering/reports/export trust directly.
-            await client.query(
-              `UPDATE assets SET revised_location = $1, last_date_of_transaction = $2
-               WHERE far_id = $3 AND (last_date_of_transaction IS NULL OR last_date_of_transaction <= $2)`,
-              [data.toLocation, data.transactionDate, data.farId]
-            );
+            await transferWithChildren(client, data.farId, data.toLocation, data.transactionDate);
             await client.query("COMMIT");
             processed++;
           } catch (err) {

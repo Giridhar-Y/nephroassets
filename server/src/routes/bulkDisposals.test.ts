@@ -177,4 +177,47 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     const { rows } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = 'BDISP-DMY'`);
     expect(String(rows[0].date_of_disposal)).toMatch(/^2026-08-01/);
   });
+
+  describe("Parent/child (2026-08-28)", () => {
+    it("bulk-disposing a parent also disposes its still-active children — the cascade gap this route used to have", async () => {
+      await insertAsset("BDISP-PARENT-1");
+      await insertAsset("BDISP-CHILD-1");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'BDISP-PARENT-1' WHERE far_id = 'BDISP-CHILD-1'`);
+
+      const csv = [HEADER, "BDISP-PARENT-1,2026-08-01,500"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+      expect(res.json().processed).toBe(1);
+
+      const { rows } = await db.query(
+        `SELECT date_of_disposal, sale_value, disposed_via_parent_far_id FROM assets WHERE far_id = 'BDISP-CHILD-1'`
+      );
+      expect(rows[0].date_of_disposal).not.toBeNull();
+      expect(Number(rows[0].sale_value)).toBe(0);
+      expect(rows[0].disposed_via_parent_far_id).toBe("BDISP-PARENT-1");
+    });
+
+    it("(Rule 1) rejects a bulk row that disposes a child directly, in both preview and commit", async () => {
+      await insertAsset("BDISP-PARENT-2");
+      await insertAsset("BDISP-CHILD-2");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'BDISP-PARENT-2' WHERE far_id = 'BDISP-CHILD-2'`);
+
+      const csv = [HEADER, "BDISP-CHILD-2,2026-08-01,0"].join("\n");
+      const preview = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-dispose?preview=true",
+        ...csvPayload(csv)
+      });
+      expect(preview.json().rows[0].message).toMatch(/child of "BDISP-PARENT-2".*dispose the parent instead/);
+
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/child of "BDISP-PARENT-2".*dispose the parent instead/);
+
+      const { rows } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = 'BDISP-CHILD-2'`);
+      expect(rows[0].date_of_disposal).toBeNull();
+    });
+  });
 });

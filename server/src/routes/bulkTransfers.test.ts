@@ -189,4 +189,61 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     const { rows } = await db.query(`SELECT transaction_date FROM transfers WHERE far_id = 'BXFER-DMY'`);
     expect(String(rows[0].transaction_date)).toMatch(/^2026-05-05/);
   });
+
+  describe("Parent/child (2026-08-28)", () => {
+    it("bulk-transferring a parent also moves its still-active children — the cascade gap this route used to have", async () => {
+      await insertAsset("BXFER-PARENT-1");
+      await insertAsset("BXFER-CHILD-1");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'BXFER-PARENT-1' WHERE far_id = 'BXFER-CHILD-1'`);
+
+      const csv = [HEADER, "BXFER-PARENT-1,Center-B,2026-05-01"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+      expect(res.json().processed).toBe(1);
+
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-CHILD-1'`);
+      expect(rows[0].revised_location).toBe("Center-B");
+      const { rows: history } = await db.query(
+        `SELECT cascaded_from_parent_far_id FROM transfers WHERE far_id = 'BXFER-CHILD-1'`
+      );
+      expect(history[0].cascaded_from_parent_far_id).toBe("BXFER-PARENT-1");
+    });
+
+    it("does not transfer a child that's already disposed", async () => {
+      await insertAsset("BXFER-PARENT-2");
+      await insertAsset("BXFER-CHILD-2");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'BXFER-PARENT-2' WHERE far_id = 'BXFER-CHILD-2'`);
+      await db.query(`UPDATE assets SET date_of_disposal = '2026-01-01', status = 'Disposed' WHERE far_id = 'BXFER-CHILD-2'`);
+
+      const csv = [HEADER, "BXFER-PARENT-2,Center-B,2026-05-01"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-CHILD-2'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+
+    it("(Rule 1) rejects a bulk row that transfers a child directly, in both preview and commit", async () => {
+      await insertAsset("BXFER-PARENT-3");
+      await insertAsset("BXFER-CHILD-3");
+      const db = await getPool();
+      await db.query(`UPDATE assets SET parent_far_id = 'BXFER-PARENT-3' WHERE far_id = 'BXFER-CHILD-3'`);
+
+      const csv = [HEADER, "BXFER-CHILD-3,Center-B,2026-05-01"].join("\n");
+      const preview = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers/bulk-upload?preview=true",
+        ...csvPayload(csv)
+      });
+      expect(preview.json().rows[0].message).toMatch(/child of "BXFER-PARENT-3".*transfer the parent instead/);
+
+      const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/child of "BXFER-PARENT-3".*transfer the parent instead/);
+
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-CHILD-3'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+  });
 });
