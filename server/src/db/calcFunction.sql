@@ -196,11 +196,16 @@ DECLARE
   disposed_ratio numeric;
   dep_on_disposed_portion numeric := 0;
 
-  -- Step 8's own flat-rate day-count window (FY Start to Disposal Date, capped at FY
-  -- End) — see far_calc_component's step 8 comment for why this is independent of the
-  -- tranche classification above.
+  -- Step 8's own flat-rate day-count windows (opening: FY Start to Disposal Date;
+  -- additions: p_date_of_addition to Disposal Date; both capped at FY End) — see
+  -- far_calc_component's step 8 comment for why this is independent of the tranche
+  -- classification above.
   capped_disposal_date date;
-  days_held_to_disposal integer;
+  disposed_combined_cost numeric;
+  days_opening_to_disposal integer;
+  days_addition_to_disposal integer;
+  dep_on_disposed_opening numeric;
+  dep_on_disposed_additions numeric;
 
   acc_dep_on_disposed numeric;
   closing_acc_dep numeric;
@@ -291,52 +296,63 @@ BEGIN
   disposed_ratio := CASE WHEN cost_base <> 0 THEN effective_disposed_cost / cost_base ELSE 0 END;
 
   -- Step 8: Depreciation on the disposed portion, up to Disposal Date — per the FAR FY
-  -- 2026-27 Excel workbook's AB/AC formula (rows 6-12, verified cell-by-cell), reverted
-  -- to be fully independent of step 5's end-of-life taper: a component whose useful life
-  -- had already run out before disposal still gets flat-rate SLM here, even though step
-  -- 5 above would taper it. Confirmed explicitly by finance as intentional (2026-08-27),
-  -- reversing the taper-aware far_depreciation_as_of sharing between steps 5 and 8 from
-  -- the prior deploy. Known, accepted consequence: this reopens the Audit Reconciliation
-  -- roll-forward gap for an asset disposed after its useful life had already expired —
-  -- that gap exists in the Excel file itself, so it's not a regression to route around.
+  -- 2026-27 Excel workbook's AB/AC formula, fully independent of step 5's end-of-life
+  -- taper: a component whose useful life had already run out before disposal still gets
+  -- flat-rate SLM here, even though step 5 above would taper it. Confirmed explicitly by
+  -- finance as intentional; known, accepted consequence: this reopens the Audit
+  -- Reconciliation roll-forward gap for an asset disposed after its useful life had
+  -- already expired — that gap exists in the Excel file itself, so it's not a regression
+  -- to route around.
   --
-  -- The day-count window for BOTH the opening-portion and the additions-portion uses FY
-  -- Start (not the addition's own p_date_of_addition, unlike step 5's flat-rate branch
-  -- above) — confirmed against 6 of 7 sample rows in the workbook; the 7th's reference to
-  -- a different column was a copy-paste artifact, not the intended formula. The Excel
-  -- formula literally computes disposed_ratio * ((M/K)*window + (O/K)*window) with an
-  -- M/(M+O) + O/(M+O) split that's algebraically inert when both windows are identical —
-  -- disposed_ratio * (M+O) = p_deletions_cost by construction, so the whole expression
-  -- reduces to (p_deletions_cost/p_useful_life_years)*window regardless of the M/O split.
-  -- Implemented directly in that reduced form rather than transcribing the redundant
-  -- split — except the reduction divides by (M+O), so the `cost_base <> 0` guard below
-  -- (matching Excel's own IF(M+O=0,0,...)) still has to be kept explicit: this app's own
-  -- full-disposal write path always has p_deletions_cost = cost_base at disposal (so the
-  -- reduced form is safe there even without a guard), but a bulk-uploaded historical
-  -- disposed row can carry a nonzero p_deletions_cost against a zero-cost component
-  -- independently.
+  -- Corrected 2026-08-28: the additions-portion day-count window uses p_date_of_addition,
+  -- NOT FY Start. The "FY_ST for both terms" reading from the prior round was a
+  -- misdiagnosis — it was checked against a version of the workbook with only one usable
+  -- data row, and a stray same-looking reference was assumed to be the intended formula.
+  -- A newer version of the file (two consistent data rows) plus its own "Methodology &
+  -- Notes" sheet confirm explicitly: "Start date for additions: Date of Addition", and
+  -- for this specific calc, "FY dep on deleted cost from FY_Start (or Add_Date) to
+  -- Disposal Date." The opening-portion term is unchanged (FY Start), per the same note's
+  -- "Start date for opening balance assets: FY Start".
   --
-  -- NOTE (step 9 interaction): step 5 above deliberately keeps the addition's-own-date
-  -- window while this step reverts to FY-Start-for-both — that mismatch can drive step
-  -- 9's raw value negative for an asset added and disposed within the same FY. This
-  -- commit doesn't add a floor for that yet — the next commit adds it.
-  IF disposal_effective AND has_useful_life AND cost_base <> 0 THEN
+  -- M and O below are the RAW p_opening_cost/p_additions input fields (not the
+  -- FY-rollover-reclassified opening_gross_block_as_at/additions_gross_block from steps
+  -- 2-4) — the Excel formula's (p_opening_cost + p_additions) denominator is a direct
+  -- two-cell reference with no reclassification concept of its own, and step 8 has been
+  -- independent of step 5's FY-rollover machinery since the reversion two rounds ago.
+  -- Each term is still separately date-gated (GREATEST(0, ...)) so a not-yet-happened
+  -- addition (p_date_of_addition after Disposal Date) still contributes zero, matching
+  -- the rest of this engine's future-dated-tranche handling — without needing step 5's
+  -- reclassification to do it.
+  disposed_combined_cost := p_opening_cost + p_additions;
+  IF disposal_effective AND has_useful_life AND disposed_combined_cost <> 0 THEN
     capped_disposal_date := LEAST(p_date_of_disposal, p_fy_end);
-    days_held_to_disposal := GREATEST(0, (capped_disposal_date - p_fy_start) + 1);
-    dep_on_disposed_portion := (p_deletions_cost / p_useful_life_years) * (days_held_to_disposal::numeric / p_days_in_fy);
+    days_opening_to_disposal := GREATEST(0, (capped_disposal_date - p_fy_start) + 1);
+    dep_on_disposed_opening := p_deletions_cost * (p_opening_cost / disposed_combined_cost)
+      * (days_opening_to_disposal::numeric / (p_useful_life_years * p_days_in_fy));
+
+    dep_on_disposed_additions := 0;
+    IF p_additions <> 0 THEN
+      days_addition_to_disposal := GREATEST(0, (capped_disposal_date - p_date_of_addition) + 1);
+      dep_on_disposed_additions := p_deletions_cost * (p_additions / disposed_combined_cost)
+        * (days_addition_to_disposal::numeric / (p_useful_life_years * p_days_in_fy));
+    END IF;
+
+    dep_on_disposed_portion := dep_on_disposed_opening + dep_on_disposed_additions;
   END IF;
 
   acc_dep_on_disposed := CASE WHEN disposal_effective
     THEN LEAST(disposed_ratio * p_acc_dep_opening + dep_on_disposed_portion, effective_disposed_cost) ELSE 0 END;
 
   -- Step 9: Closing Accumulated Depreciation / Step 10: Net Book Value — floored at 0,
-  -- not just capped at gross_block. See engine.ts's computeComponent step 9 comment:
-  -- step 5 keeps the addition's-own-date window while step 8 reverted to Excel's literal
-  -- FY-Start-for-both window, so an asset added and disposed within the same FY can make
-  -- acc_dep_on_disposed exceed p_acc_dep_opening+period_depreciation, which would
-  -- otherwise go negative here. Confirmed explicitly by finance (2026-08-27). This is a
-  -- NephroAssets-specific safety net — the Excel workbook itself never needs it, since
-  -- its own step 5 and step 8 always agree on an addition's window.
+  -- not just capped at gross_block. See engine.ts's computeComponent step 9 comment for
+  -- the full history: step 8's 2026-08-28 additions-window correction eliminated this
+  -- floor's original trigger (a long-owned asset's mid-year addition disposed the same
+  -- FY), but it's still load-bearing for a narrower case — an asset CAPITALIZED mid-year
+  -- and disposed later the same FY, since step 8's opening-portion term unconditionally
+  -- uses FY Start while step 5 correctly uses the asset's own date_acquired once that
+  -- falls inside the current FY. Confirmed explicitly by finance (2026-08-27). This is a
+  -- NephroAssets-specific safety net — the Excel workbook's own sample rows have no asset
+  -- both capitalized and disposed in the same period to reveal this.
   closing_acc_dep := GREATEST(0, LEAST(p_acc_dep_opening + period_depreciation - acc_dep_on_disposed, gross_block));
   nbv := gross_block - closing_acc_dep;
 

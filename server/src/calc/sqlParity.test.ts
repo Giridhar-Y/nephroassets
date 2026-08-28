@@ -338,10 +338,10 @@ const fixtures: Fixture[] = [
     },
     fy: { ...FY, asAt: "2026-02-01" }
   },
-  // Additional regression coverage (2026-08-27, third round) — the floor's own
-  // realistically-shaped fixture, matching engine.test.ts's (j).
+  // Additional regression coverage (2026-08-27, third round; recomputed 2026-08-28) —
+  // matching engine.test.ts's (j): step 8 now matches step 5 exactly here, no floor.
   {
-    name: "taper (j): realistic shape, opening cost + mid-year addition fully disposed the same FY (floor engages)",
+    name: "taper (j): realistic shape, opening cost + mid-year addition fully disposed the same FY (no floor needed)",
     input: {
       dateAcquired: "2015-01-01",
       openingCost: 250000,
@@ -354,6 +354,24 @@ const fixtures: Fixture[] = [
       accDepOpening: 50000
     },
     fy: { ...FY, asAt: "2025-11-30" }
+  },
+  // Additional regression coverage (2026-08-28) — matching engine.test.ts's (k): an
+  // asset capitalized mid-year (not just mid-year-added) and disposed the same FY still
+  // triggers the floor, since step 8's opening-portion term unconditionally uses FY Start.
+  {
+    name: "taper (k): realistic shape, asset capitalized mid-year (no addition) and disposed the same FY (floor still engages)",
+    input: {
+      dateAcquired: "2026-05-01",
+      openingCost: 80000,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 5,
+      dateOfDisposal: "2026-11-30",
+      deletionsCost: 80000,
+      saleValue: 10000,
+      accDepOpening: 0
+    },
+    fy: { asAt: "2026-11-30", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
   }
 ];
 
