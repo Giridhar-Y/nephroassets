@@ -297,7 +297,20 @@ export default async function assetsRoutes(app: FastifyInstance) {
       LIMIT $${limitParamIndex}
     `;
 
-    const { rows } = await db.query<AssetRow>(sql, params);
+    let rows: AssetRow[];
+    try {
+      ({ rows } = await db.query<AssetRow>(sql, params));
+    } catch (err) {
+      // A malformed or unsupported filter combination should never surface as a bare
+      // Fastify/Vercel 500 with a raw Postgres error message (an "ambiguous column" or
+      // similar internal detail means nothing to someone applying a filter on Register).
+      // Full technical detail still goes to the server log for debugging; the client
+      // gets a plain-language message instead. See assetColumnFilters.ts's per-column
+      // SQL registry for the class of bug this guards against.
+      req.log.error({ err, sql, params }, "GET /api/assets query failed");
+      reply.code(500);
+      return { error: "Could not load the register with these filters — try removing or adjusting one of them." };
+    }
 
     const farIds = rows.map((r) => r.far_id);
     let transfers: TransferRow[] = [];

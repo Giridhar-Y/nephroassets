@@ -123,6 +123,21 @@ describe("buildConditionSql: date operators", () => {
   });
 });
 
+describe("buildConditionSql: lastDateOfTransaction (regression — its SQL alias must never collide with the real `assets.last_date_of_transaction` column)", () => {
+  it("resolves to the computed alias, not the raw denormalized column of the same name", () => {
+    const built = buildConditionSql({ columnId: "lastDateOfTransaction", op: "after", value: "2026-01-01" }, [], FY);
+    expect(built).toEqual({ sql: "computed_last_date_of_transaction > $1::date" });
+    // The bug this pins: `assets` has its own real `last_date_of_transaction` column
+    // (schema.sql) — resolving to that bare name here would make `SELECT assets.*`
+    // (which pulls the raw column in unchanged) collide with the computed alias
+    // buildCalcCteExtras defines, and Postgres rejects any later reference to it as
+    // ambiguous (42702). This assertion fails immediately if that alias is ever renamed
+    // back without checking for the collision again.
+    expect((built as { sql: string }).sql).not.toContain(" last_date_of_transaction ");
+    expect((built as { sql: string }).sql.startsWith("last_date_of_transaction")).toBe(false);
+  });
+});
+
 describe("buildConditionSql: unknown column", () => {
   it("reports an error rather than building a SQL fragment for an unrecognized columnId", () => {
     const built = buildConditionSql({ columnId: "notARealColumn", op: "equals", value: "x" }, [], FY);
