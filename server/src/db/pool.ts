@@ -231,5 +231,17 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_settings_audit_log_created_at ON settings_audit_log (created_at DESC);
+
+    -- Bulk asset actions audit trail (Bulk Merge) — see schema.sql's comment for the full
+    -- reasoning. IF NOT EXISTS makes this a no-op on every boot after the first.
+    CREATE TABLE IF NOT EXISTS asset_bulk_action_log (
+      id                BIGSERIAL PRIMARY KEY,
+      actor_user_id     BIGINT REFERENCES users(id),
+      action            TEXT NOT NULL,
+      source_filename   TEXT,
+      details           JSONB,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_bulk_action_log_created_at ON asset_bulk_action_log (created_at DESC);
   `);
 }

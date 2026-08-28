@@ -170,6 +170,22 @@ CREATE TABLE settings_audit_log (
 );
 CREATE INDEX idx_settings_audit_log_created_at ON settings_audit_log (created_at DESC);
 
+-- Bulk asset actions (Bulk Merge, routes/bulkMerge.ts) — who ran it, when, the source
+-- filename, and a per-run summary. Modeled on user_audit_log's JSONB `details` shape
+-- (variable, action-specific fields), not settings_audit_log's plain old/new TEXT columns
+-- — a bulk action's shape (rows applied vs skipped, which pairs) doesn't reduce to one
+-- scalar field the way a single settings change does. Not scoped to a single target
+-- row (unlike user_audit_log's target_user_id) since one run touches many assets.
+CREATE TABLE asset_bulk_action_log (
+  id                BIGSERIAL PRIMARY KEY,
+  actor_user_id     BIGINT REFERENCES users(id),
+  action            TEXT NOT NULL,
+  source_filename   TEXT,
+  details           JSONB,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_asset_bulk_action_log_created_at ON asset_bulk_action_log (created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

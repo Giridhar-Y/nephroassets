@@ -353,15 +353,17 @@ async function postFile<T>(path: string, file: File): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// Bulk Upload's three modes: create/update assets (capitalization included — a new FAR
-// ID capitalizes, an existing one updates), full disposals, and center transfers. Each
-// has a matching `?preview=true` mode on the same route that classifies rows without
-// writing anything, so Confirm Upload (the plain call below) is guaranteed to match what
-// the preview showed — it's the same server-side validation, just re-run.
+// Bulk Upload's four modes: create/update assets (capitalization included — a new FAR
+// ID capitalizes, an existing one updates), full disposals, center transfers, and
+// parent/child merge. Each has a matching `?preview=true` mode on the same route that
+// classifies rows without writing anything, so Confirm Upload (the plain call below) is
+// guaranteed to match what the preview showed — it's the same server-side validation,
+// just re-run.
 export const BULK_UPLOAD_PATHS = {
   assets: "/api/assets/bulk-upload",
   disposals: "/api/assets/bulk-dispose",
-  transfers: "/api/transfers/bulk-upload"
+  transfers: "/api/transfers/bulk-upload",
+  merge: "/api/assets/bulk-merge"
 } as const;
 
 export const MASTERS_BULK_UPLOAD_PATHS = {

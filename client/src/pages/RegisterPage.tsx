@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.js";
 import { useFilters } from "../lib/FiltersContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
@@ -12,11 +13,12 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, DateRangeFilterPanel, SelectFilterPanel, TextFilterPanel } from "../components/ColumnFilterPopover.js";
-import { ExportIcon, SearchIcon } from "../lib/icons.js";
+import { ExportIcon, SearchIcon, UploadIcon } from "../lib/icons.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
 
 export function RegisterPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
@@ -195,12 +197,22 @@ export function RegisterPage() {
         </div>
         <div className="flex items-center gap-2">
           {user?.role !== "viewer" && (
-            <RecordMovementControl
-              selectedCount={selected.size}
-              onTransfer={() => setTransferOpen(true)}
-              onDispose={() => setDisposeOpen(true)}
-              onMerge={() => setMergeOpen(true)}
-            />
+            <>
+              <RecordMovementControl
+                selectedCount={selected.size}
+                onTransfer={() => setTransferOpen(true)}
+                onDispose={() => setDisposeOpen(true)}
+                onMerge={() => setMergeOpen(true)}
+              />
+              <button
+                type="button"
+                className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                onClick={() => navigate("/bulk-upload?type=merge")}
+              >
+                <UploadIcon fontSize={14} />
+                Bulk Merge
+              </button>
+            </>
           )}
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}

@@ -11,7 +11,7 @@ import {
 import { AddCircleIcon, ErrorIcon, ExportIcon, PassIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 
-type UploadType = "assets" | "disposals" | "transfers" | "masters";
+type UploadType = "assets" | "disposals" | "transfers" | "merge" | "masters";
 type MasterListType = "centers" | "subClassifications" | "statuses";
 type Step = "select" | "preview" | "result";
 
@@ -80,6 +80,17 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     path: BULK_UPLOAD_PATHS.transfers,
     templateName: "transfers",
     note: "Location must match an active Center in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
+  },
+  merge: {
+    label: "Merge",
+    description:
+      "Link many existing assets into parent/child relationships at once — same rules as Merge Selected in Register (one level only, neither side disposed).",
+    required: ["parentFarId", "childFarId"],
+    optional: [],
+    keyColumnLabel: "Parent ← Child",
+    path: BULK_UPLOAD_PATHS.merge,
+    templateName: "merge",
+    note: "A child that already has a different parent is rejected, not silently re-parented — re-requesting its existing parent is treated as a no-op. A Location or Sub Classification mismatch between parent and child is shown as a warning, not an error."
   }
 };
 
@@ -160,6 +171,10 @@ const EXAMPLE_ROWS: Record<Exclude<UploadType, "masters">, Record<string, string
     farId: PLACEHOLDER_FAR_ID,
     toLocation: "Center-002",
     transactionDate: "01-03-2024"
+  },
+  merge: {
+    parentFarId: PLACEHOLDER_FAR_ID,
+    childFarId: "FAR-000456"
   }
 };
 
@@ -212,7 +227,7 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
   );
 }
 
-const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "masters"];
+const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "merge", "masters"];
 
 export function BulkUploadPage() {
   const { showToast } = useToast();
@@ -310,12 +325,12 @@ export function BulkUploadPage() {
         Bulk Upload
       </h1>
       <p className="mt-1 max-w-xl text-sm text-gray-500">
-        Import a CSV or Excel file to add or update many assets, capitalizations, disposals, transfers, or master
-        list entries at once.
+        Import a CSV or Excel file to add or update many assets, capitalizations, disposals, transfers, parent/child
+        merges, or master list entries at once.
       </p>
 
       <div className="mt-4 flex gap-2">
-        {(["assets", "disposals", "transfers", "masters"] as UploadType[]).map((t) => (
+        {UPLOAD_TYPES.map((t) => (
           <button
             key={t}
             type="button"

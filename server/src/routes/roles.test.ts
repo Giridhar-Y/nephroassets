@@ -7,6 +7,7 @@ import transfersRoutes from "./transfers.js";
 import bulkUploadRoutes from "./bulkUpload.js";
 import bulkTransfersRoutes from "./bulkTransfers.js";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
+import bulkMergeRoutes from "./bulkMerge.js";
 import adminUsersRoutes from "./adminUsers.js";
 import { emptyMultipartPayload } from "./bulkTestHelpers.js";
 import { getPool } from "../db/pool.js";
@@ -35,6 +36,7 @@ describe("Role-based authorization", () => {
     await app.register(bulkUploadRoutes);
     await app.register(bulkTransfersRoutes);
     await app.register(bulkDisposalsRoutes);
+    await app.register(bulkMergeRoutes);
     await app.register(adminUsersRoutes);
     await app.ready();
   });
@@ -115,7 +117,8 @@ describe("Role-based authorization", () => {
     it.each([
       ["/api/assets/bulk-upload"],
       ["/api/transfers/bulk-upload"],
-      ["/api/assets/bulk-dispose"]
+      ["/api/assets/bulk-dispose"],
+      ["/api/assets/bulk-merge"]
     ] as const)("is blocked (403) from Bulk Upload: %s", async (url) => {
       const { payload, headers } = emptyMultipartPayload();
       const res = await app.inject({ method: "POST", url, headers: { cookie: viewerCookie, ...headers }, payload });
@@ -178,7 +181,8 @@ describe("Role-based authorization", () => {
     it.each([
       ["/api/assets/bulk-upload"],
       ["/api/transfers/bulk-upload"],
-      ["/api/assets/bulk-dispose"]
+      ["/api/assets/bulk-dispose"],
+      ["/api/assets/bulk-merge"]
     ] as const)("reaches the Bulk Upload handler (not blocked by role): %s", async (url) => {
       const { payload, headers } = emptyMultipartPayload();
       const res = await app.inject({ method: "POST", url, headers: { cookie: editorCookie, ...headers }, payload });
