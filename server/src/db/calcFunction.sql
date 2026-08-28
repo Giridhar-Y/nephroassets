@@ -20,6 +20,14 @@
 DROP TYPE IF EXISTS far_component_result CASCADE;
 DROP FUNCTION IF EXISTS far_calc_component(numeric, numeric, date, numeric, date, numeric, numeric, numeric, date, date, integer);
 
+-- far_depreciation_as_of's p_eol/p_rem_life parameter types changed (date->boolean,
+-- integer->numeric) for the fractional-useful-life fix — CREATE OR REPLACE cannot change
+-- an existing function's argument types, it silently creates a second overload instead
+-- (the exact class of stale-signature bug this file's header comment already describes
+-- for far_calc_component). Drop the old signature explicitly so a database that already
+-- booted with it doesn't end up carrying both.
+DROP FUNCTION IF EXISTS far_depreciation_as_of(date, date, date, date, integer, numeric, numeric, date, numeric, numeric, numeric);
+
 -- SQL port of server/src/calc/engine.ts's computeComponent, so the aggregate reports
 -- (Location Summary, Audit Reconciliation, Depreciation Posting Summary) can GROUP BY /
 -- SUM at the database level across all 2,50,000+ rows instead of pulling every row into
@@ -80,12 +88,17 @@ CREATE TYPE far_component_result AS (
 -- similarly gated by date_acquired: the app never computes a component for an AS_AT
 -- before its own capitalization date (assets.ts filters date_acquired <= asAt upstream),
 -- so that case can't reach here in practice.
+-- p_eol_within_fy/p_rem_life: eol/remLife are fractional day-counts (see far_calc_component's
+-- comment) for a fractional useful life, so p_eol itself can't be a `date` — the caller
+-- (far_calc_component) precomputes the eol<=fy_end comparison as a boolean instead of
+-- passing eol as a date. p_rem_life is `numeric`, not `integer`, for the same reason
+-- (e.g. 183.5 for a 2.5-year useful life).
 CREATE OR REPLACE FUNCTION far_depreciation_as_of(
   p_view_end date,
   p_fy_start date,
   p_fy_end date,
-  p_eol date,
-  p_rem_life integer,
+  p_eol_within_fy boolean,
+  p_rem_life numeric,
   p_opening_cost numeric,
   p_additions numeric,
   p_date_of_addition date,
@@ -96,8 +109,7 @@ CREATE OR REPLACE FUNCTION far_depreciation_as_of(
 LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
   eff_at date;
-  capped_eff_at date;
-  days_used_at integer;
+  days_used_at numeric;
   additions_at numeric;
   taper_nbv_at numeric;
 BEGIN
@@ -109,11 +121,13 @@ BEGIN
     -- capped at NBV, unconditionally. The taper branch below never fires here.
     RETURN LEAST(p_dep_on_opening_at + p_dep_on_additions_at, taper_nbv_at);
   END IF;
-  IF p_eol <= p_fy_end THEN
+  IF p_eol_within_fy THEN
     -- Taper branch: no addition this period, and useful life ends within (or before)
-    -- the current FY.
-    capped_eff_at := LEAST(eff_at, p_eol);
-    days_used_at := GREATEST(0, (capped_eff_at - p_fy_start) + 1);
+    -- the current FY. Equivalent to (LEAST(eff_at, eol) - p_fy_start) + 1 without ever
+    -- needing a fractional eol as a real date: p_rem_life already equals
+    -- (eol - p_fy_start + 1), so capping the inclusive day count at p_rem_life is the
+    -- same comparison in day-count space, and eff_at itself is always a whole date.
+    days_used_at := GREATEST(0, LEAST((eff_at - p_fy_start) + 1, p_rem_life));
     RETURN CASE WHEN p_rem_life <= 0 THEN taper_nbv_at ELSE (taper_nbv_at * days_used_at) / p_rem_life END;
   END IF;
   -- Flat-rate SLM, no addition this period and useful life not yet expired this FY.
@@ -183,13 +197,16 @@ DECLARE
   period_depreciation numeric;
 
   -- End-of-life taper (step 5) — ported from the same formula validated separately on
-  -- the reference Excel workbook. eol/rem_life are asset-level, fixed once regardless of
-  -- which date far_depreciation_as_of is asked about (taper_nbv is computed inside that
-  -- function itself, per view date — see its own comment). See engine.ts's
+  -- the reference Excel workbook. eol_days_from_acquired/rem_life are asset-level, fixed
+  -- once regardless of which date far_depreciation_as_of is asked about (taper_nbv is
+  -- computed inside that function itself, per view date — see its own comment). Both are
+  -- `numeric`, not `date`/`integer` — a fractional useful life (e.g. 2.5 years) needs a
+  -- fractional eol/rem_life, which a whole-day date column can't hold. See engine.ts's
   -- computeComponent for the identical TS logic and comments — kept in lock-step by
   -- sqlParity.test.ts.
-  eol date;
-  rem_life integer;
+  eol_days_from_acquired numeric;
+  eol_within_fy boolean;
+  rem_life numeric;
 
   effective_disposed_cost numeric;
   gross_block numeric;
@@ -273,12 +290,13 @@ BEGIN
   -- p_date_of_addition, not from FY Start). The taper spec's literal wording would have
   -- additions share opening cost's window exactly; that was evaluated and rejected as a
   -- real regression of the prior fix, not adopted.
-  eol := p_date_acquired + ROUND(p_useful_life_years * p_days_in_fy)::integer;
-  rem_life := (eol - p_fy_start) + 1;
+  eol_days_from_acquired := CASE WHEN has_useful_life THEN p_useful_life_years * p_days_in_fy ELSE 0 END;
+  rem_life := eol_days_from_acquired - (p_fy_start - p_date_acquired) + 1;
+  eol_within_fy := eol_days_from_acquired <= (p_fy_end - p_date_acquired);
 
   period_depreciation := CASE WHEN NOT has_useful_life THEN 0
     ELSE far_depreciation_as_of(
-      effective_end_date, p_fy_start, p_fy_end, eol, rem_life,
+      effective_end_date, p_fy_start, p_fy_end, eol_within_fy, rem_life,
       p_opening_cost, p_additions, p_date_of_addition, p_acc_dep_opening,
       dep_on_opening, dep_on_additions
     )

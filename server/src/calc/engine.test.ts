@@ -485,6 +485,56 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.closingAccDep).toBeCloseTo(427679.4597260274, 6);
     expect(r.nbv).toBeCloseTo(56522.54027397261, 6);
   });
+
+  it("(j) fractional useful life: taper branch keeps remLife as a fraction of a day, not rounded — regression for a real Excel-verified figure (TEST-101/C2)", () => {
+    // 2.5yr useful life -> eolDaysFromAcquired = 2.5*365 = 912.5, a genuine half-day. A
+    // prior version rounded this to 913 whole days first, giving remLife=184 instead of
+    // the correct 183.5 and a periodDepreciation off by ~₹180 from the Excel workbook's
+    // own figure for this exact row (verified live against TEST-101/C2, 2026-08-28):
+    // remLife = 912.5 - 730 (dateAcquired..fyStart) + 1 = 183.5
+    // daysUsedAt = min(daysHeldInclusive(fyStart, asAt)=122, remLife=183.5) = 122
+    // periodDepreciation = (100000 * 122) / 183.5 = 66485.0136... -> Excel's ₹66,485.01
+    const r = computeComponent(
+      {
+        dateAcquired: "2024-04-01",
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 2.5,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 0
+      },
+      fy({ asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(66485.0136239782, 6);
+    expect(r.closingAccDep).toBeCloseTo(66485.0136239782, 6);
+    expect(r.nbv).toBeCloseTo(33514.9863760218, 6);
+    // The bug's exact wrong answer, so a future regression that reintroduces rounding
+    // would be caught even if the correct-value assertions above were loosened.
+    expect(r.periodDepreciation).not.toBeCloseTo(66304.35, 1);
+  });
+
+  it("(k) fractional useful life on the flat-rate branch (eol well past FY end) — unaffected by the taper fix, since this branch never reads eol/remLife", () => {
+    const r = computeComponent(
+      {
+        dateAcquired: "2020-01-01",
+        openingCost: 100000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 7.75,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 20000
+      },
+      fy({ asAt: "2025-09-30" })
+    );
+    expect(r.periodDepreciation).toBeCloseTo(6469.288555015467, 6);
+    expect(r.closingAccDep).toBeCloseTo(26469.288555015467, 6);
+    expect(r.nbv).toBeCloseTo(73530.71144498453, 6);
+  });
 });
 
 // ---------------------------------------------------------------------------
