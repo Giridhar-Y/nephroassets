@@ -1224,6 +1224,21 @@ describe("Merge: POST /api/assets/merge", () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it("rejects a disposed asset as the child (2026-08-28 fix — previously only the parent side was checked)", async () => {
+    await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/MERGE-CHILD-1/disposal",
+      payload: { dateOfDisposal: "2026-06-01", saleValue: 0 }
+    });
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/has been disposed and can't be linked as a child/);
+  });
+
   it("rejects two-level nesting: a child that already has its own children can't be merged in as a child", async () => {
     // MERGE-CHILD-1 already has a child of its own (MERGE-CHILD-2) — merging it under
     // MERGE-PARENT-1 would make a 3-generation chain, not one level.

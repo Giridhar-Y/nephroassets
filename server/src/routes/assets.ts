@@ -396,7 +396,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       const validation = await validateParentLink(db, input.farId, parentFarId);
       if (!validation.ok) {
         reply.code(validation.status);
-        return { error: validation.error };
+        return { error: validation.errors.join(" ") };
       }
     }
 
@@ -507,11 +507,11 @@ export default async function assetsRoutes(app: FastifyInstance) {
       // against both the old and new identity.
       const validation =
         input.parentFarId === input.farId
-          ? ({ ok: false, status: 400, error: "An asset cannot be its own parent." } as const)
+          ? ({ ok: false, status: 400, errors: ["An asset cannot be its own parent."] } as const)
           : await validateParentLink(db, farId, input.parentFarId);
       if (!validation.ok) {
         reply.code(validation.status);
-        return { error: validation.error };
+        return { error: validation.errors.join(" ") };
       }
     }
 
@@ -568,7 +568,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       const validation = await validateParentLink(db, childFarId, parentFarId);
       if (!validation.ok) {
         reply.code(validation.status);
-        return { error: `${childFarId}: ${validation.error}` };
+        return { error: `${childFarId}: ${validation.errors.join(" ")}` };
       }
     }
 
@@ -626,7 +626,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       const validation = await validateParentLink(db, farId, input.parentFarId);
       if (!validation.ok) {
         reply.code(validation.status);
-        return { error: validation.error };
+        return { error: validation.errors.join(" ") };
       }
     }
 
