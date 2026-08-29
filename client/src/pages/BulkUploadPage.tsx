@@ -60,7 +60,7 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "FAR ID",
     path: BULK_UPLOAD_PATHS.assets,
     templateName: "assets",
-    note: "FAR ID may only contain uppercase letters, numbers, and hyphens (e.g. 616-PB-BTI-GNR-C). Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row."
+    note: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row."
   },
   disposals: {
     label: "Disposals",

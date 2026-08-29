@@ -155,22 +155,32 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(res.json().processed).toBe(1);
   });
 
-  it("rejects a FAR ID containing lowercase letters, accepts one mixing letters/digits/hyphens", async () => {
+  // No character-set restriction — a real-world source system's FAR ID could be
+  // anything, so both a lowercase/mixed one and a hyphenated one must succeed equally.
+  it("accepts FAR IDs in any format — lowercase, mixed case, and hyphenated all succeed", async () => {
     const csv = [
       HEADER,
-      "Temp1234,Test-Sub,Bad Format,Active,2020-01-01,Center-A,5,5,1000,1000",
+      "temp1234,Test-Sub,Lowercase Format,Active,2020-01-01,Center-A,5,5,1000,1000",
       "616-PB-BTI-GNR-C,Test-Sub,Real-World Format,Active,2020-01-01,Center-A,5,5,1000,1000"
     ].join("\n");
     const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
     const body = res.json();
-    expect(body.processed).toBe(1);
-    expect(body.errors).toHaveLength(1);
-    expect(body.errors[0].farId).toBe("Temp1234");
-    expect(body.errors[0].message).toMatch(/FAR ID can only contain uppercase letters, numbers, and hyphens/);
+    expect(body.processed).toBe(2);
+    expect(body.errors).toHaveLength(0);
 
     const db = await getPool();
-    const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id = '616-PB-BTI-GNR-C'`);
-    expect(rows).toHaveLength(1);
+    const { rows } = await db.query(
+      `SELECT far_id FROM assets WHERE far_id IN ('temp1234', '616-PB-BTI-GNR-C') ORDER BY far_id`
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  it("still rejects a blank FAR ID", async () => {
+    const csv = [HEADER, ",Test-Sub,Missing FAR ID,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+    const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors).toHaveLength(1);
   });
 
   it("rejects a subClassification/status/location that isn't in the active Masters lists", async () => {

@@ -75,13 +75,25 @@ describe("Capitalization: POST /api/assets", () => {
     expect(dup.statusCode).toBe(409);
   });
 
-  it("rejects a FAR ID containing lowercase letters", async () => {
+  it("rejects an empty FAR ID", async () => {
     const res = await authedInject(app, {
       method: "POST",
       url: "/api/assets",
-      payload: { ...NEW_ASSET, farId: "Temp1234" }
+      payload: { ...NEW_ASSET, farId: "" }
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // No character-set restriction — a real-world source system's FAR ID could be
+  // anything: mixed case, spaces, punctuation, lowercase-only. Only non-empty and
+  // unique are enforced (see the duplicate-FAR-ID test above/below).
+  it("accepts a FAR ID in any format — mixed case, spaces, and punctuation", async () => {
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: { ...NEW_ASSET, farId: "temp_1234 / spare (lot#2)" }
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("accepts a real-world FAR ID mixing letters, digits, and hyphens", async () => {
@@ -370,13 +382,23 @@ describe("Edit: PATCH /api/assets/:farId", () => {
     expect(res.json().error).toMatch(/already in use/);
   });
 
-  it("rejects an invalid FAR ID format on edit", async () => {
+  it("rejects an empty FAR ID on edit", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/EDIT-TEST-1",
+      payload: { ...baseEdit, farId: "" }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  // No character-set restriction on edit either — same schema as Capitalization.
+  it("accepts a FAR ID in any format on edit — lowercase included", async () => {
     const res = await authedInject(app, {
       method: "PATCH",
       url: "/api/assets/EDIT-TEST-1",
       payload: { ...baseEdit, farId: "lowercase-id" }
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
   });
 
   it("rejects a Sub Classification not in the active Masters list", async () => {

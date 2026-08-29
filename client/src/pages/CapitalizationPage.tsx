@@ -154,11 +154,6 @@ export function CapitalizationPage() {
 
   function validate(): string | null {
     if (!form.farId.trim()) return "FAR ID is required.";
-    // Matches the server's assetSchema.ts — uppercase letters, numbers, and hyphens
-    // only, since real FAR IDs mix all three (e.g. "616-PB-BTI-GNR-C").
-    if (!/^[A-Z0-9-]+$/.test(form.farId.trim())) {
-      return "FAR ID can only contain uppercase letters, numbers, and hyphens.";
-    }
     if (!form.subClassification.trim()) return "Sub Classification is required.";
     if (!form.assetDescription.trim()) return "Asset Description is required.";
     if (!form.status.trim()) return "Status is required.";
@@ -248,7 +243,6 @@ export function CapitalizationPage() {
                 <input
                   id="cap-far-id"
                   type="text"
-                  placeholder="e.g. 616-PB-BTI-GNR-C"
                   className={INPUT_CLASS}
                   value={form.farId}
                   onChange={(e) => update({ farId: e.target.value })}

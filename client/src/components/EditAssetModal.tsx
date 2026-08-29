@@ -72,10 +72,6 @@ export function EditAssetModal({
       setError("FAR ID is required.");
       return;
     }
-    if (!/^[A-Z0-9-]+$/.test(form.farId)) {
-      setError("FAR ID can only contain uppercase letters, numbers, and hyphens.");
-      return;
-    }
     if (!form.subClassification.trim()) {
       setError("Sub Classification is required.");
       return;
@@ -162,9 +158,9 @@ export function EditAssetModal({
                 <input
                   id="edit-far-id"
                   type="text"
-                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm uppercase focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                   value={form.farId}
-                  onChange={(e) => update({ farId: e.target.value.toUpperCase() })}
+                  onChange={(e) => update({ farId: e.target.value })}
                 />
               </div>
               <div className="flex flex-col gap-1">
