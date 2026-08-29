@@ -348,6 +348,42 @@ export function fetchDeleteAuditLog(
   return request(`/api/audit-log/deletes?${search}`);
 }
 
+export type ActivityAction = "capitalization_create" | "addition_create" | "transfer_create" | "disposal_create";
+
+export interface ActivityLogEntry {
+  id: number;
+  action: ActivityAction;
+  farId: string;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+  actorUsername: string | null;
+}
+
+export interface FetchActivityLogParams {
+  farId?: string;
+  action?: ActivityAction;
+  dateFrom?: string;
+  dateTo?: string;
+  cursor?: number | null;
+  limit?: number;
+}
+
+// Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event
+// (single-item and Bulk Upload/Bulk Transfer/Bulk Dispose alike) — see the server
+// route's own comment for exactly what it covers.
+export function fetchActivityLog(
+  params: FetchActivityLogParams = {}
+): Promise<{ items: ActivityLogEntry[]; nextCursor: number | null }> {
+  const search = new URLSearchParams();
+  if (params.farId) search.set("farId", params.farId);
+  if (params.action) search.set("action", params.action);
+  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
+  if (params.dateTo) search.set("dateTo", params.dateTo);
+  if (params.cursor) search.set("cursor", String(params.cursor));
+  if (params.limit) search.set("limit", String(params.limit));
+  return request(`/api/audit-log/activity?${search}`);
+}
+
 // Bulk merge from Register: link one or more existing assets as children of one existing
 // parent in a single request — same validation Edit already applies one-at-a-time.
 export function mergeAssets(

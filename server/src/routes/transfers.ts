@@ -7,6 +7,7 @@ import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor, requireAdmin } from "../auth/middleware.js";
 import { buildTransferConditionSql, transferConditionsQuerySchema } from "./transferColumnFilters.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
+import { logAssetActivity } from "./assetActivityLog.js";
 
 const deleteReasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.") });
 
@@ -143,6 +144,19 @@ export default async function transfersRoutes(app: FastifyInstance) {
       throw err;
     } finally {
       client.release();
+    }
+    for (const farId of farIds) {
+      await logAssetActivity(db, {
+        actorUserId: req.user!.id,
+        action: "transfer_create",
+        farId,
+        details: {
+          transactionDate,
+          location: toLocation,
+          cascadedFromParentFarId: childParentMap.get(farId) ?? null,
+          source: "single"
+        }
+      });
     }
     const childrenIncluded = childRows.map((r) => r.far_id).filter((id) => !parsed.data.farIds.includes(id));
     return { transferred: farIds.length, toLocation, transactionDate, childrenIncluded };

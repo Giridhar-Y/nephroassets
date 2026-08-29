@@ -298,5 +298,19 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
           FOREIGN KEY (far_id) REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE;
       END IF;
     END $$;
+
+    -- Capitalization/Addition/Transfer/Disposal CREATE events — see schema.sql's comment
+    -- for the full reasoning. IF NOT EXISTS makes this a no-op on every boot after the
+    -- first.
+    CREATE TABLE IF NOT EXISTS asset_activity_log (
+      id              BIGSERIAL PRIMARY KEY,
+      actor_user_id   BIGINT REFERENCES users(id),
+      action          TEXT NOT NULL CHECK (action IN ('capitalization_create', 'addition_create', 'transfer_create', 'disposal_create')),
+      far_id          TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE,
+      details         JSONB,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_activity_log_far_id ON asset_activity_log (far_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_asset_activity_log_created_at ON asset_activity_log (created_at DESC);
   `);
 }

@@ -34,6 +34,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
   { to: "/disposals", label: "Disposals", icon: DeleteIcon },
   { to: "/bulk-upload", label: "Bulk Upload", icon: UploadIcon },
   { to: "/reports", label: "Reports", icon: ReportsIcon },
+  { to: "/activity-log", label: "Activity Log", icon: AuditLogIcon },
   { to: "/masters", label: "Masters", icon: BookDatabaseIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon }
 ];
@@ -43,7 +44,14 @@ const DELETE_LOG_NAV_ITEM = { to: "/delete-log", label: "Delete Log", icon: Audi
 
 // Editor-only screens — a viewer has no access to these at all (server-enforced by
 // requireEditor on their API routes; this is just the client-side nav/UX mirror).
-const EDITOR_ONLY_PATHS = new Set(["/transfers", "/capitalization", "/additions", "/disposals", "/bulk-upload"]);
+const EDITOR_ONLY_PATHS = new Set([
+  "/transfers",
+  "/capitalization",
+  "/additions",
+  "/disposals",
+  "/bulk-upload",
+  "/activity-log"
+]);
 
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();

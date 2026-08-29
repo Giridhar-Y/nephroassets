@@ -10,6 +10,7 @@ import bulkDisposalsRoutes from "./bulkDisposals.js";
 import bulkMergeRoutes from "./bulkMerge.js";
 import adminUsersRoutes from "./adminUsers.js";
 import deleteAuditLogRoutes from "./deleteAuditLog.js";
+import activityLogRoutes from "./activityLog.js";
 import { emptyMultipartPayload } from "./bulkTestHelpers.js";
 import { getPool } from "../db/pool.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -40,6 +41,7 @@ describe("Role-based authorization", () => {
     await app.register(bulkMergeRoutes);
     await app.register(adminUsersRoutes);
     await app.register(deleteAuditLogRoutes);
+    await app.register(activityLogRoutes);
     await app.ready();
   });
 
@@ -128,6 +130,11 @@ describe("Role-based authorization", () => {
       expect(res.statusCode).toBe(403);
     });
 
+    it("is blocked (403) from the Activity Log", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/audit-log/activity", headers: { cookie: viewerCookie } });
+      expect(res.statusCode).toBe(403);
+    });
+
     it.each([
       ["/api/assets/bulk-upload"],
       ["/api/transfers/bulk-upload"],
@@ -190,6 +197,12 @@ describe("Role-based authorization", () => {
 
       const history = await app.inject({ method: "GET", url: "/api/transfers", headers: { cookie: editorCookie } });
       expect(history.statusCode).toBe(200);
+    });
+
+    it("can read the Activity Log — editor+, unlike the admin-only Delete Log", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/audit-log/activity", headers: { cookie: editorCookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toHaveProperty("items");
     });
 
     it.each([
@@ -323,6 +336,12 @@ describe("Role-based authorization", () => {
 
     it("can read the delete audit log", async () => {
       const res = await app.inject({ method: "GET", url: "/api/audit-log/deletes", headers: { cookie: adminCookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toHaveProperty("items");
+    });
+
+    it("can also read the Activity Log", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/audit-log/activity", headers: { cookie: adminCookie } });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toHaveProperty("items");
     });

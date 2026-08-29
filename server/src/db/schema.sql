@@ -249,6 +249,29 @@ CREATE TABLE asset_delete_audit_log (
 CREATE INDEX idx_asset_delete_audit_log_far_id ON asset_delete_audit_log (far_id, created_at DESC);
 CREATE INDEX idx_asset_delete_audit_log_created_at ON asset_delete_audit_log (created_at DESC);
 
+-- Every Capitalization/Addition/Transfer/Disposal CREATE event — assets.ts's POST
+-- /api/assets, .../addition, .../disposal PATCH routes and transfers.ts's POST
+-- /api/transfers, plus their Bulk Upload/Bulk Transfer/Bulk Dispose equivalents
+-- (bulkUpload.ts, bulkTransfers.ts, bulkDisposals.ts). Editor+ visibility (not
+-- admin-only like asset_delete_audit_log) since these are ordinary requireEditor
+-- actions, not Global-Admin-only ones — see routes/activityLog.ts. No `reason` column
+-- (unlike asset_delete_audit_log): these are routine entries, not admin actions
+-- requiring justification. `details` carries the entered values plus
+-- { source: "single" | "bulk", sourceFilename? } so a bulk-originated row is
+-- distinguishable without a dedicated column. Only forward-looking: neither `assets`
+-- nor `transfers` carries an entry-timestamp/actor column, so activity before this
+-- table existed can't be backfilled.
+CREATE TABLE asset_activity_log (
+  id              BIGSERIAL PRIMARY KEY,
+  actor_user_id   BIGINT REFERENCES users(id),
+  action          TEXT NOT NULL CHECK (action IN ('capitalization_create', 'addition_create', 'transfer_create', 'disposal_create')),
+  far_id          TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE,
+  details         JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_asset_activity_log_far_id ON asset_activity_log (far_id, created_at DESC);
+CREATE INDEX idx_asset_activity_log_created_at ON asset_activity_log (created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

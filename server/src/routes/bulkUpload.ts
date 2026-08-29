@@ -4,6 +4,7 @@ import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type Bulk
 import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
 import { requireEditor } from "../auth/middleware.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
+import { logAssetActivity } from "./assetActivityLog.js";
 
 // Rejects (rather than silently accepting) a status/subClassification/location that
 // doesn't match an active Masters entry (routes/masters.ts) — case-insensitively, but the
@@ -185,8 +186,17 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
              RETURNING (xmax = 0) AS inserted`,
             bulkAssetRowValues(data)
           );
-          if (written[0]?.inserted) added++;
-          else updated++;
+          if (written[0]?.inserted) {
+            added++;
+            await logAssetActivity(db, {
+              actorUserId: req.user!.id,
+              action: "capitalization_create",
+              farId: data.farId,
+              details: { ...data, source: "bulk", sourceFilename: file.filename }
+            });
+          } else {
+            updated++;
+          }
           processed++;
         } catch (err) {
           errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });

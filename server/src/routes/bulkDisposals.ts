@@ -5,6 +5,7 @@ import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorkshee
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
+import { logAssetActivity } from "./assetActivityLog.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
@@ -165,6 +166,18 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             }
             await client.query("COMMIT");
             processed++;
+            await logAssetActivity(db, {
+              actorUserId: req.user!.id,
+              action: "disposal_create",
+              farId: data.farId,
+              details: {
+                dateOfDisposal: data.dateOfDisposal,
+                saleValue: data.saleValue,
+                childrenDisposed: result.childrenDisposed,
+                source: "bulk",
+                sourceFilename: file.filename
+              }
+            });
           } catch (err) {
             await client.query("ROLLBACK");
             errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });

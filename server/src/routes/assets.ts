@@ -11,6 +11,7 @@ import { disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } 
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requireEditor, requireAdmin } from "../auth/middleware.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
+import { logAssetActivity } from "./assetActivityLog.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 
 const disposalSchema = z.object({
@@ -502,6 +503,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
     } finally {
       client.release();
     }
+    await logAssetActivity(db, {
+      actorUserId: req.user!.id,
+      action: "capitalization_create",
+      farId: input.farId,
+      details: { ...input, parentFarId, source: "single" }
+    });
     return { farId: input.farId, created: true };
   });
 
@@ -755,6 +762,18 @@ export default async function assetsRoutes(app: FastifyInstance) {
     }
     values.push(farId);
     await db.query(`UPDATE assets SET ${setClauses.join(", ")} WHERE far_id = $${values.length}`, values);
+    await logAssetActivity(db, {
+      actorUserId: req.user!.id,
+      action: "addition_create",
+      farId,
+      details: {
+        additionsC1: input.additionsC1,
+        additionsC2: input.additionsC2,
+        dateOfAddition: input.dateOfAddition,
+        parentFarId: input.parentFarId ?? null,
+        source: "single"
+      }
+    });
     return { farId, added: true };
   });
 
@@ -896,6 +915,12 @@ export default async function assetsRoutes(app: FastifyInstance) {
         error: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(check[0]!.date_acquired)}).`
       };
     }
+    await logAssetActivity(db, {
+      actorUserId: req.user!.id,
+      action: "disposal_create",
+      farId,
+      details: { dateOfDisposal, saleValue, childrenDisposed: result.childrenDisposed, source: "single" }
+    });
     return { farId, disposed: true, childrenDisposed: result.childrenDisposed };
   });
 
