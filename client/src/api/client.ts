@@ -487,7 +487,10 @@ export function fetchDepreciationPosting(
   return request(`/api/reports/depreciation-posting?${new URLSearchParams({ asAt })}`);
 }
 
-export interface LocationSegment {
+export interface MovementScheduleRow {
+  farId: string;
+  subClassification: string;
+  assetDescription: string;
   location: string;
   fromDate: string;
   toDate: string;
@@ -495,16 +498,6 @@ export interface LocationSegment {
   c1Depreciation: number;
   c2Depreciation: number;
   depreciation: number;
-}
-
-export interface TransferDepreciationAssetRow {
-  farId: string;
-  subClassification: string;
-  assetDescription: string;
-  currentLocation: string;
-  c1TotalDepreciation: number;
-  c2TotalDepreciation: number;
-  totalDepreciation: number;
 }
 
 export interface TransferDepreciationLocationRow {
@@ -516,12 +509,11 @@ export interface TransferDepreciationLocationRow {
 }
 
 // Built for scale (this report is expected to grow toward Register's own 2,50,000-asset
-// figure) — the asset-wise list is a real paginated endpoint (keyset cursor on farId,
-// same shape as fetchAssets/GET /api/assets), not a single call returning everything.
-// Segments (a movement timeline) are fetched separately, only for the one asset a user
-// actually expands — see fetchTransferDepreciationSegments.
-export interface TransferDepreciationAssetWisePage {
-  items: TransferDepreciationAssetRow[];
+// figure) — a real paginated endpoint (keyset cursor on farId, same shape as
+// fetchAssets/GET /api/assets) over ASSETS, but each asset expands into one row per
+// location-stay server-side, so a page can return more rows than its `limit`.
+export interface MovementSchedulePage {
+  items: MovementScheduleRow[];
   nextCursor: string | null;
   asAt: string;
 }
@@ -530,29 +522,20 @@ function transferDepreciationConditionsParam(conditions: ColumnCondition[]): str
   return conditions.length > 0 ? JSON.stringify(conditions) : "";
 }
 
-export interface FetchTransferDepreciationAssetWiseParams {
+export interface FetchMovementScheduleParams {
   asAt: string;
   conditions?: ColumnCondition[];
   cursor?: string | null;
   limit?: number;
 }
 
-export function fetchTransferDepreciationAssetWise(
-  params: FetchTransferDepreciationAssetWiseParams
-): Promise<TransferDepreciationAssetWisePage> {
+export function fetchMovementSchedule(params: FetchMovementScheduleParams): Promise<MovementSchedulePage> {
   const search = new URLSearchParams({ asAt: params.asAt });
   if (params.cursor) search.set("cursor", params.cursor);
   if (params.limit) search.set("limit", String(params.limit));
   const conditionsParam = transferDepreciationConditionsParam(params.conditions ?? []);
   if (conditionsParam) search.set("conditions", conditionsParam);
-  return request(`/api/reports/transfer-depreciation/asset-wise?${search}`);
-}
-
-// On-demand movement timeline for one asset — computed only when a row is expanded, not
-// pre-computed for every row of the list (see reports.ts's module comment for why that
-// matters at scale).
-export function fetchTransferDepreciationSegments(farId: string, asAt: string): Promise<{ segments: LocationSegment[] }> {
-  return request(`/api/reports/transfer-depreciation/asset/${encodeURIComponent(farId)}/segments?${new URLSearchParams({ asAt })}`);
+  return request(`/api/reports/transfer-depreciation/movement?${search}`);
 }
 
 export function fetchTransferDepreciationLocationWise(

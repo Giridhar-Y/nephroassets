@@ -5,8 +5,9 @@ import {
   type RawCondition
 } from "./columnFilterCore.js";
 
-// Excel-style per-column custom filter conditions for the Transfer & Depreciation
-// Report's asset-wise list — same shared operator core as Register
+// Excel-style per-column custom filter conditions for the Asset Movement & Depreciation
+// Schedule's movement list (filtered at the asset level, before it's flattened into
+// location-stay rows) — same shared operator core as Register
 // (assetColumnFilters.ts) and the Transfer Log (transferColumnFilters.ts). `sql` is a
 // raw SQL expression valid inside this report's own calc CTE (see reports.ts's
 // buildTransferDepreciationCteExtras), which reuses assetColumnFilters.ts's

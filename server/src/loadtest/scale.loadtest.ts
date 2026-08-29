@@ -194,48 +194,34 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     expect(elapsed3).toBeLessThan(2000);
   });
 
-  it("Transfer & Depreciation Report: asset-wise first page, unfiltered and filtered, both stay fast", async () => {
+  it("Asset Movement & Depreciation Schedule: movement schedule first page, unfiltered and filtered, both stay fast", async () => {
     const start1 = performance.now();
     const page1 = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?asAt=${AS_AT}&limit=150`
+      url: `/api/reports/transfer-depreciation/movement?asAt=${AS_AT}&limit=150`
     });
     const elapsed1 = performance.now() - start1;
-    console.log(`Transfer & Depreciation asset-wise first page: ${elapsed1.toFixed(0)}ms`);
+    console.log(`Asset Movement & Depreciation Schedule first page: ${elapsed1.toFixed(0)}ms, ${page1.json().items.length} rows`);
     expect(page1.statusCode).toBe(200);
-    expect(page1.json().items.length).toBe(150);
+    // limit=150 bounds ASSETS scanned, not rows returned — a mover expands into more
+    // than one row, so the row count can exceed 150.
+    expect(page1.json().items.length).toBeGreaterThanOrEqual(150);
     expect(elapsed1).toBeLessThan(2000);
 
     const conditions = encodeURIComponent(JSON.stringify([{ columnId: "c1TotalDepreciation", op: "gt", value: 20000 }]));
     const start2 = performance.now();
     const page2 = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?asAt=${AS_AT}&limit=150&conditions=${conditions}`
+      url: `/api/reports/transfer-depreciation/movement?asAt=${AS_AT}&limit=150&conditions=${conditions}`
     });
     const elapsed2 = performance.now() - start2;
-    console.log(`Transfer & Depreciation asset-wise filtered page (C1 > 20,000): ${elapsed2.toFixed(0)}ms`);
+    console.log(`Asset Movement & Depreciation Schedule filtered page (C1 > 20,000): ${elapsed2.toFixed(0)}ms`);
     expect(page2.statusCode).toBe(200);
     expect(elapsed2).toBeLessThan(3000);
   });
 
-  it("Transfer & Depreciation Report: one asset's movement-timeline (segments) endpoint stays fast regardless of table size", async () => {
-    const moved = transfers[0]!;
-    const start = performance.now();
-    const res = await authedInject(app, {
-      method: "GET",
-      url: `/api/reports/transfer-depreciation/asset/${moved.farId}/segments?asAt=${AS_AT}`
-    });
-    const elapsedMs = performance.now() - start;
-    console.log(`Transfer & Depreciation segments (${moved.farId}): ${elapsedMs.toFixed(0)}ms`);
-    expect(res.statusCode).toBe(200);
-    expect(res.json().segments.length).toBeGreaterThan(0);
-    // Bounded by this one asset's own transfer count (a handful), not the 250k-row
-    // table — should be effectively instant, well under the page-level budget above.
-    expect(elapsedMs).toBeLessThan(500);
-  });
-
   it(
-    "Transfer & Depreciation Report: location-wise grand total matches an independently computed total (TS engine + the same split function, summed in JS — never reads the seeded rows back), and stays within budget",
+    "Asset Movement & Depreciation Schedule: location totals grand total matches an independently computed total (TS engine + the same split function, summed in JS — never reads the seeded rows back), and stays within budget",
     async () => {
       const fy = { asAt: AS_AT, fyStart: FY_START, fyEnd: FY_END, daysInFy: DAYS_IN_FY };
       const transfersByFarId = new Map<string, TransferRecord[]>();
@@ -274,7 +260,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
       });
       const elapsedMs = performance.now() - start;
       console.log(
-        `Transfer & Depreciation location-wise (full ${ASSET_COUNT.toLocaleString()}-asset scan, ${transfers.length.toLocaleString()} transfers): ${elapsedMs.toFixed(0)}ms, ${res.json().locationWise.length} locations`
+        `Asset Movement & Depreciation Schedule location totals (full ${ASSET_COUNT.toLocaleString()}-asset scan, ${transfers.length.toLocaleString()} transfers): ${elapsedMs.toFixed(0)}ms, ${res.json().locationWise.length} locations`
       );
 
       expect(res.statusCode).toBe(200);

@@ -24,8 +24,8 @@ const REPORTS: Array<{ to: string; label: string; description: string; icon: Com
   },
   {
     to: "/transfer-depreciation-report",
-    label: "Transfer & Depreciation Report",
-    description: "Period depreciation split across every location an asset sat in — location-wise or asset-wise, with each move's own days held.",
+    label: "Asset Movement & Depreciation Schedule",
+    description: "Every asset, one row per location it sat in during the period — days held and period depreciation for each stay.",
     icon: TransferIcon
   }
 ];

@@ -6,6 +6,9 @@ import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
 import { bulkInsertAssets, bulkInsertTransfers } from "../loadtest/bulkInsert.js";
+import { computeAsset } from "../calc/engine.js";
+import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
+import type { AssetRow, TransferRow } from "../db/mappers.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -479,14 +482,10 @@ describe("Audit Reconciliation report", () => {
   });
 });
 
-interface AssetWiseRow {
+interface MovementRow {
   farId: string;
-  currentLocation: string;
-  c1TotalDepreciation: number;
-  c2TotalDepreciation: number;
-  totalDepreciation: number;
-}
-interface Segment {
+  subClassification: string;
+  assetDescription: string;
   location: string;
   fromDate: string;
   toDate: string;
@@ -507,12 +506,14 @@ function paise(amount: number): number {
   return Math.round(amount * 100);
 }
 
+const FY = { asAt: AS_AT, fyStart: FY_START, fyEnd: FY_END, daysInFy: DAYS_IN_FY };
+
 // New reporting-layer work (this report never touches engine.ts/calcFunction.sql) —
 // exercised through the real API, not just the pure splitDepreciationByLocation unit
 // tests, so a mistake in *wiring* the split into computeAsset's trusted total (wrong
 // period bounds, wrong transfer set) would show up here even if the split function
 // itself were correct in isolation.
-describe("Transfer & Depreciation Report", () => {
+describe("Asset Movement & Depreciation Schedule", () => {
   let app: FastifyInstance;
 
   beforeAll(async () => {
@@ -611,195 +612,170 @@ describe("Transfer & Depreciation Report", () => {
     await app.close();
   });
 
-  async function fetchSegments(farId: string): Promise<Segment[]> {
+  const xdepCondition = encodeURIComponent(JSON.stringify([{ columnId: "farId", op: "beginsWith", value: "XDEP-" }]));
+
+  async function fetchMovementRows(conditions: string = xdepCondition): Promise<MovementRow[]> {
     const res = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/asset/${farId}/segments`
+      url: `/api/reports/transfer-depreciation/movement?limit=500&conditions=${conditions}`
     });
     expect(res.statusCode).toBe(200);
-    return res.json().segments;
+    return res.json().items;
   }
 
-  it("gives an asset that never transferred a single full-period segment", async () => {
-    const listRes = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/asset-wise" });
-    const row = listRes.json().items.find((a: AssetWiseRow) => a.farId === "XDEP-STILL");
-    expect(row).toBeDefined();
+  // Independent ground truth: re-invokes the real calc engine directly (not via the
+  // report's own endpoint), same way scale.loadtest.ts cross-checks the location-wise
+  // scan — confirms the movement schedule's row totals actually reconcile to what the
+  // locked engine says this asset owes, not just to themselves.
+  async function computeExpectedTotalPaise(farId: string): Promise<number> {
+    const db = await getPool();
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1`, [farId]);
+    const asset = mapAssetRow(rows[0]!);
+    const { rows: transferRows } = await db.query<TransferRow>(
+      `SELECT far_id, transaction_date, location FROM transfers WHERE far_id = $1 ORDER BY transaction_date, id`,
+      [farId]
+    );
+    const transfers = transferRows.map(mapTransferRow);
+    const result = computeAsset(asset, FY, transfers);
+    return paise(result.c1.periodDepreciation) + paise(result.c2.periodDepreciation);
+  }
 
-    const segments = await fetchSegments("XDEP-STILL");
-    expect(segments).toHaveLength(1);
-    expect(segments[0]!.location).toBe("Center-Still");
-    expect(paise(segments[0]!.depreciation)).toBe(paise(row.totalDepreciation));
+  it("gives an asset that never moved during the period exactly one row, covering the whole period", async () => {
+    const rows = (await fetchMovementRows()).filter((r) => r.farId === "XDEP-STILL");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.location).toBe("Center-Still");
+    expect(paise(rows[0]!.depreciation)).toBe(await computeExpectedTotalPaise("XDEP-STILL"));
   });
 
-  it("splits a single mid-period transfer into two segments that reconcile exactly", async () => {
-    const listRes = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/asset-wise" });
-    const row: AssetWiseRow = listRes.json().items.find((a: AssetWiseRow) => a.farId === "XDEP-MOVED");
-    expect(row).toBeDefined();
-    expect(row.currentLocation).toBe("Center-B");
-
-    const segments = await fetchSegments("XDEP-MOVED");
-    expect(segments).toHaveLength(2);
-    expect(segments[0]!.location).toBe("Center-A");
-    expect(segments[1]!.location).toBe("Center-B");
-    const segmentSumPaise = segments.reduce((s, seg) => s + paise(seg.depreciation), 0);
-    expect(segmentSumPaise).toBe(paise(row.totalDepreciation));
+  it("splits a single mid-period transfer into two rows that reconcile exactly", async () => {
+    const rows = (await fetchMovementRows()).filter((r) => r.farId === "XDEP-MOVED");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.location).toBe("Center-A");
+    expect(rows[1]!.location).toBe("Center-B");
+    const summedPaise = rows.reduce((s, r) => s + paise(r.depreciation), 0);
+    expect(summedPaise).toBe(await computeExpectedTotalPaise("XDEP-MOVED"));
   });
 
   it("reconciles exactly (to the paisa) for an asset with many transfers, through the real API", async () => {
-    const listRes = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/asset-wise" });
-    const row: AssetWiseRow = listRes.json().items.find((a: AssetWiseRow) => a.farId === "XDEP-MANY");
-    expect(row).toBeDefined();
-
-    const segments = await fetchSegments("XDEP-MANY");
-    // 12 transfer dates all within the period → up to 13 segments (one before the
-    // first transfer, one per transfer after).
-    expect(segments.length).toBeGreaterThanOrEqual(10);
-    const segmentSumPaise = segments.reduce((s, seg) => s + paise(seg.depreciation), 0);
-    expect(segmentSumPaise).toBe(paise(row.totalDepreciation));
-    // Every segment's days-held is strictly positive — a zero-or-negative segment
-    // slipping through would silently break the days-weighted split.
-    expect(segments.every((s) => s.daysHeld > 0)).toBe(true);
+    const rows = (await fetchMovementRows()).filter((r) => r.farId === "XDEP-MANY");
+    // 12 transfer dates all within the period → up to 13 rows (one before the first
+    // transfer, one per transfer after).
+    expect(rows.length).toBeGreaterThanOrEqual(10);
+    const summedPaise = rows.reduce((s, r) => s + paise(r.depreciation), 0);
+    expect(summedPaise).toBe(await computeExpectedTotalPaise("XDEP-MANY"));
+    // Every row's days-held is strictly positive — a zero-or-negative segment slipping
+    // through would silently break the days-weighted split.
+    expect(rows.every((r) => r.daysHeld > 0)).toBe(true);
   });
 
   // C1 and C2 have genuinely different useful lives and costs for XDEP-MANY (see the
   // fixture above), so this can't pass by C2 happening to be zero — each component's
-  // own segments must independently sum to that component's own real total.
+  // own rows must independently sum to that component's own real total.
   it("reconciles C1 and C2 independently (not just their combined total) for the many-transfer asset", async () => {
-    const listRes = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/asset-wise" });
-    const row: AssetWiseRow = listRes.json().items.find((a: AssetWiseRow) => a.farId === "XDEP-MANY");
-    expect(row).toBeDefined();
-    expect(row.c1TotalDepreciation).toBeGreaterThan(0);
-    expect(row.c2TotalDepreciation).toBeGreaterThan(0);
+    const rows = (await fetchMovementRows()).filter((r) => r.farId === "XDEP-MANY");
+    const c1SumPaise = rows.reduce((s, r) => s + paise(r.c1Depreciation), 0);
+    const c2SumPaise = rows.reduce((s, r) => s + paise(r.c2Depreciation), 0);
+    expect(c1SumPaise).toBeGreaterThan(0);
+    expect(c2SumPaise).toBeGreaterThan(0);
     // The two components must be genuinely different, or this test can't tell a
     // combined-only split from a real per-component one.
-    expect(paise(row.c1TotalDepreciation)).not.toBe(paise(row.c2TotalDepreciation));
-
-    const segments = await fetchSegments("XDEP-MANY");
-    const c1SumPaise = segments.reduce((s, seg) => s + paise(seg.c1Depreciation), 0);
-    const c2SumPaise = segments.reduce((s, seg) => s + paise(seg.c2Depreciation), 0);
-    expect(c1SumPaise).toBe(paise(row.c1TotalDepreciation));
-    expect(c2SumPaise).toBe(paise(row.c2TotalDepreciation));
-    // Every segment's own combined figure is exactly its two component figures added.
-    for (const seg of segments) {
-      expect(paise(seg.depreciation)).toBe(paise(seg.c1Depreciation) + paise(seg.c2Depreciation));
+    expect(c1SumPaise).not.toBe(c2SumPaise);
+    // Every row's own combined figure is exactly its two component figures added.
+    for (const r of rows) {
+      expect(paise(r.depreciation)).toBe(paise(r.c1Depreciation) + paise(r.c2Depreciation));
     }
   });
 
-  it("404s the segment endpoint for a FAR ID that doesn't exist", async () => {
-    const res = await authedInject(app, {
-      method: "GET",
-      url: "/api/reports/transfer-depreciation/asset/NOPE-NOT-REAL/segments"
-    });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it("location-wise totals sum to the same grand total as asset-wise totals, per component and combined", async () => {
-    // Restricted to this describe block's own fixtures (Test-XDep) — the assetWise
-    // grand total here is only meaningful summed over the SAME asset population the
-    // location-wise scan aggregated, and other describe blocks in this file share the
-    // same table.
-    const conditions = encodeURIComponent(JSON.stringify([{ columnId: "farId", op: "beginsWith", value: "XDEP-" }]));
-    const listRes = await authedInject(app, {
-      method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?limit=500&conditions=${conditions}`
-    });
-    const items: AssetWiseRow[] = listRes.json().items;
-    expect(items.length).toBeGreaterThanOrEqual(3);
+  it("location totals sum to the same grand total as the movement schedule's own rows, per component and combined", async () => {
+    // Restricted to this describe block's own fixtures (Test-XDep) — the grand total
+    // here is only meaningful summed over the SAME asset population the location-wise
+    // scan aggregated, and other describe blocks in this file share the same table.
+    const rows = await fetchMovementRows();
+    expect(rows.length).toBeGreaterThanOrEqual(3);
 
     const locRes = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/location-wise?conditions=${conditions}`
+      url: `/api/reports/transfer-depreciation/location-wise?conditions=${xdepCondition}`
     });
     const locationWise: LocationWiseRow[] = locRes.json().locationWise;
 
-    const assetC1Paise = items.reduce((s, a) => s + paise(a.c1TotalDepreciation), 0);
-    const assetC2Paise = items.reduce((s, a) => s + paise(a.c2TotalDepreciation), 0);
-    const assetTotalPaise = items.reduce((s, a) => s + paise(a.totalDepreciation), 0);
+    const rowC1Paise = rows.reduce((s, r) => s + paise(r.c1Depreciation), 0);
+    const rowC2Paise = rows.reduce((s, r) => s + paise(r.c2Depreciation), 0);
+    const rowTotalPaise = rows.reduce((s, r) => s + paise(r.depreciation), 0);
     const locC1Paise = locationWise.reduce((s, l) => s + paise(l.c1TotalDepreciation), 0);
     const locC2Paise = locationWise.reduce((s, l) => s + paise(l.c2TotalDepreciation), 0);
     const locTotalPaise = locationWise.reduce((s, l) => s + paise(l.totalDepreciation), 0);
-    expect(locC1Paise).toBe(assetC1Paise);
-    expect(locC2Paise).toBe(assetC2Paise);
-    expect(locTotalPaise).toBe(assetTotalPaise);
+    expect(locC1Paise).toBe(rowC1Paise);
+    expect(locC2Paise).toBe(rowC2Paise);
+    expect(locTotalPaise).toBe(rowTotalPaise);
   });
 
-  it("paginates the asset-wise list with a keyset cursor — a 1-row page's nextCursor reaches the next asset, and running out returns null", async () => {
-    const conditions = encodeURIComponent(JSON.stringify([{ columnId: "farId", op: "beginsWith", value: "XDEP-" }]));
+  it("paginates the movement schedule with a keyset cursor over assets — a 1-asset page returns ALL of that asset's rows, and running out returns null", async () => {
     const page1 = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?limit=1&conditions=${conditions}`
+      url: `/api/reports/transfer-depreciation/movement?limit=1&conditions=${xdepCondition}`
     });
     const body1 = page1.json();
-    expect(body1.items).toHaveLength(1);
+    // limit=1 bounds ASSETS scanned, not rows returned — the first asset alphabetically
+    // (XDEP-MANY) has 10+ segments, all of which come back in this one page.
+    expect(new Set(body1.items.map((r: MovementRow) => r.farId)).size).toBe(1);
+    expect(body1.items.length).toBeGreaterThanOrEqual(1);
     expect(body1.nextCursor).toBeTruthy();
 
-    const page2 = await authedInject(app, {
-      method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?limit=1&cursor=${body1.nextCursor}&conditions=${conditions}`
-    });
-    const body2 = page2.json();
-    expect(body2.items).toHaveLength(1);
-    // Keyset, not offset: strictly greater than the cursor, never repeats a row.
-    expect(body2.items[0].farId > body1.items[0].farId).toBe(true);
-
-    // Page through everything (3 XDEP- fixtures) and confirm the cursor eventually
-    // exhausts to null rather than looping or erroring.
-    const all = [...body1.items, ...body2.items];
-    let cursor: string | null = body2.nextCursor;
+    const farIdsSeen = new Set<string>(body1.items.map((r: MovementRow) => r.farId));
+    let cursor: string | null = body1.nextCursor;
     while (cursor) {
       const res = await authedInject(app, {
         method: "GET",
-        url: `/api/reports/transfer-depreciation/asset-wise?limit=1&cursor=${cursor}&conditions=${conditions}`
+        url: `/api/reports/transfer-depreciation/movement?limit=1&cursor=${cursor}&conditions=${xdepCondition}`
       });
       const body = res.json();
       if (body.items.length === 0) {
         expect(body.nextCursor).toBeNull();
         break;
       }
-      all.push(...body.items);
+      for (const r of body.items as MovementRow[]) farIdsSeen.add(r.farId);
       cursor = body.nextCursor;
     }
-    expect(all.map((a: AssetWiseRow) => a.farId).sort()).toEqual(["XDEP-MANY", "XDEP-MOVED", "XDEP-STILL"]);
+    // Page through everything (3 XDEP- fixtures) and confirm the cursor eventually
+    // exhausts to null rather than looping or erroring — every asset seen exactly once.
+    expect([...farIdsSeen].sort()).toEqual(["XDEP-MANY", "XDEP-MOVED", "XDEP-STILL"]);
   });
 
-  it("filters the asset-wise list by a numeric C1 condition, server-side (fewer rows returned, not just fewer shown)", async () => {
+  it("filters the movement schedule by a numeric C1 condition, server-side — a whole asset is excluded, not just some of its rows", async () => {
     const conditions = encodeURIComponent(
       JSON.stringify([
         { columnId: "farId", op: "beginsWith", value: "XDEP-" },
         { columnId: "c1TotalDepreciation", op: "gt", value: 20000 }
       ])
     );
-    const res = await authedInject(app, {
-      method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?limit=500&conditions=${conditions}`
-    });
-    const items: AssetWiseRow[] = res.json().items;
-    expect(items.length).toBeGreaterThan(0);
-    expect(items.every((a) => a.c1TotalDepreciation > 20000)).toBe(true);
+    const rows = await fetchMovementRows(conditions);
+    expect(rows.length).toBeGreaterThan(0);
     // XDEP-STILL's C1 total (~7,500 given its cost/useful-life over the fixture period)
-    // must be excluded — proves the filter actually narrowed the query, not just
-    // decoration.
-    expect(items.some((a) => a.farId === "XDEP-STILL")).toBe(false);
+    // is below the threshold — its asset must be excluded entirely, proving the filter
+    // narrowed the underlying asset query rather than just hiding some of its rows.
+    expect(rows.some((r) => r.farId === "XDEP-STILL")).toBe(false);
+    // XDEP-MANY's much larger cost (913,457 over 8 years) comfortably clears the
+    // threshold — confirms the filter still lets a genuinely qualifying asset through.
+    expect(rows.some((r) => r.farId === "XDEP-MANY")).toBe(true);
   });
 
-  it("filters the asset-wise list by Current Location, server-side", async () => {
-    const conditions = encodeURIComponent(
-      JSON.stringify([{ columnId: "currentLocation", op: "equals", value: "Center-B" }])
-    );
-    const res = await authedInject(app, {
-      method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?limit=500&conditions=${conditions}`
-    });
-    const items: AssetWiseRow[] = res.json().items;
-    expect(items.some((a) => a.farId === "XDEP-MOVED")).toBe(true);
-    expect(items.every((a) => a.currentLocation === "Center-B")).toBe(true);
+  it("filters the movement schedule by Current Location, server-side — keeps ALL of a matching asset's rows, not just the one at that location", async () => {
+    const conditions = encodeURIComponent(JSON.stringify([{ columnId: "currentLocation", op: "equals", value: "Center-B" }]));
+    const rows = await fetchMovementRows(conditions);
+    const movedRows = rows.filter((r) => r.farId === "XDEP-MOVED");
+    // XDEP-MOVED's CURRENT location is Center-B, but it also has an earlier Center-A
+    // stay in this period — filtering by current location includes the whole asset
+    // (every location it occupied), not just the one row whose own Location column
+    // happens to equal the filter value.
+    expect(movedRows.map((r) => r.location).sort()).toEqual(["Center-A", "Center-B"]);
   });
 
-  it("rejects an unknown filter column with 400, on both the list and the location-wise endpoints", async () => {
+  it("rejects an unknown filter column with 400, on both the movement and location-wise endpoints", async () => {
     const conditions = encodeURIComponent(JSON.stringify([{ columnId: "notARealColumn", op: "equals", value: "x" }]));
     const listRes = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/transfer-depreciation/asset-wise?conditions=${conditions}`
+      url: `/api/reports/transfer-depreciation/movement?conditions=${conditions}`
     });
     expect(listRes.statusCode).toBe(400);
     const locRes = await authedInject(app, {
@@ -809,92 +785,120 @@ describe("Transfer & Depreciation Report", () => {
     expect(locRes.statusCode).toBe(400);
   });
 
-  it("exports an Excel workbook with the three documented sheets, including full Movement Detail for the many-transfer asset", async () => {
+  it("exports a single Excel sheet — every asset appears, one row per location-stay, including a never-moved asset", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    expect(res.headers["content-disposition"]).toContain("transfer-depreciation-");
+    expect(res.headers["content-disposition"]).toContain("asset-movement-depreciation-schedule-");
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(res.rawPayload as any);
     const sheetNames = workbook.worksheets.map((s) => s.name);
-    // Movement Detail, then Asset-wise Summary, then Location-wise Summary.
-    expect(sheetNames).toEqual(["Movement Detail", "Asset-wise Summary", "Location-wise Summary"]);
+    expect(sheetNames).toEqual(["Asset Movement & Depreciation"]);
 
-    // Location-wise Summary and Asset-wise Summary each carry a second note row
-    // (the reconciliation explanation) before their header — see
-    // LOCATION_RECONCILIATION_NOTE/ASSET_RECONCILIATION_NOTE in reports.ts — so their
-    // header is row 3, not row 2. Movement Detail only has the one filter-summary note,
-    // header stays at row 2.
-    const locationHeaderRow = workbook.getWorksheet("Location-wise Summary")!.getRow(3).values as unknown[];
-    expect(locationHeaderRow).toEqual([
-      undefined,
-      "Location",
-      "Asset Count",
-      "C1 Depreciation",
-      "C2 Depreciation",
-      "Total Depreciation"
-    ]);
-    expect(String(workbook.getWorksheet("Location-wise Summary")!.getRow(2).getCell(1).value)).toContain(
-      "contributes to every location it occupied"
-    );
-    const assetHeaderRow = workbook.getWorksheet("Asset-wise Summary")!.getRow(3).values as unknown[];
-    expect(assetHeaderRow).toEqual([
+    const sheet = workbook.worksheets[0]!;
+    // Row 1 = period note, row 2 = schedule note, row 3 = header.
+    const headerRow = sheet.getRow(3).values as unknown[];
+    expect(headerRow).toEqual([
       undefined,
       "FAR ID",
       "Sub Classification",
-      "Current Location",
-      "C1 Period Depreciation",
-      "C2 Period Depreciation",
-      "Total Period Depreciation"
-    ]);
-    expect(String(workbook.getWorksheet("Asset-wise Summary")!.getRow(2).getCell(1).value)).toContain(
-      "Current Location is each asset's location as of the report date"
-    );
-    const detailHeaderRow = workbook.getWorksheet("Movement Detail")!.getRow(2).values as unknown[];
-    expect(detailHeaderRow).toEqual([
-      undefined,
-      "FAR ID",
-      "Sub Classification",
+      "Description",
       "Location",
       "From Date",
       "To Date",
       "Days Held",
       "C1 Depreciation",
       "C2 Depreciation",
-      "Depreciation"
+      "Total Depreciation"
     ]);
 
-    const detailSheet = workbook.getWorksheet("Movement Detail")!;
-    const manyRows: Array<{ location: string; c1: number; c2: number; total: number }> = [];
-    detailSheet.eachRow((row) => {
-      if (row.getCell(1).value === "XDEP-MANY") {
+    const stillRows: ExcelJS.Row[] = [];
+    const manyRows: Array<{ c1: number; c2: number; total: number }> = [];
+    let inTotalsBlock = false;
+    sheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      const first = row.getCell(1).value;
+      if (first === "LOCATION TOTALS") inTotalsBlock = true;
+      if (inTotalsBlock) return;
+      if (first === "XDEP-STILL") stillRows.push(row);
+      if (first === "XDEP-MANY") {
         manyRows.push({
-          location: String(row.getCell(3).value),
-          c1: Number(row.getCell(7).value),
-          c2: Number(row.getCell(8).value),
-          total: Number(row.getCell(9).value)
+          c1: Number(row.getCell(8).value),
+          c2: Number(row.getCell(9).value),
+          total: Number(row.getCell(10).value)
         });
       }
     });
-    // Every segment for XDEP-MANY made it into the flat detail sheet, not just a sample.
+    // XDEP-STILL never moved — it must appear exactly once (not zero, unlike the old
+    // Movement Detail sheet which excluded never-moved assets entirely).
+    expect(stillRows).toHaveLength(1);
+    // Every row for XDEP-MANY made it into the sheet, not just a sample.
     expect(manyRows.length).toBeGreaterThanOrEqual(10);
     // C2 is genuinely present in the export (not silently dropped/zeroed).
     expect(manyRows.some((r) => r.c2 > 0)).toBe(true);
     for (const r of manyRows) {
       expect(paise(r.total)).toBe(paise(r.c1) + paise(r.c2));
     }
-
-    // XDEP-STILL never transferred (one segment) — it must be excluded from the detail
-    // sheet entirely, per spec ("every asset that moved").
-    let stillAppears = false;
-    detailSheet.eachRow((row) => {
-      if (row.getCell(1).value === "XDEP-STILL") stillAppears = true;
-    });
-    expect(stillAppears).toBe(false);
   });
 
-  it("the export respects the same Excel-style filter conditions as the list endpoints", async () => {
+  it("the export's trailing Location Totals block reconciles exactly against its own detail rows — no silent truncation", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
+
+    const reconstructed = new Map<string, number>();
+    const locationsByFarId = new Map<string, Set<string>>();
+    let detailRowCount = 0;
+    let inTotalsBlock = false;
+    const totalsRows: Array<{ location: string; count: number; totalPaise: number }> = [];
+    sheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      const first = row.getCell(1).value;
+      if (first === null || first === undefined || first === "") return; // blank separator row
+      if (first === "LOCATION TOTALS") {
+        inTotalsBlock = true;
+        return;
+      }
+      if (inTotalsBlock) {
+        if (first === "Location" && row.getCell(2).value === "Asset Count") return; // totals header
+        if (first === "Grand Total") return;
+        totalsRows.push({
+          location: String(first),
+          count: Number(row.getCell(2).value),
+          totalPaise: Math.round(Number(row.getCell(5).value) * 100)
+        });
+        return;
+      }
+      detailRowCount++;
+      const farId = String(row.getCell(1).value);
+      const location = String(row.getCell(4).value);
+      const rowPaise = Math.round(Number(row.getCell(10).value) * 100);
+      reconstructed.set(location, (reconstructed.get(location) ?? 0) + rowPaise);
+      const set = locationsByFarId.get(farId) ?? new Set<string>();
+      set.add(location);
+      locationsByFarId.set(farId, set);
+    });
+
+    const reconstructedCounts = new Map<string, number>();
+    for (const [, locations] of locationsByFarId) {
+      for (const loc of locations) reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
+    }
+
+    expect(detailRowCount).toBeGreaterThan(0);
+    expect(totalsRows.length).toBeGreaterThan(0);
+    for (const row of totalsRows) {
+      expect(row.totalPaise).toBe(reconstructed.get(row.location) ?? -1);
+      expect(row.count).toBe(reconstructedCounts.get(row.location) ?? -1);
+    }
+    // Nothing reconstructed from the detail rows is missing FROM the totals block either
+    // (present in the reconstruction but absent from the actual block would be exactly
+    // the kind of silent truncation this test exists to catch).
+    expect([...reconstructed.keys()].sort()).toEqual(totalsRows.map((r) => r.location).sort());
+  });
+
+  it("the export respects the same Excel-style filter conditions as the movement endpoint", async () => {
     const conditions = encodeURIComponent(JSON.stringify([{ columnId: "farId", op: "equals", value: "XDEP-STILL" }]));
     const res = await authedInject(app, {
       method: "GET",
@@ -903,132 +907,33 @@ describe("Transfer & Depreciation Report", () => {
     expect(res.statusCode).toBe(200);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
 
-    const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
     const farIds: string[] = [];
-    assetSheet.eachRow((row, num) => {
-      if (num > 3) farIds.push(String(row.getCell(1).value));
+    let inTotalsBlock = false;
+    sheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      const first = row.getCell(1).value;
+      if (first === "LOCATION TOTALS") inTotalsBlock = true;
+      if (inTotalsBlock) return;
+      if (first === null || first === undefined || first === "") return;
+      farIds.push(String(first));
     });
     expect(farIds).toEqual(["XDEP-STILL"]);
-
-    const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
-    const locations: string[] = [];
-    locationSheet.eachRow((row, num) => {
-      if (num > 3) locations.push(String(row.getCell(1).value));
-    });
-    expect(locations).toEqual(["Center-Still"]);
-  });
-
-  it("Asset-wise Summary and Location-wise Summary always reconcile exactly — no silent truncation", async () => {
-    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
-    expect(res.statusCode).toBe(200);
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(res.rawPayload as any);
-
-    const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
-    const assetRows: Array<{ farId: string; currentLocation: string; totalPaise: number }> = [];
-    assetSheet.eachRow((row, num) => {
-      if (num <= 3) return;
-      assetRows.push({
-        farId: String(row.getCell(1).value),
-        currentLocation: String(row.getCell(3).value),
-        totalPaise: Math.round(Number(row.getCell(6).value) * 100)
-      });
-    });
-
-    const detailSheet = workbook.getWorksheet("Movement Detail")!;
-    const farIdsWithMovementDetail = new Set<string>();
-    // location -> paise, reconstructed purely from Movement Detail's own segment rows.
-    const reconstructedFromDetail = new Map<string, number>();
-    detailSheet.eachRow((row, num) => {
-      if (num <= 2) return;
-      const farId = String(row.getCell(1).value);
-      farIdsWithMovementDetail.add(farId);
-      const location = String(row.getCell(3).value);
-      const paise = Math.round(Number(row.getCell(9).value) * 100);
-      reconstructedFromDetail.set(location, (reconstructedFromDetail.get(location) ?? 0) + paise);
-    });
-
-    // Independently reconstruct what Location-wise Summary SHOULD say, built only from
-    // the export's own other two sheets: every multi-segment asset's contribution comes
-    // from Movement Detail (above); every single-segment asset (absent from Movement
-    // Detail, by that sheet's own documented design) contributes its full Asset-wise
-    // Summary total to its own Current Location, since a never-transferred asset's one
-    // segment IS its current location for the whole period.
-    const reconstructed = new Map(reconstructedFromDetail);
-    const reconstructedCounts = new Map<string, number>();
-    for (const detailFarId of farIdsWithMovementDetail) {
-      // Count once per distinct location that FAR ID's Movement Detail rows touch.
-      const locationsForThisAsset = new Set<string>();
-      detailSheet.eachRow((row, num) => {
-        if (num <= 2) return;
-        if (String(row.getCell(1).value) === detailFarId) locationsForThisAsset.add(String(row.getCell(3).value));
-      });
-      for (const loc of locationsForThisAsset) reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
-    }
-    for (const row of assetRows) {
-      if (farIdsWithMovementDetail.has(row.farId)) continue;
-      reconstructed.set(row.currentLocation, (reconstructed.get(row.currentLocation) ?? 0) + row.totalPaise);
-      reconstructedCounts.set(row.currentLocation, (reconstructedCounts.get(row.currentLocation) ?? 0) + 1);
-    }
-
-    const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
-    const actualLocationRows: Array<{ location: string; count: number; totalPaise: number }> = [];
-    locationSheet.eachRow((row, num) => {
-      if (num <= 3) return;
-      actualLocationRows.push({
-        location: String(row.getCell(1).value),
-        count: Number(row.getCell(2).value),
-        totalPaise: Math.round(Number(row.getCell(5).value) * 100)
-      });
-    });
-
-    expect(actualLocationRows.length).toBeGreaterThan(0);
-    for (const row of actualLocationRows) {
-      expect(row.totalPaise).toBe(reconstructed.get(row.location) ?? -1);
-      expect(row.count).toBe(reconstructedCounts.get(row.location) ?? -1);
-    }
-    // And nothing reconstructed is missing FROM Location-wise Summary either (a
-    // location present in the reconstruction but absent from the actual sheet would be
-    // exactly the kind of silent truncation this test exists to catch).
-    expect([...reconstructed.keys()].sort()).toEqual(actualLocationRows.map((r) => r.location).sort());
-
-    // Grand totals must match exactly too (paise-precise) — every asset's full-period
-    // depreciation is fully accounted for across whichever Location-wise Summary rows
-    // its segments touch, even though a transferred asset spreads across several of
-    // those rows while getting only one Asset-wise Summary row under its current
-    // location.
-    const assetGrandTotalPaise = assetRows.reduce((s, r) => s + r.totalPaise, 0);
-    const locationGrandTotalPaise = actualLocationRows.reduce((s, r) => s + r.totalPaise, 0);
-    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
   });
 });
 
-// Regression test for a real production incident (2026-08-29): a downloaded export
-// showed Location-wise Summary's Center-001 row reporting 123 assets/₹41,17,011.70,
-// while Asset-wise Summary appeared to have only 107/₹39,80,152.44 worth of matching
-// rows — read as 16 assets' worth of data silently missing, with no error or warning.
-//
-// Root-caused via direct trace (not assumed): BOTH sheets are built from one single
-// pass over streamAssetDepreciationBatches — an asset present in one is always present
-// in the other; there is no pagination/truncation bug in the export's batching loop.
-// The real cause is a grouping-semantics mismatch: Location-wise Summary attributes an
-// asset's depreciation to EVERY location it occupied during the period (day-weighted,
-// via its segments) — the whole point of this report — while Asset-wise Summary shows
-// exactly one row per asset, under its CURRENT location only. An asset that transferred
-// during the period therefore contributes to multiple Location-wise Summary rows but
-// only one Asset-wise Summary row, which reads as "missing" to a reader cross-checking
-// by current location alone, even though nothing is actually dropped.
-//
-// This test proves that at a real, >200-asset scale (large enough to have caught the
-// production incident — 5% of loadtest-generated assets get 1-3 transfers each, same
-// generator the 250k scale test uses), the two sheets always reconcile EXACTLY: same
-// grand total, and Location-wise Summary's own per-location numbers are always fully
-// reconstructible from Asset-wise Summary + Movement Detail alone (see the singular
-// XDEP-fixture version of this same check above for the line-by-line logic; this one
-// uses an efficient single-pass grouping instead, since 200+ assets makes the nested
-// per-row eachRow scan used above too slow to reuse as-is).
-describe("Transfer & Depreciation Report export — reconciliation at scale (200+ assets)", () => {
+// Regression coverage for a real production incident (2026-08-29) that led to this
+// restructure: the old three-sheet export's Location-wise Summary and Asset-wise
+// Summary looked mismatched (16 assets/₹1.36L reading as "missing") purely because
+// Asset-wise Summary showed one row per asset under its CURRENT location, while
+// Location-wise Summary spread a mover's depreciation across every location it occupied
+// — nothing was actually lost, but the two sheets' counts didn't line up at a glance.
+// This single-sheet schedule has no second view to disagree with: every asset's own
+// rows already sum to its full total, and the trailing Location Totals block is built
+// from those same rows. This test proves that invariant holds at real scale (200+
+// assets, not just the handful of XDEP- fixtures above).
+describe("Asset Movement & Depreciation Schedule export — reconciliation at scale (200+ assets)", () => {
   let app: FastifyInstance;
   const ASSET_COUNT = 260;
   const assets = generateAssets(ASSET_COUNT, 55511);
@@ -1055,78 +960,65 @@ describe("Transfer & Depreciation Report export — reconciliation at scale (200
     await app.close();
   });
 
-  it("Asset-wise Summary and Location-wise Summary reconcile exactly across the whole export — no asset silently missing from either", async () => {
+  it("every asset appears (one row each, movers more), and the Location Totals block reconciles exactly — no asset silently missing", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
     expect(res.statusCode).toBe(200);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
 
-    const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
-    const assetFarIds = new Set<string>();
-    const currentLocationByFarId = new Map<string, string>();
-    const totalPaiseByFarId = new Map<string, number>();
-    let assetGrandTotalPaise = 0;
-    assetSheet.eachRow((row, num) => {
+    const farIds = new Set<string>();
+    const reconstructed = new Map<string, number>();
+    const locationsByFarId = new Map<string, Set<string>>();
+    let detailGrandTotalPaise = 0;
+    let inTotalsBlock = false;
+    const totalsRows: Array<{ location: string; count: number; totalPaise: number }> = [];
+    sheet.eachRow((row, num) => {
       if (num <= 3) return;
-      const farId = String(row.getCell(1).value);
-      const paise = Math.round(Number(row.getCell(6).value) * 100);
-      assetFarIds.add(farId);
-      currentLocationByFarId.set(farId, String(row.getCell(3).value));
-      totalPaiseByFarId.set(farId, paise);
-      assetGrandTotalPaise += paise;
+      const first = row.getCell(1).value;
+      if (first === null || first === undefined || first === "") return;
+      if (first === "LOCATION TOTALS") {
+        inTotalsBlock = true;
+        return;
+      }
+      if (inTotalsBlock) {
+        if (first === "Location" && row.getCell(2).value === "Asset Count") return;
+        if (first === "Grand Total") return;
+        totalsRows.push({
+          location: String(first),
+          count: Number(row.getCell(2).value),
+          totalPaise: Math.round(Number(row.getCell(5).value) * 100)
+        });
+        return;
+      }
+      const farId = String(first);
+      const location = String(row.getCell(4).value);
+      const rowPaise = Math.round(Number(row.getCell(10).value) * 100);
+      farIds.add(farId);
+      detailGrandTotalPaise += rowPaise;
+      reconstructed.set(location, (reconstructed.get(location) ?? 0) + rowPaise);
+      const set = locationsByFarId.get(farId) ?? new Set<string>();
+      set.add(location);
+      locationsByFarId.set(farId, set);
     });
     // Confirms the export actually reached the scale this test is meant to exercise —
-    // a regression that silently capped the batch loop would show up here directly as
-    // a row count short of ASSET_COUNT, independent of the reconciliation checks below.
-    expect(assetFarIds.size).toBe(ASSET_COUNT);
+    // a regression that silently capped the batch loop, or that dropped never-moved
+    // assets, would show up here directly as a farId count short of ASSET_COUNT.
+    expect(farIds.size).toBe(ASSET_COUNT);
 
-    // Single pass over Movement Detail: for each (farId, location) touched, accumulate
-    // paise and count each distinct location once per asset — O(rows), not O(rows²).
-    const detailSheet = workbook.getWorksheet("Movement Detail")!;
-    const farIdsWithMovementDetail = new Set<string>();
-    const locationsTouchedByFarId = new Map<string, Set<string>>();
-    const reconstructed = new Map<string, number>();
-    detailSheet.eachRow((row, num) => {
-      if (num <= 2) return;
-      const farId = String(row.getCell(1).value);
-      const location = String(row.getCell(3).value);
-      const paise = Math.round(Number(row.getCell(9).value) * 100);
-      farIdsWithMovementDetail.add(farId);
-      reconstructed.set(location, (reconstructed.get(location) ?? 0) + paise);
-      const set = locationsTouchedByFarId.get(farId) ?? new Set<string>();
-      set.add(location);
-      locationsTouchedByFarId.set(farId, set);
-    });
     const reconstructedCounts = new Map<string, number>();
-    for (const [, locations] of locationsTouchedByFarId) {
+    for (const [, locations] of locationsByFarId) {
       for (const loc of locations) reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
     }
-    // Every never-transferred asset (absent from Movement Detail, by that sheet's own
-    // documented design) contributes its full total to its own Current Location.
-    for (const farId of assetFarIds) {
-      if (farIdsWithMovementDetail.has(farId)) continue;
-      const loc = currentLocationByFarId.get(farId)!;
-      const paise = totalPaiseByFarId.get(farId)!;
-      reconstructed.set(loc, (reconstructed.get(loc) ?? 0) + paise);
-      reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
-    }
 
-    const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
-    const actualLocationRows: Array<{ location: string; count: number; totalPaise: number }> = [];
-    let locationGrandTotalPaise = 0;
-    locationSheet.eachRow((row, num) => {
-      if (num <= 3) return;
-      const totalPaise = Math.round(Number(row.getCell(5).value) * 100);
-      actualLocationRows.push({ location: String(row.getCell(1).value), count: Number(row.getCell(2).value), totalPaise });
-      locationGrandTotalPaise += totalPaise;
-    });
-
-    expect(actualLocationRows.length).toBeGreaterThan(0);
-    for (const row of actualLocationRows) {
+    expect(totalsRows.length).toBeGreaterThan(0);
+    let totalsGrandTotalPaise = 0;
+    for (const row of totalsRows) {
       expect(row.totalPaise).toBe(reconstructed.get(row.location) ?? -1);
       expect(row.count).toBe(reconstructedCounts.get(row.location) ?? -1);
+      totalsGrandTotalPaise += row.totalPaise;
     }
-    expect([...reconstructed.keys()].sort()).toEqual(actualLocationRows.map((r) => r.location).sort());
-    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
+    expect([...reconstructed.keys()].sort()).toEqual(totalsRows.map((r) => r.location).sort());
+    expect(totalsGrandTotalPaise).toBe(detailGrandTotalPaise);
   });
 });

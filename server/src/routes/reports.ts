@@ -462,42 +462,41 @@ async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: st
   return workbook.xlsx.writeBuffer();
 }
 
-// Transfer & Depreciation Report — new reporting-layer work, read-only against the
-// locked calc engine (engine.ts). Built for scale (this report is expected to grow
-// toward the same 2,50,000-asset figure Register already handles), so it deliberately
-// does NOT follow the original round's shape (one Node loop computing every asset's
-// segments up front, returned in a single response):
+// Asset Movement & Depreciation Schedule — new reporting-layer work, read-only against
+// the locked calc engine (engine.ts). Built for scale (this report is expected to grow
+// toward the same 2,50,000-asset figure Register already handles):
 //
-//   - Asset-wise list: paginated exactly like GET /api/assets (keyset cursor on far_id,
-//     LIMIT), filtered server-side (Excel-style conditions, reportColumnFilters.ts),
-//     C1/C2 computed via SQL far_calc_component() — never a Node loop over every asset.
-//     Segments are NOT included; see below.
-//   - Movement-timeline expansion: a separate, single-asset endpoint. Computing a
-//     4,000-transfer join's worth of segments for every row of a 250k-row list up front
-//     would be wasted work for the 99% of rows a user never expands — this computes it
-//     only for the one asset actually expanded, so it costs the same at 250,000 assets
-//     as at 3,000 (bounded by that one asset's own transfer count, which is indexed).
-//   - Location-wise summary: the one piece that genuinely needs a full-table scan (every
-//     asset contributes to some location's total). Streamed in bounded batches (same
-//     `far_id`-keyset-cursor idea as assetsExport.ts's EXPORT_BATCH_SIZE), computing
-//     each batch's segments in Node via the same tested `splitDepreciationByLocation`
-//     and accumulating into a location totals Map — never holding more than one batch of
-//     assets+transfers in memory at once, and never returning per-asset data to the
-//     client (the output is bounded by the number of distinct locations, not assets).
-//   - Export: the same batched full-table pass, streamed straight into an
+//   - Movement schedule: one flat, paginated list — keyset cursor on far_id like GET
+//     /api/assets, filtered server-side (Excel-style conditions, reportColumnFilters.ts)
+//     — but each asset in a page contributes ONE ROW PER LOCATION-STAY, not one row per
+//     asset: computeAsset (Node) gives the asset's real C1/C2 totals and end date, then
+//     the same tested `splitDepreciationByLocation` used by the export splits those
+//     across every location the asset occupied, exactly like Movement Detail always did
+//     — a never-moved asset trivially gets its one full-period segment. `limit` bounds
+//     the number of ASSETS scanned per page (not rows returned, since a mover expands
+//     into several rows) — still bounded work per request regardless of table size.
+//   - Location totals: a full-table-scan aggregate (every asset contributes to some
+//     location's total) backing a small collapsible summary panel — not a second full
+//     view/sheet. Streamed in bounded batches (same `far_id`-keyset-cursor idea as
+//     assetsExport.ts's EXPORT_BATCH_SIZE), computing each batch's segments in Node and
+//     accumulating into a location totals Map — never holding more than one batch of
+//     assets+transfers in memory at once, output bounded by distinct-location count.
+//   - Export: the same batched full-table pass, streamed into a single sheet via
 //     ExcelJS.stream.xlsx.WorkbookWriter (same streaming approach as assetsExport.ts) —
-//     Asset-wise Summary and Movement Detail rows are written as each batch is
-//     processed; Location-wise Summary (whose totals aren't known until the whole scan
-//     finishes) is added as a worksheet FIRST (fixing its position as the first sheet)
-//     but its rows are written last, after the single pass completes.
-interface TransferDepreciationAssetRow {
+//     every asset's segment rows are written as each batch is processed; a "Location
+//     Totals" block (whose totals aren't known until the whole scan finishes) is
+//     appended after all detail rows, once the pass completes.
+interface MovementScheduleRow {
   farId: string;
   subClassification: string;
   assetDescription: string;
-  currentLocation: string;
-  c1TotalDepreciation: number;
-  c2TotalDepreciation: number;
-  totalDepreciation: number;
+  location: string;
+  fromDate: string;
+  toDate: string;
+  daysHeld: number;
+  c1Depreciation: number;
+  c2Depreciation: number;
+  depreciation: number;
 }
 
 interface TransferDepreciationLocationRow {
@@ -522,30 +521,28 @@ function validateConditions(conditions: RawCondition[], fy: { fyStart: string; f
   return null;
 }
 
-/** One page of the asset-wise list — filtering and pagination happen in SQL (same
+/** One page of the movement schedule — filtering and pagination happen in SQL (same
  *  keyset-cursor-on-far_id shape as GET /api/assets; unlike Register this report has no
- *  column-sort UI, so a single-value cursor is enough, no tuple needed), but the
- *  displayed C1/C2/Current Location come from `computeAsset` in Node — same split as
- *  GET /api/assets itself (SQL calc CTE for the WHERE clause, `computeAsset` for the
- *  response body), and for the same reason: `effective_location` (the SQL alias, backed
- *  by the `revised_location` column) is a plain "wherever the latest transfer left it"
- *  cache, not date-gated by AS_AT — computeAsset's `effectiveLocation` reads the actual
- *  `transfers` rows up to AS_AT and is the value Register itself displays. Doing this in
- *  Node is only safe because it's bounded by PAGE SIZE, not table size — the same reason
- *  it's already proven at 250k scale for Register (scale.loadtest.ts's "Register: first
- *  page..." case runs this identical pattern). LIMIT is applied in the outer query after
+ *  column-sort UI, so a single-value cursor is enough, no tuple needed) over ASSETS, but
+ *  each asset in the page then expands into one row per location-stay via the same
+ *  `splitDepreciationByLocation` the export/location-totals path uses — a never-moved
+ *  asset trivially expands into exactly one row. C1/C2 totals and the period end date
+ *  come from `computeAsset` in Node — same reason GET /api/assets itself does this in
+ *  Node: bounded by PAGE SIZE (a handful of assets' own transfers), not table size, the
+ *  same pattern already proven at 250k scale for Register (scale.loadtest.ts's
+ *  "Register: first page..." case). LIMIT is applied in the outer query after
  *  Excel-style conditions (same structural tradeoff GET /api/assets already has and
  *  documents: a heavily-selective computed condition means Postgres may need to evaluate
  *  far_calc_component() past the cursor until it fills a page — accepted there, accepted
  *  here for the same reason: revisit with a materialized computed column if it ever
  *  becomes the bottleneck at real 250k scale). */
-async function computeAssetWisePage(
+async function computeMovementSchedulePage(
   db: Db,
   fy: Fy,
   conditions: RawCondition[],
   cursor: string | null,
   limit: number
-): Promise<{ items: TransferDepreciationAssetRow[]; nextCursor: string | null }> {
+): Promise<{ items: MovementScheduleRow[]; nextCursor: string | null }> {
   const params: unknown[] = [fy.asAt];
   const baseConditions = ["date_acquired <= $1"];
   if (cursor) {
@@ -596,58 +593,35 @@ async function computeAssetWisePage(
     else transfersByFarId.set(rec.farId, [rec]);
   }
 
-  const items = rows.map((row) => {
+  const items: MovementScheduleRow[] = [];
+  for (const row of rows) {
     const asset = mapAssetRow(row);
     const transfers = transfersByFarId.get(asset.farId) ?? [];
     const result = computeAsset(asset, fy, transfers);
-    const c1TotalDepreciation = round2(result.c1.periodDepreciation);
-    const c2TotalDepreciation = round2(result.c2.periodDepreciation);
-    return {
-      farId: asset.farId,
-      subClassification: asset.subClassification,
-      assetDescription: asset.assetDescription,
-      currentLocation: result.effectiveLocation,
-      c1TotalDepreciation,
-      c2TotalDepreciation,
-      totalDepreciation: round2(c1TotalDepreciation + c2TotalDepreciation)
-    };
-  });
+    const c1Total = round2(result.c1.periodDepreciation);
+    const c2Total = round2(result.c2.periodDepreciation);
+    const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
+    const periodEnd = result.c1.effectiveEndDate;
+    const segments = splitDepreciationByLocation(asset.location, transfers, periodStart, periodEnd, c1Total, c2Total);
+    for (const seg of segments) {
+      items.push({
+        farId: asset.farId,
+        subClassification: asset.subClassification,
+        assetDescription: asset.assetDescription,
+        location: seg.location,
+        fromDate: seg.fromDate,
+        toDate: seg.toDate,
+        daysHeld: seg.daysHeld,
+        c1Depreciation: seg.c1Depreciation,
+        c2Depreciation: seg.c2Depreciation,
+        depreciation: seg.depreciation
+      });
+    }
+  }
 
   const last = rows[rows.length - 1];
   const nextCursor = last && rows.length === limit ? last.far_id : null;
   return { items, nextCursor };
-}
-
-/** One asset's movement timeline, computed on demand (not pre-computed for every row of
- *  the list) — see the module comment above for why. Reuses the exact same Node
- *  functions (`computeAsset`, `splitDepreciationByLocation`) the rest of this report and
- *  its tests already trust; cost is bounded by this one asset's own transfer count
- *  (indexed on far_id), independent of total table size. */
-async function computeAssetSegments(
-  db: Db,
-  fy: Fy,
-  farId: string
-): Promise<{ segments: LocationSegment[] } | null> {
-  const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND date_acquired <= $2`, [
-    farId,
-    fy.asAt
-  ]);
-  const row = rows[0];
-  if (!row) return null;
-
-  const asset = mapAssetRow(row);
-  const { rows: transferRows } = await db.query<TransferRow>(
-    `SELECT far_id, transaction_date, location FROM transfers WHERE far_id = $1 AND transaction_date <= $2 ORDER BY transaction_date, id`,
-    [asset.farId, fy.asAt]
-  );
-  const transfers = transferRows.map(mapTransferRow);
-  const result = computeAsset(asset, fy, transfers);
-  const c1Total = round2(result.c1.periodDepreciation);
-  const c2Total = round2(result.c2.periodDepreciation);
-  const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
-  const periodEnd = result.c1.effectiveEndDate;
-  const segments = splitDepreciationByLocation(asset.location, transfers, periodStart, periodEnd, c1Total, c2Total);
-  return { segments };
 }
 
 const DEPRECIATION_BATCH_SIZE = 2000;
@@ -655,31 +629,18 @@ const DEPRECIATION_BATCH_SIZE = 2000;
 interface AssetDepreciationBatchItem {
   farId: string;
   subClassification: string;
-  currentLocation: string;
+  assetDescription: string;
   c1Total: number;
   c2Total: number;
   segments: LocationSegment[];
 }
 
-/** The one full-table-scan primitive both the location-wise summary and the export
+/** The one full-table-scan primitive both the location-totals panel and the export
  *  share: walks every matching asset in bounded batches (same idea as assetsExport.ts's
  *  EXPORT_BATCH_SIZE), computing each batch's C1/C2 totals via SQL far_calc_component()
  *  and each asset's location segments via the tested Node split function — never holding
  *  more than one batch of assets + their transfers in memory at once, regardless of
- *  whether the table has 3,000 rows or 2,50,000.
- *
- *  `currentLocation` here — unlike `computeAssetWisePage`'s — is the SQL
- *  `effective_location` alias (the `revised_location` cache, not date-gated by AS_AT),
- *  a deliberate, scoped exception to the "Node computeAsset is correct" rule above: it's
- *  used only for the Asset-wise Summary export column (display, not reconciliation —
- *  segments themselves use the asset's real `location` column, never this), and getting
- *  the AS_AT-correct value here would mean a `computeAsset` call per asset for the WHOLE
- *  table, reintroducing the exact per-row-at-250k-scale cost this batching exists to
- *  avoid. Same accepted tradeoff Register's own "Current Location" Excel filter already
- *  has (assetColumnFilters.ts's `effectiveLocation` maps to this identical SQL alias) —
- *  not a new gap this report introduces. ponytail: full per-asset AS_AT-correct location
- *  at full-table scale would need a materialized/indexed computed column; revisit only
- *  if this specific export column is reported wrong in practice. */
+ *  whether the table has 3,000 rows or 2,50,000. */
 async function* streamAssetDepreciationBatches(
   db: Db,
   fy: Fy,
@@ -711,7 +672,7 @@ async function* streamAssetDepreciationBatches(
          SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
          FROM calc_base
        )
-       SELECT far_id, sub_classification, location, effective_location, date_acquired,
+       SELECT far_id, sub_classification, asset_description, location, date_acquired,
          (c1).period_depreciation AS c1_period_dep, (c2).period_depreciation AS c2_period_dep,
          (c1).effective_end_date AS effective_end_date
        FROM calc
@@ -754,7 +715,7 @@ async function* streamAssetDepreciationBatches(
       return {
         farId: r.far_id as string,
         subClassification: r.sub_classification as string,
-        currentLocation: r.effective_location as string,
+        assetDescription: r.asset_description as string,
         c1Total,
         c2Total,
         segments
@@ -822,31 +783,26 @@ function addNoteRow(sheet: ExcelJS.Worksheet, note: string, columnCount: number)
   noteRow.commit();
 }
 
-// Explains the one thing that makes Location-wise Summary's per-location asset count
-// look, to an unfamiliar reader, like assets are missing from Asset-wise Summary: an
-// asset that transferred during the period occupies MULTIPLE locations (day-weighted),
-// so it contributes to every one of those locations' rows here — but Asset-wise
-// Summary (by design, one row per asset) shows only its CURRENT location. Nothing is
-// dropped from either sheet — every asset's full-period total always appears exactly
-// once in Asset-wise Summary, and the exact same total is always fully accounted for
-// across whichever Location-wise Summary rows its segments touch (see Movement Detail
-// for the per-segment breakdown that reconciles the two). Investigated 2026-08-29 after
-// a reported "16 assets missing" — confirmed, via direct trace, this is the actual
-// cause, not a pagination/truncation bug: both sheets are built from one single pass
-// over the same asset batch (see streamAssetDepreciationBatches below), so an asset
-// present in one is always present in the other.
-const LOCATION_RECONCILIATION_NOTE =
-  "An asset that transferred during the period contributes to every location it occupied here (day-weighted) — see Movement Detail for the full per-asset breakdown, or Asset-wise Summary for each asset's current location and full-period total. Every asset here also appears in Asset-wise Summary — nothing is dropped from either sheet.";
-const ASSET_RECONCILIATION_NOTE =
-  "Current Location is each asset's location as of the report date. An asset that transferred during the period has its depreciation split across every location it occupied — see Location-wise Summary and Movement Detail for that breakdown — not attributed only to Current Location here.";
+// One row per location-stay, for every asset — a never-moved asset gets exactly one row
+// covering the whole period (see splitDepreciationByLocation), a mover gets one row per
+// location it occupied, day-weighted. Replaces the old three-sheet export (Movement
+// Detail / Asset-wise Summary / Location-wise Summary): those three views existed only
+// because Movement Detail excluded never-moved assets and Asset-wise Summary showed just
+// one (current-location) row per asset — this single sheet has neither gap, so the
+// reconciliation notes those sheets needed (explaining why their counts looked
+// mismatched) are no longer needed either.
+const SCHEDULE_NOTE =
+  "One row per location the asset occupied during the period, day-weighted — an asset that never moved during the period still gets exactly one row, covering the whole period. Location Totals appear below the asset detail.";
+
+const SCHEDULE_SHEET_NAME = "Asset Movement & Depreciation";
 
 /** Streams the export straight to the response — one pass over
- *  `streamAssetDepreciationBatches`, writing Asset-wise Summary + Movement Detail rows
- *  as each batch arrives (same streaming-WorkbookWriter approach as assetsExport.ts) and
- *  accumulating Location-wise Summary's totals in memory (bounded by distinct-location
- *  count, not asset count) to write once the scan finishes. Sheet order: Movement Detail,
- *  Asset-wise Summary, Location-wise Summary — `addWorksheet` fixes tab order at creation
- *  time, independent of when each sheet's own rows get written. */
+ *  `streamAssetDepreciationBatches`, writing every asset's segment row(s) to the single
+ *  schedule sheet as each batch arrives (same streaming-WorkbookWriter approach as
+ *  assetsExport.ts), and accumulating location totals in memory (bounded by
+ *  distinct-location count, not asset count) to append as a "Location Totals" block once
+ *  the scan finishes — same numbers the on-screen Location Totals panel shows, just
+ *  computed once per export instead of fetched separately. */
 async function streamTransferDepreciationWorkbook(
   db: Db,
   fy: Fy,
@@ -856,92 +812,57 @@ async function streamTransferDepreciationWorkbook(
   const note = transferDepreciationExportNote(fy);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
 
-  // Every location-stay segment, for every asset that actually moved during the period
-  // (more than one segment) — a single asset with no transfers has nothing to detail
-  // beyond what the Asset-wise Summary sheet already shows. Excel can't do the app's
-  // expand/collapse interaction, so this flat sheet is the equivalent: grouped by FAR
-  // ID, each asset's own segments in chronological order, filterable/pivotable as-is.
-  const detailSheet = workbook.addWorksheet("Movement Detail");
-  detailSheet.columns = [
+  const sheet = workbook.addWorksheet(SCHEDULE_SHEET_NAME);
+  sheet.columns = [
     { width: 18 },
-    { width: 22 },
-    { width: 22 },
+    { width: 20 },
+    { width: 26 },
+    { width: 20 },
     { width: 14 },
     { width: 14 },
     { width: 12 },
-    { width: 14 },
-    { width: 14 },
-    { width: 16 }
+    { width: 16 },
+    { width: 16 },
+    { width: 18 }
   ];
-  addNoteRow(detailSheet, note, 9);
-  const detailHeader = detailSheet.addRow([
+  addNoteRow(sheet, note, 10);
+  addNoteRow(sheet, SCHEDULE_NOTE, 10);
+  const header = sheet.addRow([
     "FAR ID",
     "Sub Classification",
+    "Description",
     "Location",
     "From Date",
     "To Date",
     "Days Held",
     "C1 Depreciation",
     "C2 Depreciation",
-    "Depreciation"
+    "Total Depreciation"
   ]);
-  detailHeader.font = { bold: true };
-  detailHeader.commit();
-
-  const assetSheet = workbook.addWorksheet("Asset-wise Summary");
-  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 20 }];
-  addNoteRow(assetSheet, note, 6);
-  addNoteRow(assetSheet, ASSET_RECONCILIATION_NOTE, 6);
-  const assetHeader = assetSheet.addRow([
-    "FAR ID",
-    "Sub Classification",
-    "Current Location",
-    "C1 Period Depreciation",
-    "C2 Period Depreciation",
-    "Total Period Depreciation"
-  ]);
-  assetHeader.font = { bold: true };
-  assetHeader.commit();
-
-  const locationSheet = workbook.addWorksheet("Location-wise Summary");
-  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 18 }, { width: 18 }, { width: 18 }];
-  addNoteRow(locationSheet, note, 5);
-  addNoteRow(locationSheet, LOCATION_RECONCILIATION_NOTE, 5);
-  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
-  locationHeader.font = { bold: true };
-  locationHeader.commit();
+  header.font = { bold: true };
+  header.commit();
 
   const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
   for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
     for (const item of batch) {
-      const total = round2(item.c1Total + item.c2Total);
-      const ar = assetSheet.addRow([item.farId, item.subClassification, item.currentLocation, item.c1Total, item.c2Total, total]);
-      ar.getCell(4).numFmt = MONEY_FMT_2DP;
-      ar.getCell(5).numFmt = MONEY_FMT_2DP;
-      ar.getCell(6).numFmt = MONEY_FMT_2DP;
-      ar.commit();
-
-      if (item.segments.length >= 2) {
-        for (const seg of item.segments) {
-          const dr = detailSheet.addRow([
-            item.farId,
-            item.subClassification,
-            seg.location,
-            seg.fromDate,
-            seg.toDate,
-            seg.daysHeld,
-            seg.c1Depreciation,
-            seg.c2Depreciation,
-            seg.depreciation
-          ]);
-          dr.getCell(7).numFmt = MONEY_FMT_2DP;
-          dr.getCell(8).numFmt = MONEY_FMT_2DP;
-          dr.getCell(9).numFmt = MONEY_FMT_2DP;
-          dr.commit();
-        }
-      }
-
       for (const seg of item.segments) {
+        const row = sheet.addRow([
+          item.farId,
+          item.subClassification,
+          item.assetDescription,
+          seg.location,
+          seg.fromDate,
+          seg.toDate,
+          seg.daysHeld,
+          seg.c1Depreciation,
+          seg.c2Depreciation,
+          seg.depreciation
+        ]);
+        row.getCell(8).numFmt = MONEY_FMT_2DP;
+        row.getCell(9).numFmt = MONEY_FMT_2DP;
+        row.getCell(10).numFmt = MONEY_FMT_2DP;
+        row.commit();
+
         const entry = locationTotals.get(seg.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
         entry.assetFarIds.add(item.farId);
         entry.c1 += seg.c1Depreciation;
@@ -951,19 +872,40 @@ async function streamTransferDepreciationWorkbook(
     }
   }
 
+  sheet.addRow([]).commit();
+  const totalsTitle = sheet.addRow(["LOCATION TOTALS"]);
+  sheet.mergeCells(totalsTitle.number, 1, totalsTitle.number, 10);
+  totalsTitle.getCell(1).font = { bold: true };
+  totalsTitle.commit();
+  const totalsHeader = sheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
+  totalsHeader.font = { bold: true };
+  totalsHeader.commit();
+
+  let grandC1 = 0;
+  let grandC2 = 0;
+  let grandCount = 0;
   for (const [location, entry] of [...locationTotals.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const c1 = round2(entry.c1);
     const c2 = round2(entry.c2);
-    const lr = locationSheet.addRow([location, entry.assetFarIds.size, c1, c2, round2(c1 + c2)]);
-    lr.getCell(3).numFmt = MONEY_FMT_2DP;
-    lr.getCell(4).numFmt = MONEY_FMT_2DP;
-    lr.getCell(5).numFmt = MONEY_FMT_2DP;
-    lr.commit();
+    grandC1 += c1;
+    grandC2 += c2;
+    grandCount += entry.assetFarIds.size;
+    const row = sheet.addRow([location, entry.assetFarIds.size, c1, c2, round2(c1 + c2)]);
+    row.getCell(3).numFmt = MONEY_FMT_2DP;
+    row.getCell(4).numFmt = MONEY_FMT_2DP;
+    row.getCell(5).numFmt = MONEY_FMT_2DP;
+    row.commit();
   }
+  const grandTotalC1 = round2(grandC1);
+  const grandTotalC2 = round2(grandC2);
+  const grandRow = sheet.addRow(["Grand Total", grandCount, grandTotalC1, grandTotalC2, round2(grandTotalC1 + grandTotalC2)]);
+  grandRow.font = { bold: true };
+  grandRow.getCell(3).numFmt = MONEY_FMT_2DP;
+  grandRow.getCell(4).numFmt = MONEY_FMT_2DP;
+  grandRow.getCell(5).numFmt = MONEY_FMT_2DP;
+  grandRow.commit();
 
-  locationSheet.commit();
-  assetSheet.commit();
-  detailSheet.commit();
+  sheet.commit();
   await workbook.commit();
 }
 
@@ -1101,9 +1043,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
     return { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
   });
 
-  // Asset-wise list: paginated, filtered, SQL-computed — see the module comment above
-  // for why this deliberately doesn't precompute segments for every row.
-  app.get("/api/reports/transfer-depreciation/asset-wise", async (req, reply) => {
+  // Movement schedule: paginated, filtered — each asset in a page expands into one row
+  // per location-stay (see computeMovementSchedulePage/the module comment above).
+  app.get("/api/reports/transfer-depreciation/movement", async (req, reply) => {
     const parsed = z
       .object({
         asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1128,7 +1070,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: conditionError };
     }
 
-    const { items, nextCursor } = await computeAssetWisePage(
+    const { items, nextCursor } = await computeMovementSchedulePage(
       db,
       fy,
       parsed.data.conditions,
@@ -1138,34 +1080,10 @@ export default async function reportsRoutes(app: FastifyInstance) {
     return { items, nextCursor, asAt: fy.asAt };
   });
 
-  // Movement timeline for one asset, computed on demand when a row is expanded — see
-  // the module comment above for why this is a separate endpoint, not part of the list.
-  app.get("/api/reports/transfer-depreciation/asset/:farId/segments", async (req, reply) => {
-    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
-    const queryParsed = asAtQuerySchema.safeParse(req.query);
-    if (!paramsParsed.success || !queryParsed.success) {
-      reply.code(400);
-      return { error: "Invalid request." };
-    }
-    const db = await getPool();
-    const fy = await requireFySettings(db, { asAt: queryParsed.data.asAt });
-    if (!fy) {
-      reply.code(409);
-      return { error: "Financial year settings have not been configured yet." };
-    }
-
-    const result = await computeAssetSegments(db, fy, paramsParsed.data.farId);
-    if (!result) {
-      reply.code(404);
-      return { error: `No asset found with FAR ID "${paramsParsed.data.farId}".` };
-    }
-    return { farId: paramsParsed.data.farId, segments: result.segments };
-  });
-
-  // Location-wise summary: a full-table scan (every asset contributes to some
-  // location's total), but streamed in bounded batches — see
-  // streamAssetDepreciationBatches above — so it stays memory-bounded regardless of
-  // table size. Output is bounded by distinct-location count, not asset count.
+  // Location totals: a full-table scan (every asset contributes to some location's
+  // total), but streamed in bounded batches — see streamAssetDepreciationBatches above —
+  // so it stays memory-bounded regardless of table size. Output is bounded by
+  // distinct-location count, not asset count. Backs the on-screen Location Totals panel.
   app.get("/api/reports/transfer-depreciation/location-wise", async (req, reply) => {
     const parsed = z
       .object({
@@ -1217,7 +1135,10 @@ export default async function reportsRoutes(app: FastifyInstance) {
     }
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    reply.header("Content-Disposition", `attachment; filename="transfer-depreciation-${fy.asAt}.xlsx"`);
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename="asset-movement-depreciation-schedule-${fy.asAt}.xlsx"`
+    );
     const stream = new PassThrough();
     reply.send(stream);
     await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream);

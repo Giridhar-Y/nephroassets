@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchTransferDepreciationAssetWise, type TransferDepreciationAssetRow } from "../api/client.js";
+import { fetchMovementSchedule, type MovementScheduleRow } from "../api/client.js";
 import type { ColumnCondition } from "../lib/columnFilters.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import type { FySettings } from "../lib/types.js";
@@ -9,9 +9,10 @@ const PAGE_SIZE = 150;
 // Same accumulate-pages-as-you-scroll shape as useAssetList.ts (Register's own hook) —
 // deliberately not a copy-paste of that hook, since this report's row shape and query
 // params differ, but the pattern (first page on mount/filter-change, loadMore appends)
-// is identical on purpose.
+// is identical on purpose. `items` here are location-stay rows, not one-per-asset — a
+// page can return more rows than PAGE_SIZE since a mover expands into several.
 export function useTransferDepreciationAssetList(fy: FySettings | null, conditions: ColumnCondition[]) {
-  const [items, setItems] = useState<TransferDepreciationAssetRow[]>([]);
+  const [items, setItems] = useState<MovementScheduleRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -21,9 +22,9 @@ export function useTransferDepreciationAssetList(fy: FySettings | null, conditio
   const conditionsKey = JSON.stringify(conditions);
 
   // A ref, not just the `loadingMore` state, guards against concurrent fetches: the
-  // asset-wise table's virtualizer effect can call `loadMore` several times back-to-back
-  // within the same tick (its own dependency array includes `virtualizer.getVirtualItems()`,
-  // a fresh array every render), and React never applies a `setState` synchronously
+  // list's virtualizer effect can call `loadMore` several times back-to-back within the
+  // same tick (its own dependency array includes `virtualizer.getVirtualItems()`, a
+  // fresh array every render), and React never applies a `setState` synchronously
   // mid-render — every one of those calls would otherwise still read `loadingMore` as
   // `false` and all fire a fetch for the SAME cursor, each appending a duplicate copy of
   // the same page once their responses land. Found live: a single scroll action produced
@@ -36,7 +37,7 @@ export function useTransferDepreciationAssetList(fy: FySettings | null, conditio
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchTransferDepreciationAssetWise({ asAt: fy.asAt, conditions, limit: PAGE_SIZE });
+      const res = await fetchMovementSchedule({ asAt: fy.asAt, conditions, limit: PAGE_SIZE });
       setItems(res.items);
       setNextCursor(res.nextCursor);
     } catch (err) {
@@ -56,7 +57,7 @@ export function useTransferDepreciationAssetList(fy: FySettings | null, conditio
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const res = await fetchTransferDepreciationAssetWise({
+      const res = await fetchMovementSchedule({
         asAt: fy.asAt,
         conditions,
         limit: PAGE_SIZE,
