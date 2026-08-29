@@ -65,6 +65,42 @@ function rejectDuplicateFarIds(
   return { validRows: stillValid, errors: allErrors };
 }
 
+// Rejects a row whose FAR ID belongs to a soft-deleted asset (Global Admin only, see
+// routes/assets.ts's DELETE /api/assets/:farId). far_id is the primary key, so the
+// commit loop's INSERT ... ON CONFLICT (far_id) DO UPDATE would otherwise silently
+// overwrite a deleted row's data on every column except deleted_at itself — the asset
+// would get fresh figures but stay invisible everywhere (deleted_at still set), a
+// confusing "the upload succeeded but the asset vanished" result. Run before the
+// preview/commit branch so both paths always agree.
+async function rejectDeletedFarIds(
+  validRows: Array<{ row: number; data: BulkAssetRowInput }>,
+  errors: RowError[]
+): Promise<{ validRows: Array<{ row: number; data: BulkAssetRowInput }>; errors: RowError[] }> {
+  if (validRows.length === 0) return { validRows, errors };
+  const db = await getPool();
+  const farIds = validRows.map(({ data }) => data.farId);
+  const { rows: deletedRows } = await db.query<{ far_id: string }>(
+    `SELECT far_id FROM assets WHERE far_id = ANY($1) AND deleted_at IS NOT NULL`,
+    [farIds]
+  );
+  if (deletedRows.length === 0) return { validRows, errors };
+  const deletedFarIds = new Set(deletedRows.map((r) => r.far_id));
+  const stillValid: Array<{ row: number; data: BulkAssetRowInput }> = [];
+  const allErrors = [...errors];
+  for (const { row, data } of validRows) {
+    if (deletedFarIds.has(data.farId)) {
+      allErrors.push({
+        row,
+        farId: data.farId,
+        message: `FAR ID "${data.farId}" was previously used by a deleted asset — it can't be reused. Contact a Global Admin.`
+      });
+      continue;
+    }
+    stillValid.push({ row, data });
+  }
+  return { validRows: stillValid, errors: allErrors };
+}
+
 export default async function bulkUploadRoutes(app: FastifyInstance) {
   // Bulk Uploads: parse a CSV/XLSX of assets (columns named after the shared AssetInput
   // fields, e.g. farId, subClassification, c1OpeningCost…), validate every row, and
@@ -94,6 +130,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
     ({ validRows, errors } = rejectDuplicateFarIds(validRows, errors));
+    ({ validRows, errors } = await rejectDeletedFarIds(validRows, errors));
     ({ validRows, errors } = await validateAgainstMasters(validRows, errors));
 
     // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID

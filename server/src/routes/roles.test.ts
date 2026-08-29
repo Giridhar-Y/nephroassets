@@ -109,6 +109,17 @@ describe("Role-based authorization", () => {
       expect(res.json().code).toBe("FORBIDDEN");
     });
 
+    it.each([
+      ["DELETE", "/api/assets/ROLE-TEST-1"],
+      ["POST", "/api/assets/ROLE-TEST-1/addition/undo"],
+      ["POST", "/api/assets/ROLE-TEST-1/disposal/undo"],
+      ["DELETE", "/api/transfers/1"]
+    ] as const)("is blocked (403) from the Global-Admin-only %s %s", async (method, url) => {
+      const res = await app.inject({ method, url, headers: { cookie: viewerCookie }, payload: { reason: "test" } });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().code).toBe("FORBIDDEN");
+    });
+
     it("is blocked (403) from the Transfers history view too, not just its write side", async () => {
       const res = await app.inject({ method: "GET", url: "/api/transfers", headers: { cookie: viewerCookie } });
       expect(res.statusCode).toBe(403);
@@ -205,6 +216,22 @@ describe("Role-based authorization", () => {
       });
       expect(create.statusCode).toBe(403);
     });
+
+    // Delete/undo (Global Admin only) is a step above requireEditor — an editor who can
+    // do everything else in the FAR module (capitalize, dispose, transfer) still can't
+    // delete/undo any of it. Full business-logic correctness for these routes lives in
+    // assetDelete.test.ts; this file only asserts who's let in.
+    it.each([
+      ["DELETE", "/api/assets/ROLE-TEST-1"],
+      ["POST", "/api/assets/ROLE-TEST-1/addition/undo"],
+      ["POST", "/api/assets/ROLE-TEST-1/disposal/undo"],
+      ["DELETE", "/api/transfers/1"]
+    ] as const)("is blocked (403) from the Global-Admin-only %s %s", async (method, url) => {
+      await app.inject({ method: "POST", url: "/api/assets", headers: { cookie: editorCookie }, payload: NEW_ASSET });
+      const res = await app.inject({ method, url, headers: { cookie: editorCookie }, payload: { reason: "test" } });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().code).toBe("FORBIDDEN");
+    });
   });
 
   describe("Admin: full access, including user management", () => {
@@ -239,6 +266,55 @@ describe("Role-based authorization", () => {
       expect(res.statusCode).toBe(200);
       const usernames = res.json().map((u: { username: string }) => u.username);
       expect(usernames).toEqual(expect.arrayContaining(["role-viewer", "role-editor", "role-admin"]));
+    });
+
+    it("reaches the Global-Admin-only delete/undo handlers (not blocked by role)", async () => {
+      await app.inject({ method: "POST", url: "/api/assets", headers: { cookie: adminCookie }, payload: NEW_ASSET });
+
+      // A clean, untouched asset can actually be deleted.
+      const del = await app.inject({
+        method: "DELETE",
+        url: "/api/assets/ROLE-TEST-1",
+        headers: { cookie: adminCookie },
+        payload: { reason: "role test" }
+      });
+      expect(del.statusCode).toBe(200);
+
+      // The other three reach their handlers and fail on business logic (nothing to
+      // undo/no such transfer), not on role — proves the role gate let them through
+      // without needing a fully-set-up addition/disposal/transfer fixture here (that's
+      // assetDelete.test.ts's job). A fresh FAR ID, not ROLE-TEST-1 — that one is now
+      // soft-deleted from the check above, and re-using it would 404, not exercise the
+      // "reached the handler, nothing to undo" business-logic path this test wants.
+      await app.inject({
+        method: "POST",
+        url: "/api/assets",
+        headers: { cookie: adminCookie },
+        payload: { ...NEW_ASSET, farId: "ROLE-TEST-2" }
+      });
+      const additionUndo = await app.inject({
+        method: "POST",
+        url: "/api/assets/ROLE-TEST-2/addition/undo",
+        headers: { cookie: adminCookie },
+        payload: { reason: "role test" }
+      });
+      expect(additionUndo.statusCode).toBe(409);
+
+      const disposalUndo = await app.inject({
+        method: "POST",
+        url: "/api/assets/ROLE-TEST-2/disposal/undo",
+        headers: { cookie: adminCookie },
+        payload: { reason: "role test" }
+      });
+      expect(disposalUndo.statusCode).toBe(409);
+
+      const transferDelete = await app.inject({
+        method: "DELETE",
+        url: "/api/transfers/999999",
+        headers: { cookie: adminCookie },
+        payload: { reason: "role test" }
+      });
+      expect(transferDelete.statusCode).toBe(404);
     });
   });
 });

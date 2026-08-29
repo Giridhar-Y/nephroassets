@@ -7,15 +7,21 @@ import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
-import { disposeWithChildren } from "./disposalWriteOff.js";
+import { disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
-import { requireEditor } from "../auth/middleware.js";
+import { requireEditor, requireAdmin } from "../auth/middleware.js";
+import { logAssetDelete } from "./assetDeleteAudit.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   saleValue: z.coerce.number().min(0)
 });
+
+// Shared by every Global-Admin-only delete/undo endpoint below — a reason is required,
+// not optional, so asset_delete_audit_log never has a blank explanation for an
+// irreversible-looking action.
+const deleteReasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.") });
 
 // The assets table has exactly one additionsC1/C2 + dateOfAddition pair per asset —
 // same columns Capitalization's own "Mid-Year Additions" section already writes. This
@@ -201,6 +207,9 @@ export default async function assetsRoutes(app: FastifyInstance) {
     // doesn't exist as of that date. The calc engine already zeroes its Gross Block/NBV
     // correctly for such a row (splitTranche gates on dateAcquired vs. AS_AT); the bug
     // was the row appearing in this list at all.
+    // Soft-deleted (Global Admin only, DELETE /api/assets/:farId) — always excluded from
+    // the active Register, not an opt-in filter.
+    conditions.push(`deleted_at IS NULL`);
     params.push(asAt);
     conditions.push(`date_acquired <= $${params.length}`);
     if (q.dateAcquiredFrom) {
@@ -284,7 +293,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
     const sql = `
       WITH calc_base AS (
-        SELECT assets.*, EXISTS(SELECT 1 FROM assets c WHERE c.parent_far_id = assets.far_id) AS has_children,
+        SELECT assets.*, EXISTS(SELECT 1 FROM assets c WHERE c.parent_far_id = assets.far_id AND c.deleted_at IS NULL) AS has_children,
           ${calcExtras}
         FROM assets
         ${whereClause}
@@ -318,7 +327,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (farIds.length > 0) {
       const { rows: transferRows } = await db.query<TransferRow>(
         `SELECT far_id, transaction_date, location FROM transfers
-         WHERE far_id = ANY($1) AND transaction_date <= $2
+         WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
          ORDER BY far_id, transaction_date`,
         [farIds, asAt]
       );
@@ -358,7 +367,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { farId } = paramsParsed.data;
     const db = await getPool();
 
-    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1`, [farId]);
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [farId]);
     const row = rows[0];
     if (!row) {
       reply.code(404);
@@ -375,11 +384,16 @@ export default async function assetsRoutes(app: FastifyInstance) {
     }
     const asAt = queryParsed.data.asAt ?? fySettings.as_at;
 
+    // Deleted transfers are excluded even from this full-lifecycle timeline (unlike the
+    // asset row above, whose own deletion 404s the whole endpoint, a transfer can be
+    // individually deleted while the asset stays active — see routes/transfers.ts's
+    // DELETE /api/transfers/:id) — a deleted transfer is gone from every view, not just
+    // the active Register.
     const { rows: transferRows } = await db.query<
       TransferRow & { id: string | number; cascaded_from_parent_far_id: string | null }
     >(
       `SELECT id, far_id, transaction_date, location, cascaded_from_parent_far_id
-       FROM transfers WHERE far_id = $1 ORDER BY transaction_date ASC, id ASC`,
+       FROM transfers WHERE far_id = $1 AND deleted_at IS NULL ORDER BY transaction_date ASC, id ASC`,
       [farId]
     );
 
@@ -445,10 +459,22 @@ export default async function assetsRoutes(app: FastifyInstance) {
     }
     const input = { ...parsed.data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! };
 
-    const { rows: existing } = await db.query(`SELECT 1 FROM assets WHERE far_id = $1`, [input.farId]);
+    // far_id is the primary key, so even a soft-deleted row still occupies it — checked
+    // unfiltered (not AND deleted_at IS NULL) on purpose, since the INSERT below would
+    // fail on that same row regardless. The message distinguishes the two cases so a
+    // deleted-FAR-ID collision doesn't look like a plain duplicate.
+    const { rows: existing } = await db.query<{ deleted_at: string | null }>(
+      `SELECT deleted_at FROM assets WHERE far_id = $1`,
+      [input.farId]
+    );
     if (existing.length > 0) {
       reply.code(409);
-      return { error: `An asset with FAR ID "${input.farId}" already exists.` };
+      return {
+        error:
+          existing[0]!.deleted_at !== null
+            ? `FAR ID "${input.farId}" was previously used by a deleted asset — it can't be reused. Contact a Global Admin.`
+            : `An asset with FAR ID "${input.farId}" already exists.`
+      };
     }
     if (parentFarId !== null) {
       const validation = await validateParentLink(db, input.farId, parentFarId);
@@ -504,7 +530,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       deletions_c2: string | number;
     }>(
       `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost, additions_c2, deletions_c2
-       FROM assets WHERE far_id = $1`,
+       FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
     if (existing.length === 0) {
@@ -634,7 +660,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const db = await getPool();
 
     const { rows: childExisting } = await db.query<{ far_id: string }>(
-      `SELECT far_id FROM assets WHERE far_id = ANY($1)`,
+      `SELECT far_id FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
       [childFarIds]
     );
     const found = new Set(childExisting.map((r) => r.far_id));
@@ -679,7 +705,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       sub_classification: string;
     }>(
       `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification
-       FROM assets WHERE far_id = $1`,
+       FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
     if (existing.length === 0) {
@@ -750,7 +776,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { dateOfDisposal, saleValue } = bodyParsed.data;
     const db = await getPool();
 
-    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1`, [farId]);
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [farId]);
     const row = rows[0];
     if (!row) {
       reply.code(404);
@@ -848,7 +874,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         date_acquired: string;
         date_of_addition: string | null;
       }>(
-        `SELECT date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = $1`,
+        `SELECT date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
         [farId]
       );
       if (check.length === 0) {
@@ -871,5 +897,197 @@ export default async function assetsRoutes(app: FastifyInstance) {
       };
     }
     return { farId, disposed: true, childrenDisposed: result.childrenDisposed };
+  });
+
+  // Capitalization delete (Global Admin only) — there is no separate "capitalization
+  // record": Capitalization is the assets row itself, so deleting one soft-deletes the
+  // whole row (deleted_at/deleted_by/delete_reason), not a hard DELETE. Blocked whenever
+  // the asset has ANY downstream activity — a transfer, an addition, a disposal, or being
+  // the parent of another asset — so the admin must undo those first, in reverse order,
+  // via the addition/disposal/transfer undo endpoints below. Deliberately no
+  // force-cascade option: each undo stays its own deliberate, auditable action.
+  app.delete("/api/assets/:farId", { preHandler: requireAdmin }, async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = deleteReasonSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "A reason is required to delete this asset.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const { reason } = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [farId]);
+    const row = rows[0];
+    if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+
+    const blockers: string[] = [];
+    const { rows: transferCountRows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM transfers WHERE far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
+    const transferCount = Number(transferCountRows[0]!.count);
+    if (transferCount > 0) {
+      blockers.push(`it has ${transferCount} transfer(s) on record — delete those first`);
+    }
+    if (Number(row.additions_c1) !== 0 || Number(row.additions_c2) !== 0 || row.date_of_addition !== null) {
+      blockers.push("it has an addition recorded — undo the addition first");
+    }
+    if (row.date_of_disposal !== null) {
+      blockers.push("it has been disposed — undo the disposal first");
+    }
+    const { rows: childRows } = await db.query<{ far_id: string }>(
+      `SELECT far_id FROM assets WHERE parent_far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
+    if (childRows.length > 0) {
+      blockers.push(`it is the parent of ${childRows.map((r) => `"${r.far_id}"`).join(", ")} — unlink or delete ${childRows.length === 1 ? "that child" : "those children"} first`);
+    }
+    if (blockers.length > 0) {
+      reply.code(409);
+      return { error: `Can't delete "${farId}" — ${blockers.join("; ")}.` };
+    }
+
+    await db.query(`UPDATE assets SET deleted_at = now(), deleted_by = $1, delete_reason = $2 WHERE far_id = $3`, [
+      req.user!.id,
+      reason,
+      farId
+    ]);
+    await logAssetDelete(db, {
+      actorUserId: req.user!.id,
+      action: "capitalization_delete",
+      farId,
+      reason,
+      details: {
+        subClassification: row.sub_classification,
+        assetDescription: row.asset_description,
+        dateAcquired: row.date_acquired,
+        location: row.location,
+        c1OpeningCost: Number(row.c1_opening_cost),
+        c2OpeningCost: Number(row.c2_opening_cost)
+      }
+    });
+    return { farId, deleted: true };
+  });
+
+  // Addition undo (Global Admin only) — there's no separate "addition record" either
+  // (see additionSchema's comment); this clears additions_c1/c2 + date_of_addition back
+  // to their column defaults on the existing row. Blocked once the asset has since been
+  // disposed: applyFullDisposal computed deletions_c1/c2 as opening_cost + additions_c1/c2
+  // at disposal time, so undoing the addition afterward would silently leave that
+  // already-realized disposal figure wrong — the admin must undo the disposal first.
+  app.post("/api/assets/:farId/addition/undo", { preHandler: requireAdmin }, async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = deleteReasonSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "A reason is required to undo this addition.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const { reason } = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows } = await db.query<{
+      additions_c1: string | number;
+      additions_c2: string | number;
+      date_of_addition: string | null;
+      date_of_disposal: string | null;
+    }>(
+      `SELECT additions_c1, additions_c2, date_of_addition, date_of_disposal FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
+    const row = rows[0];
+    if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    if (Number(row.additions_c1) === 0 && Number(row.additions_c2) === 0 && row.date_of_addition === null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has no addition recorded to undo.` };
+    }
+    if (row.date_of_disposal !== null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has been disposed — undo the disposal first before undoing its addition.` };
+    }
+
+    const details = {
+      additionsC1: Number(row.additions_c1),
+      additionsC2: Number(row.additions_c2),
+      dateOfAddition: row.date_of_addition
+    };
+    await db.query(`UPDATE assets SET additions_c1 = 0, additions_c2 = 0, date_of_addition = NULL WHERE far_id = $1`, [
+      farId
+    ]);
+    await logAssetDelete(db, { actorUserId: req.user!.id, action: "addition_undo", farId, reason, details });
+    return { farId, additionUndone: true };
+  });
+
+  // Disposal undo (Global Admin only) — reverses applyFullDisposal via
+  // undoDisposalWithChildren (disposalWriteOff.ts), which also automatically un-disposes
+  // every child that was disposed specifically by THIS disposal's own cascade. A disposal
+  // that was itself a cascade (disposed_via_parent_far_id set) can't be undone directly —
+  // same "act on the parent instead" rule Rule 1 already applies to disposing a child
+  // directly, mirrored here for undoing one.
+  app.post("/api/assets/:farId/disposal/undo", { preHandler: requireAdmin }, async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const bodyParsed = deleteReasonSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "A reason is required to undo this disposal.", details: bodyParsed.error?.flatten() };
+    }
+    const { farId } = paramsParsed.data;
+    const { reason } = bodyParsed.data;
+    const db = await getPool();
+
+    const { rows } = await db.query<{
+      date_of_disposal: string | null;
+      disposed_via_parent_far_id: string | null;
+    }>(`SELECT date_of_disposal, disposed_via_parent_far_id FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [
+      farId
+    ]);
+    const row = rows[0];
+    if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    if (row.date_of_disposal === null) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has not been disposed.` };
+    }
+    if (row.disposed_via_parent_far_id !== null) {
+      reply.code(409);
+      return {
+        error: `This asset was disposed via its parent's ("${row.disposed_via_parent_far_id}") cascade — undo the parent's disposal instead.`
+      };
+    }
+
+    const client = await db.connect();
+    let result: { parent: DisposalSnapshot; children: DisposalSnapshot[] } | null;
+    try {
+      await client.query("BEGIN");
+      result = await undoDisposalWithChildren(client, farId);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+    if (!result) {
+      reply.code(409);
+      return { error: `Asset "${farId}" has not been disposed.` };
+    }
+
+    await logAssetDelete(db, {
+      actorUserId: req.user!.id,
+      action: "disposal_undo",
+      farId,
+      reason,
+      details: { ...result.parent, cascadedChildren: result.children }
+    });
+    return { farId, disposalUndone: true, childrenUndone: result.children.map((c) => c.farId) };
   });
 }

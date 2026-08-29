@@ -251,5 +251,52 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_asset_bulk_action_log_created_at ON asset_bulk_action_log (created_at DESC);
+
+    -- Soft delete (Global Admin only) — see schema.sql's column comments on assets and
+    -- transfers for the full reasoning. IF NOT EXISTS makes every ALTER here a no-op on
+    -- every boot after the first, and on a brand-new database where schema.sql already
+    -- created these columns/constraints directly.
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS deleted_by BIGINT;
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS delete_reason TEXT;
+    ALTER TABLE transfers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+    ALTER TABLE transfers ADD COLUMN IF NOT EXISTS deleted_by BIGINT;
+    ALTER TABLE transfers ADD COLUMN IF NOT EXISTS delete_reason TEXT;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'assets_deleted_by_fkey') THEN
+        ALTER TABLE assets ADD CONSTRAINT assets_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transfers_deleted_by_fkey') THEN
+        ALTER TABLE transfers ADD CONSTRAINT transfers_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);
+      END IF;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS asset_delete_audit_log (
+      id              BIGSERIAL PRIMARY KEY,
+      actor_user_id   BIGINT REFERENCES users(id),
+      action          TEXT NOT NULL CHECK (action IN ('capitalization_delete', 'addition_undo', 'disposal_undo', 'transfer_delete')),
+      far_id          TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE,
+      transfer_id     BIGINT,
+      reason          TEXT NOT NULL,
+      details         JSONB,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_delete_audit_log_far_id ON asset_delete_audit_log (far_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_asset_delete_audit_log_created_at ON asset_delete_audit_log (created_at DESC);
+
+    -- One-time migration for a database whose asset_delete_audit_log table predates ON
+    -- DELETE CASCADE being added to its far_id FK — see that column's comment in
+    -- schema.sql. Guarded on confdeltype so this only runs once, not on every boot.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'asset_delete_audit_log_far_id_fkey' AND confdeltype = 'c'
+      ) THEN
+        ALTER TABLE asset_delete_audit_log DROP CONSTRAINT IF EXISTS asset_delete_audit_log_far_id_fkey;
+        ALTER TABLE asset_delete_audit_log ADD CONSTRAINT asset_delete_audit_log_far_id_fkey
+          FOREIGN KEY (far_id) REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE;
+      END IF;
+    END $$;
   `);
 }

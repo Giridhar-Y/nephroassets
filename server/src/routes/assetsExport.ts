@@ -455,7 +455,9 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     fy.asAt = asAt;
     const ctx: LabelContext = { asAt: fy.asAt, fyStart: fy.fyStart };
 
-    const conditions: string[] = [];
+    // Soft-deleted (Global Admin only, DELETE /api/assets/:farId) — always excluded from
+    // the export, not an opt-in filter.
+    const conditions: string[] = ["deleted_at IS NULL"];
     const params: unknown[] = [];
     if (q.center) {
       params.push(q.center);
@@ -752,7 +754,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
         const farIds = rows.map((r) => r.far_id);
         const { rows: transferRows } = await db.query<TransferRow>(
           `SELECT far_id, transaction_date, location FROM transfers
-           WHERE far_id = ANY($1) AND transaction_date <= $2
+           WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
            ORDER BY far_id, transaction_date`,
           [farIds, asAt]
         );

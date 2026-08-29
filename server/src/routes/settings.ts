@@ -159,7 +159,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
            far_calc_component(c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years,
              date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $5::date, $4::integer, date_acquired) AS new_c2
          FROM assets
-         WHERE date_acquired <= $1
+         WHERE date_acquired <= $1 AND deleted_at IS NULL
        )
        SELECT
          COUNT(*) AS total_assets,

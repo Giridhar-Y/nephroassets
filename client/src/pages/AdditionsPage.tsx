@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
+import { useAuth } from "../lib/AuthContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { AdditionModal } from "../components/AdditionModal.js";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
+import { useToast } from "../components/Toast.js";
 import { ALL_COLUMNS, allScopedC1Only, hideC2Columns, resolveColumns, scopedSubClassificationNames } from "../lib/columns.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
-import { fetchSubClassifications, type SubClassificationOption } from "../api/client.js";
+import { fetchSubClassifications, undoAddition, type SubClassificationOption } from "../api/client.js";
 
 type Tab = "new" | "log";
 
@@ -106,10 +109,14 @@ function NewAdditionTab({ onDone, subClassifications }: { onDone: () => void; su
 
 function AdditionLogTab({ subClassifications }: { subClassifications: SubClassificationOption[] }) {
   const { settings } = useSettings();
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const filters = useMemo(() => ({ hasAddition: true, conditions }), [conditions]);
   const setCondition = makeSetCondition(conditions, setConditions);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
+  // Addition undo (Global Admin only) — holds the FAR ID pending confirmation.
+  const [undoTargetFarId, setUndoTargetFarId] = useState<string | null>(null);
 
   // No multi-select Sub Classification filter on this tab (unlike Register) — only an
   // "Equals" custom condition can name an exact classification, same detection
@@ -121,19 +128,39 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
   const headerFilters = buildConditionHeaderFilters(conditionColumns, conditions, setCondition);
 
   return (
-    <AssetGrid
-      items={items}
-      columns={COLUMNS}
-      loading={loading}
-      error={error}
-      hasMore={!!nextCursor}
-      onLoadMore={loadMore}
-      onRetry={reload}
-      emptyTitle="No additions recorded yet."
-      emptyHint="Record an addition from the New Addition tab, or via Capitalization's own Mid-Year Additions section."
-      getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
-      headerFilters={headerFilters}
-    />
+    <>
+      <AssetGrid
+        items={items}
+        columns={COLUMNS}
+        loading={loading}
+        error={error}
+        hasMore={!!nextCursor}
+        onLoadMore={loadMore}
+        onRetry={reload}
+        emptyTitle="No additions recorded yet."
+        emptyHint="Record an addition from the New Addition tab, or via Capitalization's own Mid-Year Additions section."
+        getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+        headerFilters={headerFilters}
+        onDeleteAsset={user?.role === "admin" ? (farId) => setUndoTargetFarId(farId) : undefined}
+        deleteActionLabel="Undo Addition (Global Admin)"
+      />
+      {undoTargetFarId && (
+        <DeleteConfirmModal
+          title={`Undo addition on ${undoTargetFarId}`}
+          confirmId={undoTargetFarId}
+          confirmButtonLabel="Undo Addition"
+          description="Clears this asset's recorded addition (amount and date) back to zero/blank. Blocked if the asset has since been disposed — undo the disposal first."
+          onClose={() => setUndoTargetFarId(null)}
+          onConfirm={async (reason) => {
+            const farId = undoTargetFarId;
+            await undoAddition(farId, reason);
+            setUndoTargetFarId(null);
+            showToast(`Addition on ${farId} undone.`, "success");
+            reload();
+          }}
+        />
+      )}
+    </>
   );
 }
 

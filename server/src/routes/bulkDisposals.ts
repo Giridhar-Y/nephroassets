@@ -57,7 +57,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
           date_acquired: string;
           date_of_addition: string | null;
         }>(
-          `SELECT far_id, date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = ANY($1)`,
+          `SELECT far_id, date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
           [farIds]
         );
         for (const r of rows) {
@@ -147,7 +147,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
                 date_acquired: string;
                 date_of_addition: string | null;
               }>(
-                `SELECT date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = $1`,
+                `SELECT date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
                 [data.farId]
               );
               let message: string;

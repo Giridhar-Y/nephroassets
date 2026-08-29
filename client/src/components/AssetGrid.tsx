@@ -5,7 +5,18 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import { COLUMN_GROUPS, type ColumnDef, type ColumnGroupId } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
-import { ChevronDownIcon, CollapseExpandIcon, EditIcon, EmptyIcon, ErrorIcon, ExpandIcon, LinkIcon, RetryIcon, ViewIcon } from "../lib/icons.js";
+import {
+  ChevronDownIcon,
+  CollapseExpandIcon,
+  DeleteIcon,
+  EditIcon,
+  EmptyIcon,
+  ErrorIcon,
+  ExpandIcon,
+  LinkIcon,
+  RetryIcon,
+  ViewIcon
+} from "../lib/icons.js";
 
 const ROW_HEIGHT = 40;
 const GROUP_BAND_HEIGHT = 26;
@@ -150,6 +161,13 @@ export interface AssetGridProps {
   /** Renders an "Edit" action alongside View Lifecycle when provided — opens whatever
    *  the caller wants (typically EditAssetModal) for that row's FAR ID. */
   onEditAsset?: (farId: string) => void;
+  /** Renders a Global-Admin-only delete/undo action when provided — the caller is
+   *  responsible for the role check (this component doesn't know about roles) and for
+   *  what "delete" means on its own page (Capitalization Log deletes the whole asset,
+   *  Additions/Disposal Log undo just that part). `deleteActionLabel` sets the
+   *  button's tooltip/aria-label (defaults to "Delete"). */
+  onDeleteAsset?: (farId: string) => void;
+  deleteActionLabel?: string;
   /** Drag-to-resize a column's header edge. Omit to disable resizing (e.g. pages using a
    *  fixed, non-persisted column set). */
   onResizeColumn?: (id: string, width: number) => void;
@@ -180,6 +198,8 @@ export function AssetGrid({
   headerFilters,
   getAssetHref,
   onEditAsset,
+  onDeleteAsset,
+  deleteActionLabel = "Delete",
   onResizeColumn,
   onReorderColumn,
   showGroupBand = false
@@ -241,7 +261,7 @@ export function AssetGrid({
   }
 
   const checkboxWidth = selectable ? 40 : 0;
-  const actionWidth = (getAssetHref ? 40 : 0) + (onEditAsset ? 40 : 0);
+  const actionWidth = (getAssetHref ? 40 : 0) + (onEditAsset ? 40 : 0) + (onDeleteAsset ? 40 : 0);
 
   // Left offset for each pinned column, so they stack correctly (checkbox, then FAR ID,
   // then Asset Description) instead of overlapping when horizontally scrolled. Collapsing
@@ -517,6 +537,17 @@ export function AssetGrid({
                           >
                             <ViewIcon fontSize={15} />
                           </Link>
+                        )}
+                        {onDeleteAsset && (
+                          <button
+                            type="button"
+                            aria-label={`${deleteActionLabel} ${item.asset.farId}`}
+                            title={deleteActionLabel}
+                            className="grid h-6 w-6 place-items-center rounded text-gray-400 hover:bg-red-50 hover:text-red-600"
+                            onClick={() => onDeleteAsset(item.asset.farId)}
+                          >
+                            <DeleteIcon fontSize={15} />
+                          </button>
                         )}
                       </div>
                     )}

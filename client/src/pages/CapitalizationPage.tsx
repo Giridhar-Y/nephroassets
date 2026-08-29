@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications, type SubClassificationOption } from "../api/client.js";
+import {
+  createAsset,
+  deleteAsset,
+  fetchCenters,
+  fetchStatuses,
+  fetchSubClassifications,
+  type SubClassificationOption
+} from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
 import { useToast } from "../components/Toast.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { ALL_COLUMNS, allScopedC1Only, hideC2Columns, resolveColumns, scopedSubClassificationNames } from "../lib/columns.js";
@@ -93,6 +101,9 @@ export function CapitalizationPage() {
   const [centers, setCenters] = useState<string[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
+  // Capitalization delete (Global Admin only) — holds the FAR ID pending confirmation;
+  // null when the modal is closed.
+  const [deleteTargetFarId, setDeleteTargetFarId] = useState<string | null>(null);
   const [form, setForm] = useState<AssetCreateInput>(() => blankForm(settings?.asAt ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -522,8 +533,26 @@ export function CapitalizationPage() {
             emptyHint="Assets you capitalize from the Add New tab will show up here."
             headerFilters={logHeaderFilters}
             getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
+            onDeleteAsset={user?.role === "admin" ? (farId) => setDeleteTargetFarId(farId) : undefined}
+            deleteActionLabel="Delete (Global Admin)"
           />
         </div>
+      )}
+
+      {deleteTargetFarId && (
+        <DeleteConfirmModal
+          title={`Delete ${deleteTargetFarId}`}
+          confirmId={deleteTargetFarId}
+          description="Soft-deletes this asset — it disappears from the Register and every Report, but the row and its full history survive for audit purposes. Blocked if it has any transfer, addition, disposal, or child assets; undo those first."
+          onClose={() => setDeleteTargetFarId(null)}
+          onConfirm={async (reason) => {
+            const farId = deleteTargetFarId;
+            await deleteAsset(farId, reason);
+            setDeleteTargetFarId(null);
+            showToast(`${farId} deleted.`, "success");
+            reloadLog();
+          }}
+        />
       )}
     </div>
   );

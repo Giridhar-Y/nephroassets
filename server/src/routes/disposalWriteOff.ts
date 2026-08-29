@@ -34,7 +34,7 @@ export async function applyFullDisposal(
          status = 'Disposed',
          disposed_via_parent_far_id = $4
      WHERE far_id = $3 AND date_of_disposal IS NULL AND date_acquired <= $1
-       AND (date_of_addition IS NULL OR date_of_addition <= $1)
+       AND (date_of_addition IS NULL OR date_of_addition <= $1) AND deleted_at IS NULL
      RETURNING far_id`,
     [dateOfDisposal, saleValue, farId, cascadedFromParentFarId]
   );
@@ -91,4 +91,98 @@ export async function disposeWithChildren(
   }
 
   return { written: true, childrenDisposed };
+}
+
+export interface DisposalSnapshot {
+  farId: string;
+  dateOfDisposal: string;
+  deletionsC1: number;
+  deletionsC2: number;
+  saleValue: number;
+  statusBefore: string;
+}
+
+/**
+ * Reverses applyFullDisposal (Global Admin only, routes/assets.ts's
+ * POST /api/assets/:farId/disposal/undo) — clears the disposal fields back to "not
+ * disposed" and restores status to 'Active'. The pre-disposal status itself is never
+ * stored anywhere (applyFullDisposal overwrites it unconditionally), so 'Active' is a
+ * deliberate default, not a true restore — confirmed acceptable; an admin corrects the
+ * rare exception (e.g. it was "Under Repair") via Edit afterward.
+ *
+ * Captures the pre-clear values in the same statement as the UPDATE (a CTE snapshot,
+ * not a separate SELECT-then-UPDATE) so the audit log's `details` can record exactly
+ * what was undone — for this action there's no separate soft-deleted row preserving that
+ * data, the field values themselves are what's being reverted. Returns null if the row
+ * wasn't found, isn't actually disposed, or is itself soft-deleted.
+ *
+ * Whether a disposal that cascaded FROM a parent (disposed_via_parent_far_id IS NOT
+ * NULL) may be undone directly is the CALLER's decision, same separation
+ * applyFullDisposal itself already has for the forward direction — this function has no
+ * opinion on it.
+ */
+export async function undoFullDisposal(
+  client: Pick<pg.Pool | pg.PoolClient, "query">,
+  farId: string
+): Promise<DisposalSnapshot | null> {
+  const { rows } = await client.query<{
+    far_id: string;
+    date_of_disposal: string;
+    deletions_c1: string | number;
+    deletions_c2: string | number;
+    sale_value: string | number;
+    status: string;
+  }>(
+    `WITH target AS (
+       SELECT far_id, date_of_disposal, deletions_c1, deletions_c2, sale_value, status
+       FROM assets
+       WHERE far_id = $1 AND date_of_disposal IS NOT NULL AND deleted_at IS NULL
+     )
+     UPDATE assets a
+     SET date_of_disposal = NULL, deletions_c1 = 0, deletions_c2 = 0, sale_value = 0,
+         status = 'Active', disposed_via_parent_far_id = NULL
+     FROM target
+     WHERE a.far_id = target.far_id
+     RETURNING target.far_id, target.date_of_disposal, target.deletions_c1, target.deletions_c2,
+       target.sale_value, target.status`,
+    [farId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    farId: row.far_id,
+    dateOfDisposal: row.date_of_disposal,
+    deletionsC1: Number(row.deletions_c1),
+    deletionsC2: Number(row.deletions_c2),
+    saleValue: Number(row.sale_value),
+    statusBefore: row.status
+  };
+}
+
+/**
+ * Undoes a parent's disposal, then automatically undoes every child that was disposed
+ * specifically BY that disposal's own cascade (disposed_via_parent_far_id = farId) — a
+ * child disposed independently of this cascade (before it, or on its own) is left
+ * exactly as it is. Mirrors disposeWithChildren's own cascade, in reverse: leaving a
+ * parent active again while its cascaded children stay disposed (pointing at a parent
+ * that's no longer disposed) would be an inconsistent state. Returns null if the parent
+ * itself couldn't be undone (see undoFullDisposal).
+ */
+export async function undoDisposalWithChildren(
+  client: Pick<pg.Pool | pg.PoolClient, "query">,
+  farId: string
+): Promise<{ parent: DisposalSnapshot; children: DisposalSnapshot[] } | null> {
+  const parent = await undoFullDisposal(client, farId);
+  if (!parent) return null;
+
+  const { rows: childRows } = await client.query<{ far_id: string }>(
+    `SELECT far_id FROM assets WHERE disposed_via_parent_far_id = $1 AND date_of_disposal IS NOT NULL`,
+    [farId]
+  );
+  const children: DisposalSnapshot[] = [];
+  for (const row of childRows) {
+    const snapshot = await undoFullDisposal(client, row.far_id);
+    if (snapshot) children.push(snapshot);
+  }
+  return { parent, children };
 }

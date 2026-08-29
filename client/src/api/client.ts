@@ -271,6 +271,46 @@ export function recordAddition(
   });
 }
 
+// Capitalization delete (Global Admin only) — soft-deletes the whole asset row. Blocked
+// server-side if the asset has any transfer, addition, disposal, or children — see the
+// server's DELETE /api/assets/:farId comment.
+export function deleteAsset(farId: string, reason: string): Promise<{ farId: string; deleted: boolean }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+}
+
+// Addition undo (Global Admin only) — clears additionsC1/C2 + dateOfAddition back to
+// their defaults. Blocked server-side if the asset has since been disposed.
+export function undoAddition(farId: string, reason: string): Promise<{ farId: string; additionUndone: boolean }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}/addition/undo`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+// Disposal undo (Global Admin only) — reverses the disposal (status restored to
+// Active — the pre-disposal status isn't stored, see the server route's comment) and
+// automatically un-disposes any child cascaded by this same disposal.
+export function undoDisposal(
+  farId: string,
+  reason: string
+): Promise<{ farId: string; disposalUndone: boolean; childrenUndone: string[] }> {
+  return request(`/api/assets/${encodeURIComponent(farId)}/disposal/undo`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+// Transfer delete (Global Admin only) — soft-deletes one transfer row (and any paired
+// parent/child cascade row written in the same move). See the server route's comment for
+// why this is safe without a separate recalculation step (Effective Location always
+// re-derives from whatever transfer history remains).
+export function deleteTransfer(
+  id: number,
+  reason: string
+): Promise<{ id: number; deleted: boolean; cascadedChildren: string[] }> {
+  return request(`/api/transfers/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+}
+
 // Bulk merge from Register: link one or more existing assets as children of one existing
 // parent in a single request — same validation Edit already applies one-at-a-time.
 export function mergeAssets(

@@ -29,8 +29,12 @@ export async function validateParentLink(
   }
   const errors: string[] = [];
 
+  // deleted_at IS NULL on both lookups below: a soft-deleted asset (Global Admin only,
+  // see routes/assets.ts's DELETE /api/assets/:farId) can't be picked as a parent, and
+  // "not found" is the right response for one — same as any other endpoint's "find this
+  // asset" lookup, not a special case here.
   const { rows: parentRows } = await db.query<{ date_of_disposal: string | null; parent_far_id: string | null }>(
-    `SELECT date_of_disposal, parent_far_id FROM assets WHERE far_id = $1`,
+    `SELECT date_of_disposal, parent_far_id FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
     [parentFarId]
   );
   if (parentRows.length === 0) {
@@ -45,14 +49,17 @@ export async function validateParentLink(
   }
 
   const { rows: farIdRows } = await db.query<{ date_of_disposal: string | null }>(
-    `SELECT date_of_disposal FROM assets WHERE far_id = $1`,
+    `SELECT date_of_disposal FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
     [farId]
   );
   if (farIdRows.length > 0 && farIdRows[0]!.date_of_disposal !== null) {
     errors.push(`Asset "${farId}" has been disposed and can't be linked as a child.`);
   }
 
-  const { rows: ownChildren } = await db.query(`SELECT 1 FROM assets WHERE parent_far_id = $1 LIMIT 1`, [farId]);
+  const { rows: ownChildren } = await db.query(
+    `SELECT 1 FROM assets WHERE parent_far_id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [farId]
+  );
   if (ownChildren.length > 0) {
     errors.push(`Asset "${farId}" already has its own child assets — it can't also become a child.`);
   }

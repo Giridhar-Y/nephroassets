@@ -5,9 +5,12 @@ import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { DisposalModal } from "../components/DisposalModal.js";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
+import { useToast } from "../components/Toast.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
 import { formatCurrency } from "../lib/format.js";
 import { useAuth } from "../lib/AuthContext.js";
+import { undoDisposal } from "../api/client.js";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
@@ -108,26 +111,55 @@ function NewDisposalTab({ onDone }: { onDone: () => void }) {
 // WDV for the combined Total WDV.
 function DisposalLogTab() {
   const { settings } = useSettings();
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const filters = useMemo(() => ({ status: ["Disposed"], conditions }), [conditions]);
   const setCondition = makeSetCondition(conditions, setConditions);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
   const COLUMNS = resolveColumns(RAW_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const headerFilters = buildConditionHeaderFilters(LOG_CONDITION_COLUMNS, conditions, setCondition);
+  // Disposal undo (Global Admin only) — holds the FAR ID pending confirmation.
+  const [undoTargetFarId, setUndoTargetFarId] = useState<string | null>(null);
 
   return (
-    <AssetGrid
-      items={items}
-      columns={COLUMNS}
-      loading={loading}
-      error={error}
-      hasMore={!!nextCursor}
-      onLoadMore={loadMore}
-      onRetry={reload}
-      emptyTitle="No disposed assets yet."
-      emptyHint="Dispose an asset from the New Disposal tab, or from the Register (select rows, then Dispose Selected)."
-      headerFilters={headerFilters}
-    />
+    <>
+      <AssetGrid
+        items={items}
+        columns={COLUMNS}
+        loading={loading}
+        error={error}
+        hasMore={!!nextCursor}
+        onLoadMore={loadMore}
+        onRetry={reload}
+        emptyTitle="No disposed assets yet."
+        emptyHint="Dispose an asset from the New Disposal tab, or from the Register (select rows, then Dispose Selected)."
+        headerFilters={headerFilters}
+        onDeleteAsset={user?.role === "admin" ? (farId) => setUndoTargetFarId(farId) : undefined}
+        deleteActionLabel="Undo Disposal (Global Admin)"
+      />
+      {undoTargetFarId && (
+        <DeleteConfirmModal
+          title={`Undo disposal of ${undoTargetFarId}`}
+          confirmId={undoTargetFarId}
+          confirmButtonLabel="Undo Disposal"
+          description="Reverses this disposal — status is restored to Active (the exact pre-disposal status isn't stored, correct it via Edit if it was something else). Also automatically un-disposes any child asset that was disposed as part of this same cascade. Blocked if this disposal was itself cascaded from a parent — undo the parent's disposal instead."
+          onClose={() => setUndoTargetFarId(null)}
+          onConfirm={async (reason) => {
+            const farId = undoTargetFarId;
+            const result = await undoDisposal(farId, reason);
+            setUndoTargetFarId(null);
+            showToast(
+              result.childrenUndone.length > 0
+                ? `Disposal of ${farId} undone, along with ${result.childrenUndone.length} cascaded child asset(s).`
+                : `Disposal of ${farId} undone.`,
+              "success"
+            );
+            reload();
+          }}
+        />
+      )}
+    </>
   );
 }
 

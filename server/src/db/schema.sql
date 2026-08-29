@@ -41,7 +41,19 @@ CREATE TABLE assets (
   disposed_via_parent_far_id   TEXT REFERENCES assets(far_id) ON UPDATE CASCADE,
 
   acc_dep_c1_opening           NUMERIC NOT NULL DEFAULT 0,
-  acc_dep_c2_opening           NUMERIC NOT NULL DEFAULT 0
+  acc_dep_c2_opening           NUMERIC NOT NULL DEFAULT 0,
+
+  -- Soft delete (Global Admin only, routes/assets.ts's DELETE /api/assets/:farId) — the
+  -- row is never physically removed, so its own history and every audit_log row that
+  -- named it survive. NULL (the default) means "active." A deleted row is filtered out
+  -- of the Register, every Report, and every other read/write endpoint's "find this
+  -- asset" lookup (deleted_at IS NULL), but the row itself, and its transfer history,
+  -- stay in the database untouched.
+  -- No inline REFERENCES users(id) here — users is created later in this file. The FK
+  -- is added via ALTER TABLE right after CREATE TABLE users below.
+  deleted_at                   TIMESTAMPTZ,
+  deleted_by                   BIGINT,
+  delete_reason                TEXT
 );
 
 -- Location history, source of truth for step 12's "Effective Location". Populated by the
@@ -59,7 +71,15 @@ CREATE TABLE transfers (
   -- its parent moved), not chosen directly — null for every ordinary transfer, including
   -- one on an asset that happens to be a child but was independently selected. See
   -- transfers.ts's POST /api/transfers.
-  cascaded_from_parent_far_id   TEXT REFERENCES assets(far_id) ON UPDATE CASCADE
+  cascaded_from_parent_far_id   TEXT REFERENCES assets(far_id) ON UPDATE CASCADE,
+
+  -- Soft delete (Global Admin only, routes/transfers.ts's DELETE /api/transfers/:id) —
+  -- same reasoning as assets.deleted_at above. No inline REFERENCES users(id) on
+  -- deleted_by for the same ordering reason as assets' own column; see the ALTER TABLE
+  -- after CREATE TABLE users below.
+  deleted_at                    TIMESTAMPTZ,
+  deleted_by                    BIGINT,
+  delete_reason                 TEXT
 );
 
 -- Single-row control panel: AS_AT, FY_ST, FY_EN, DAYS_FY.
@@ -134,6 +154,11 @@ CREATE TABLE users (
 CREATE UNIQUE INDEX idx_users_username_ci ON users (LOWER(username));
 CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
 
+-- assets/transfers deleted_by can only reference users(id) now that users exists —
+-- see those columns' own comments above for why the FK isn't inline on their CREATE TABLE.
+ALTER TABLE assets ADD CONSTRAINT assets_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);
+ALTER TABLE transfers ADD CONSTRAINT transfers_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);
+
 -- Login lockout tracking. Keyed by the *submitted* username string, not a users.id FK —
 -- deliberately recorded even for a username that doesn't exist, so the lockout behavior
 -- (and response) is identical whether or not the account is real. Never records the
@@ -193,6 +218,36 @@ CREATE TABLE asset_bulk_action_log (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_asset_bulk_action_log_created_at ON asset_bulk_action_log (created_at DESC);
+
+-- Every Global-Admin-only delete (routes/assets.ts's DELETE /api/assets/:farId and
+-- .../addition/undo, .../disposal/undo; routes/transfers.ts's DELETE /api/transfers/:id)
+-- — who, what record, when, why (`reason` is required at the API layer, not just here),
+-- and a `details` snapshot of exactly what was cleared/soft-deleted. That snapshot
+-- matters most for addition/disposal "undo," which aren't a soft-deletable row at all —
+-- they clear columns on the existing assets row in place, so without a snapshot here the
+-- specific figures that were undone (the old dateOfDisposal, deletionsC1/C2, saleValue,
+-- the status it was reverted from, any cascaded children) would be genuinely lost, not
+-- just hidden. `transfer_id` is set only for a transfer_delete action; null otherwise.
+CREATE TABLE asset_delete_audit_log (
+  id              BIGSERIAL PRIMARY KEY,
+  actor_user_id   BIGINT REFERENCES users(id),
+  action          TEXT NOT NULL CHECK (action IN ('capitalization_delete', 'addition_undo', 'disposal_undo', 'transfer_delete')),
+  -- ON UPDATE CASCADE for consistency with every other far_id FK in this schema, though a
+  -- deleted asset can never actually be renamed (Edit's lookup excludes deleted_at IS NOT
+  -- NULL rows) — this only matters for an addition_undo/disposal_undo entry, whose asset
+  -- is still active and rename-able after the undo. ON DELETE CASCADE: this app never
+  -- hard-deletes an assets row in production (only soft-deletes — the whole point of this
+  -- feature), so this branch never fires there; it exists purely so a test fixture's
+  -- blanket `DELETE FROM assets` cleanup doesn't get blocked by an audit log row a
+  -- delete/undo test wrote earlier in the same suite run.
+  far_id          TEXT NOT NULL REFERENCES assets(far_id) ON UPDATE CASCADE ON DELETE CASCADE,
+  transfer_id     BIGINT,
+  reason          TEXT NOT NULL,
+  details         JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_asset_delete_audit_log_far_id ON asset_delete_audit_log (far_id, created_at DESC);
+CREATE INDEX idx_asset_delete_audit_log_created_at ON asset_delete_audit_log (created_at DESC);
 
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.

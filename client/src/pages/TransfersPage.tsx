@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchCenters, fetchTransferHistory, type TransferHistoryFilters, type TransferHistoryItem } from "../api/client.js";
+import {
+  deleteTransfer,
+  fetchCenters,
+  fetchTransferHistory,
+  type TransferHistoryFilters,
+  type TransferHistoryItem
+} from "../api/client.js";
 import { formatDate } from "../lib/format.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { TransferModal } from "../components/TransferModal.js";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
+import { useToast } from "../components/Toast.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition } from "../lib/columnFilters.js";
 import { makeSetCondition } from "../lib/conditionHeaderFilters.js";
-import { EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
+import { DeleteIcon, EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
 
 const PAGE_SIZE = 100;
 
@@ -71,6 +79,8 @@ function NewTransferTab({ onDone }: { onDone: () => void }) {
 // Transfer Log — the pre-existing read-only history table, filters and pagination
 // unchanged, now with a From Location column so a row reads as a full movement.
 function TransferLogTab() {
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [filters, setFilters] = useState<TransferHistoryFilters>({});
   const [centers, setCenters] = useState<string[]>([]);
   const [items, setItems] = useState<TransferHistoryItem[]>([]);
@@ -78,6 +88,10 @@ function TransferLogTab() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Transfer delete (Global Admin only) — holds the row pending confirmation.
+  const [deleteTarget, setDeleteTarget] = useState<TransferHistoryItem | null>(null);
+  const isAdmin = user?.role === "admin";
+  const columnCount = isAdmin ? 6 : 5;
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -245,20 +259,23 @@ function TransferLogTab() {
                   </ColumnFilterPopover>
                 </div>
               </th>
+              {isAdmin && (
+                <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">Delete</th>
+              )}
             </tr>
           </thead>
           <tbody>
             {loading ? (
               Array.from({ length: 10 }).map((_, i) => (
                 <tr key={i} className="border-b border-gray-100">
-                  <td className="px-4 py-2" colSpan={5}>
+                  <td className="px-4 py-2" colSpan={columnCount}>
                     <div className="h-3 w-full max-w-md animate-pulse rounded bg-gray-100" />
                   </td>
                 </tr>
               ))
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={columnCount}>
                   <div className="flex flex-col items-center justify-center gap-2 py-24 text-center">
                     <EmptyIcon fontSize={28} className="text-gray-300" />
                     <p className="text-sm font-medium text-gray-600">No transfers found.</p>
@@ -276,6 +293,19 @@ function TransferLogTab() {
                   <td className="px-4 py-2 text-gray-600">{formatDate(item.transactionDate)}</td>
                   <td className="px-4 py-2 text-gray-600">{item.fromLocation}</td>
                   <td className="px-4 py-2 text-gray-600">{item.location}</td>
+                  {isAdmin && (
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        aria-label={`Delete transfer #${item.id}`}
+                        title="Delete (Global Admin)"
+                        className="grid h-6 w-6 place-items-center rounded text-gray-400 hover:bg-red-50 hover:text-red-600"
+                        onClick={() => setDeleteTarget(item)}
+                      >
+                        <DeleteIcon fontSize={15} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
@@ -294,6 +324,22 @@ function TransferLogTab() {
           </div>
         )}
       </div>
+
+      {deleteTarget && (
+        <DeleteConfirmModal
+          title={`Delete transfer #${deleteTarget.id}`}
+          confirmId={String(deleteTarget.id)}
+          description={`Removes this transfer (${deleteTarget.farId}: ${deleteTarget.fromLocation} → ${deleteTarget.location} on ${formatDate(deleteTarget.transactionDate)}) from the log — the asset's location history recalculates from whatever transfers remain. Blocked if this was recorded as part of a parent/child cascade; delete the parent's transfer instead.`}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={async (reason) => {
+            const target = deleteTarget!;
+            await deleteTransfer(target.id, reason);
+            setDeleteTarget(null);
+            showToast(`Transfer #${target.id} deleted.`, "success");
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }

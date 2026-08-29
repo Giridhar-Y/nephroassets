@@ -139,6 +139,7 @@ async function computeReconciliationItems(
          ) AS c2,
          (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
        FROM assets
+       WHERE deleted_at IS NULL
      ),
      -- Independently re-derives what Closing Acc Dep SHOULD be per the documented
      -- cap-at-Gross-Block / floor-at-0 rule (engine.ts's closingAccDep, mirrored by
@@ -544,7 +545,7 @@ async function computeMovementSchedulePage(
   limit: number
 ): Promise<{ items: MovementScheduleRow[]; nextCursor: string | null }> {
   const params: unknown[] = [fy.asAt];
-  const baseConditions = ["date_acquired <= $1"];
+  const baseConditions = ["date_acquired <= $1", "deleted_at IS NULL"];
   if (cursor) {
     params.push(cursor);
     baseConditions.push(`far_id > $${params.length}`);
@@ -579,7 +580,7 @@ async function computeMovementSchedulePage(
   if (farIds.length > 0) {
     const { rows: tRows } = await db.query<TransferRow>(
       `SELECT far_id, transaction_date, location FROM transfers
-       WHERE far_id = ANY($1) AND transaction_date <= $2
+       WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
        ORDER BY far_id, transaction_date, id`,
       [farIds, fy.asAt]
     );
@@ -649,7 +650,7 @@ async function* streamAssetDepreciationBatches(
   let lastFarId: string | null = null;
   for (;;) {
     const params: unknown[] = [fy.asAt];
-    const baseConditions = ["date_acquired <= $1"];
+    const baseConditions = ["date_acquired <= $1", "deleted_at IS NULL"];
     if (lastFarId !== null) {
       params.push(lastFarId);
       baseConditions.push(`far_id > $${params.length}`);
@@ -686,7 +687,7 @@ async function* streamAssetDepreciationBatches(
     const farIds = rows.map((r) => r.far_id as string);
     const { rows: transferRows } = await db.query<TransferRow>(
       `SELECT far_id, transaction_date, location FROM transfers
-       WHERE far_id = ANY($1) AND transaction_date <= $2
+       WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
        ORDER BY far_id, transaction_date, id`,
       [farIds, fy.asAt]
     );
@@ -936,7 +937,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
            date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2::date, $3::date, $5::date, $4::integer, date_acquired
          )).gross_block), 0) AS total_c1_gross_block
        FROM assets
-       WHERE COALESCE(revised_location, location) = $1`,
+       WHERE COALESCE(revised_location, location) = $1 AND deleted_at IS NULL`,
       [parsed.data.location, fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
     );
 
@@ -1022,6 +1023,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
            date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          )).period_depreciation) AS c2_period_dep
        FROM assets
+       WHERE deleted_at IS NULL
        GROUP BY sub_classification
        ORDER BY sub_classification`,
       [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]

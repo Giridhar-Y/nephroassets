@@ -41,7 +41,7 @@ async function transferWithChildren(
 
   if (cascadedFromParentFarId !== null) return []; // one level only — a child never has its own children to cascade to.
   const { rows: children } = await client.query<{ far_id: string }>(
-    `SELECT far_id FROM assets WHERE parent_far_id = $1 AND date_of_disposal IS NULL`,
+    `SELECT far_id FROM assets WHERE parent_far_id = $1 AND date_of_disposal IS NULL AND deleted_at IS NULL`,
     [farId]
   );
   const childrenTransferred: string[] = [];
@@ -106,7 +106,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
         farIds.length > 0
           ? (
               await db.query<{ far_id: string; date_acquired: string }>(
-                `SELECT far_id, date_acquired FROM assets WHERE far_id = ANY($1)`,
+                `SELECT far_id, date_acquired FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
                 [farIds]
               )
             ).rows.map((r) => [r.far_id, r.date_acquired])
@@ -175,7 +175,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             continue;
           }
           const { rows: exists } = await client.query<{ date_acquired: string }>(
-            `SELECT date_acquired FROM assets WHERE far_id = $1`,
+            `SELECT date_acquired FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
             [data.farId]
           );
           if (exists.length === 0) {

@@ -32,8 +32,11 @@ export async function findBlockingC2Assets(
   db: pg.Pool | pg.PoolClient,
   subClassificationName: string
 ): Promise<{ count: number; sampleFarIds: string[] }> {
+  // deleted_at IS NULL: a soft-deleted asset's leftover C2 data shouldn't keep blocking
+  // this classification's toggle — it's gone from the active register, not a real
+  // obstacle. See routes/assets.ts's DELETE /api/assets/:farId.
   const { rows } = await db.query<{ far_id: string }>(
-    `SELECT far_id FROM assets WHERE sub_classification = $1 AND ${REAL_C2_DATA_SQL} ORDER BY far_id`,
+    `SELECT far_id FROM assets WHERE sub_classification = $1 AND ${REAL_C2_DATA_SQL} AND deleted_at IS NULL ORDER BY far_id`,
     [subClassificationName]
   );
   return { count: rows.length, sampleFarIds: rows.slice(0, SAMPLE_LIMIT).map((r) => r.far_id) };

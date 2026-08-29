@@ -3,7 +3,9 @@ import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, verifySession } from "./session.js";
 
 /** viewer: read/export only. editor: viewer's access + full FAR-module CRUD
- *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management. */
+ *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management, plus
+ *  the Global-Admin-only delete/undo actions (assets.ts's DELETE /api/assets/:farId and
+ *  .../addition/undo, .../disposal/undo; transfers.ts's DELETE /api/transfers/:id). */
 export type Role = "viewer" | "editor" | "admin";
 const EDITOR_ROLES: ReadonlySet<Role> = new Set(["editor", "admin"]);
 
