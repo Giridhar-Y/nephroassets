@@ -415,7 +415,7 @@ function AssetWiseTable({
 export function TransferDepreciationReportPage() {
   const { settings } = useSettings();
   const [asAt, setAsAt] = useState<string | null>(null);
-  const [view, setView] = useState<View>("location");
+  const [view, setView] = useState<View>("asset");
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const [locationOptions, setLocationOptions] = useState<string[]>([]);
 
@@ -492,22 +492,22 @@ export function TransferDepreciationReportPage() {
           <button
             type="button"
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
-              view === "location" ? "bg-accent text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-            }`}
-            onClick={() => setView("location")}
-          >
-            <LocationIcon fontSize={14} />
-            Location-wise
-          </button>
-          <button
-            type="button"
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
               view === "asset" ? "bg-accent text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"
             }`}
             onClick={() => setView("asset")}
           >
             <TransferIcon fontSize={14} />
             Asset-wise
+          </button>
+          <button
+            type="button"
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
+              view === "location" ? "bg-accent text-white" : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+            }`}
+            onClick={() => setView("location")}
+          >
+            <LocationIcon fontSize={14} />
+            Location-wise
           </button>
           {conditions.length > 0 && (
             <span className="flex items-center text-xs text-gray-500">

@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
+import { bulkInsertAssets, bulkInsertTransfers } from "../loadtest/bulkInsert.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -816,10 +818,15 @@ describe("Transfer & Depreciation Report", () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(res.rawPayload as any);
     const sheetNames = workbook.worksheets.map((s) => s.name);
-    expect(sheetNames).toEqual(["Location-wise Summary", "Asset-wise Summary", "Movement Detail"]);
+    // Movement Detail, then Asset-wise Summary, then Location-wise Summary.
+    expect(sheetNames).toEqual(["Movement Detail", "Asset-wise Summary", "Location-wise Summary"]);
 
-    // Every sheet carries the C1/C2 breakdown, not just a combined figure.
-    const locationHeaderRow = workbook.getWorksheet("Location-wise Summary")!.getRow(2).values as unknown[];
+    // Location-wise Summary and Asset-wise Summary each carry a second note row
+    // (the reconciliation explanation) before their header — see
+    // LOCATION_RECONCILIATION_NOTE/ASSET_RECONCILIATION_NOTE in reports.ts — so their
+    // header is row 3, not row 2. Movement Detail only has the one filter-summary note,
+    // header stays at row 2.
+    const locationHeaderRow = workbook.getWorksheet("Location-wise Summary")!.getRow(3).values as unknown[];
     expect(locationHeaderRow).toEqual([
       undefined,
       "Location",
@@ -828,7 +835,10 @@ describe("Transfer & Depreciation Report", () => {
       "C2 Depreciation",
       "Total Depreciation"
     ]);
-    const assetHeaderRow = workbook.getWorksheet("Asset-wise Summary")!.getRow(2).values as unknown[];
+    expect(String(workbook.getWorksheet("Location-wise Summary")!.getRow(2).getCell(1).value)).toContain(
+      "contributes to every location it occupied"
+    );
+    const assetHeaderRow = workbook.getWorksheet("Asset-wise Summary")!.getRow(3).values as unknown[];
     expect(assetHeaderRow).toEqual([
       undefined,
       "FAR ID",
@@ -838,6 +848,9 @@ describe("Transfer & Depreciation Report", () => {
       "C2 Period Depreciation",
       "Total Period Depreciation"
     ]);
+    expect(String(workbook.getWorksheet("Asset-wise Summary")!.getRow(2).getCell(1).value)).toContain(
+      "Current Location is each asset's location as of the report date"
+    );
     const detailHeaderRow = workbook.getWorksheet("Movement Detail")!.getRow(2).values as unknown[];
     expect(detailHeaderRow).toEqual([
       undefined,
@@ -894,15 +907,226 @@ describe("Transfer & Depreciation Report", () => {
     const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
     const farIds: string[] = [];
     assetSheet.eachRow((row, num) => {
-      if (num > 2) farIds.push(String(row.getCell(1).value));
+      if (num > 3) farIds.push(String(row.getCell(1).value));
     });
     expect(farIds).toEqual(["XDEP-STILL"]);
 
     const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
     const locations: string[] = [];
     locationSheet.eachRow((row, num) => {
-      if (num > 2) locations.push(String(row.getCell(1).value));
+      if (num > 3) locations.push(String(row.getCell(1).value));
     });
     expect(locations).toEqual(["Center-Still"]);
+  });
+
+  it("Asset-wise Summary and Location-wise Summary always reconcile exactly — no silent truncation", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
+    expect(res.statusCode).toBe(200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+
+    const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
+    const assetRows: Array<{ farId: string; currentLocation: string; totalPaise: number }> = [];
+    assetSheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      assetRows.push({
+        farId: String(row.getCell(1).value),
+        currentLocation: String(row.getCell(3).value),
+        totalPaise: Math.round(Number(row.getCell(6).value) * 100)
+      });
+    });
+
+    const detailSheet = workbook.getWorksheet("Movement Detail")!;
+    const farIdsWithMovementDetail = new Set<string>();
+    // location -> paise, reconstructed purely from Movement Detail's own segment rows.
+    const reconstructedFromDetail = new Map<string, number>();
+    detailSheet.eachRow((row, num) => {
+      if (num <= 2) return;
+      const farId = String(row.getCell(1).value);
+      farIdsWithMovementDetail.add(farId);
+      const location = String(row.getCell(3).value);
+      const paise = Math.round(Number(row.getCell(9).value) * 100);
+      reconstructedFromDetail.set(location, (reconstructedFromDetail.get(location) ?? 0) + paise);
+    });
+
+    // Independently reconstruct what Location-wise Summary SHOULD say, built only from
+    // the export's own other two sheets: every multi-segment asset's contribution comes
+    // from Movement Detail (above); every single-segment asset (absent from Movement
+    // Detail, by that sheet's own documented design) contributes its full Asset-wise
+    // Summary total to its own Current Location, since a never-transferred asset's one
+    // segment IS its current location for the whole period.
+    const reconstructed = new Map(reconstructedFromDetail);
+    const reconstructedCounts = new Map<string, number>();
+    for (const detailFarId of farIdsWithMovementDetail) {
+      // Count once per distinct location that FAR ID's Movement Detail rows touch.
+      const locationsForThisAsset = new Set<string>();
+      detailSheet.eachRow((row, num) => {
+        if (num <= 2) return;
+        if (String(row.getCell(1).value) === detailFarId) locationsForThisAsset.add(String(row.getCell(3).value));
+      });
+      for (const loc of locationsForThisAsset) reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
+    }
+    for (const row of assetRows) {
+      if (farIdsWithMovementDetail.has(row.farId)) continue;
+      reconstructed.set(row.currentLocation, (reconstructed.get(row.currentLocation) ?? 0) + row.totalPaise);
+      reconstructedCounts.set(row.currentLocation, (reconstructedCounts.get(row.currentLocation) ?? 0) + 1);
+    }
+
+    const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
+    const actualLocationRows: Array<{ location: string; count: number; totalPaise: number }> = [];
+    locationSheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      actualLocationRows.push({
+        location: String(row.getCell(1).value),
+        count: Number(row.getCell(2).value),
+        totalPaise: Math.round(Number(row.getCell(5).value) * 100)
+      });
+    });
+
+    expect(actualLocationRows.length).toBeGreaterThan(0);
+    for (const row of actualLocationRows) {
+      expect(row.totalPaise).toBe(reconstructed.get(row.location) ?? -1);
+      expect(row.count).toBe(reconstructedCounts.get(row.location) ?? -1);
+    }
+    // And nothing reconstructed is missing FROM Location-wise Summary either (a
+    // location present in the reconstruction but absent from the actual sheet would be
+    // exactly the kind of silent truncation this test exists to catch).
+    expect([...reconstructed.keys()].sort()).toEqual(actualLocationRows.map((r) => r.location).sort());
+
+    // Grand totals must match exactly too (paise-precise) — every asset's full-period
+    // depreciation is fully accounted for across whichever Location-wise Summary rows
+    // its segments touch, even though a transferred asset spreads across several of
+    // those rows while getting only one Asset-wise Summary row under its current
+    // location.
+    const assetGrandTotalPaise = assetRows.reduce((s, r) => s + r.totalPaise, 0);
+    const locationGrandTotalPaise = actualLocationRows.reduce((s, r) => s + r.totalPaise, 0);
+    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
+  });
+});
+
+// Regression test for a real production incident (2026-08-29): a downloaded export
+// showed Location-wise Summary's Center-001 row reporting 123 assets/₹41,17,011.70,
+// while Asset-wise Summary appeared to have only 107/₹39,80,152.44 worth of matching
+// rows — read as 16 assets' worth of data silently missing, with no error or warning.
+//
+// Root-caused via direct trace (not assumed): BOTH sheets are built from one single
+// pass over streamAssetDepreciationBatches — an asset present in one is always present
+// in the other; there is no pagination/truncation bug in the export's batching loop.
+// The real cause is a grouping-semantics mismatch: Location-wise Summary attributes an
+// asset's depreciation to EVERY location it occupied during the period (day-weighted,
+// via its segments) — the whole point of this report — while Asset-wise Summary shows
+// exactly one row per asset, under its CURRENT location only. An asset that transferred
+// during the period therefore contributes to multiple Location-wise Summary rows but
+// only one Asset-wise Summary row, which reads as "missing" to a reader cross-checking
+// by current location alone, even though nothing is actually dropped.
+//
+// This test proves that at a real, >200-asset scale (large enough to have caught the
+// production incident — 5% of loadtest-generated assets get 1-3 transfers each, same
+// generator the 250k scale test uses), the two sheets always reconcile EXACTLY: same
+// grand total, and Location-wise Summary's own per-location numbers are always fully
+// reconstructible from Asset-wise Summary + Movement Detail alone (see the singular
+// XDEP-fixture version of this same check above for the line-by-line logic; this one
+// uses an efficient single-pass grouping instead, since 200+ assets makes the nested
+// per-row eachRow scan used above too slow to reuse as-is).
+describe("Transfer & Depreciation Report export — reconciliation at scale (200+ assets)", () => {
+  let app: FastifyInstance;
+  const ASSET_COUNT = 260;
+  const assets = generateAssets(ASSET_COUNT, 55511);
+  const transfers = generateTransfers(assets, 66622);
+
+  beforeAll(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+    await bulkInsertAssets(db, assets, 1000);
+    await bulkInsertTransfers(db, transfers, 1000);
+
+    app = Fastify();
+    await app.register(reportsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("Asset-wise Summary and Location-wise Summary reconcile exactly across the whole export — no asset silently missing from either", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
+    expect(res.statusCode).toBe(200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+
+    const assetSheet = workbook.getWorksheet("Asset-wise Summary")!;
+    const assetFarIds = new Set<string>();
+    const currentLocationByFarId = new Map<string, string>();
+    const totalPaiseByFarId = new Map<string, number>();
+    let assetGrandTotalPaise = 0;
+    assetSheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      const farId = String(row.getCell(1).value);
+      const paise = Math.round(Number(row.getCell(6).value) * 100);
+      assetFarIds.add(farId);
+      currentLocationByFarId.set(farId, String(row.getCell(3).value));
+      totalPaiseByFarId.set(farId, paise);
+      assetGrandTotalPaise += paise;
+    });
+    // Confirms the export actually reached the scale this test is meant to exercise —
+    // a regression that silently capped the batch loop would show up here directly as
+    // a row count short of ASSET_COUNT, independent of the reconciliation checks below.
+    expect(assetFarIds.size).toBe(ASSET_COUNT);
+
+    // Single pass over Movement Detail: for each (farId, location) touched, accumulate
+    // paise and count each distinct location once per asset — O(rows), not O(rows²).
+    const detailSheet = workbook.getWorksheet("Movement Detail")!;
+    const farIdsWithMovementDetail = new Set<string>();
+    const locationsTouchedByFarId = new Map<string, Set<string>>();
+    const reconstructed = new Map<string, number>();
+    detailSheet.eachRow((row, num) => {
+      if (num <= 2) return;
+      const farId = String(row.getCell(1).value);
+      const location = String(row.getCell(3).value);
+      const paise = Math.round(Number(row.getCell(9).value) * 100);
+      farIdsWithMovementDetail.add(farId);
+      reconstructed.set(location, (reconstructed.get(location) ?? 0) + paise);
+      const set = locationsTouchedByFarId.get(farId) ?? new Set<string>();
+      set.add(location);
+      locationsTouchedByFarId.set(farId, set);
+    });
+    const reconstructedCounts = new Map<string, number>();
+    for (const [, locations] of locationsTouchedByFarId) {
+      for (const loc of locations) reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
+    }
+    // Every never-transferred asset (absent from Movement Detail, by that sheet's own
+    // documented design) contributes its full total to its own Current Location.
+    for (const farId of assetFarIds) {
+      if (farIdsWithMovementDetail.has(farId)) continue;
+      const loc = currentLocationByFarId.get(farId)!;
+      const paise = totalPaiseByFarId.get(farId)!;
+      reconstructed.set(loc, (reconstructed.get(loc) ?? 0) + paise);
+      reconstructedCounts.set(loc, (reconstructedCounts.get(loc) ?? 0) + 1);
+    }
+
+    const locationSheet = workbook.getWorksheet("Location-wise Summary")!;
+    const actualLocationRows: Array<{ location: string; count: number; totalPaise: number }> = [];
+    let locationGrandTotalPaise = 0;
+    locationSheet.eachRow((row, num) => {
+      if (num <= 3) return;
+      const totalPaise = Math.round(Number(row.getCell(5).value) * 100);
+      actualLocationRows.push({ location: String(row.getCell(1).value), count: Number(row.getCell(2).value), totalPaise });
+      locationGrandTotalPaise += totalPaise;
+    });
+
+    expect(actualLocationRows.length).toBeGreaterThan(0);
+    for (const row of actualLocationRows) {
+      expect(row.totalPaise).toBe(reconstructed.get(row.location) ?? -1);
+      expect(row.count).toBe(reconstructedCounts.get(row.location) ?? -1);
+    }
+    expect([...reconstructed.keys()].sort()).toEqual(actualLocationRows.map((r) => r.location).sort());
+    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
   });
 });

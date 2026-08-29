@@ -822,13 +822,31 @@ function addNoteRow(sheet: ExcelJS.Worksheet, note: string, columnCount: number)
   noteRow.commit();
 }
 
+// Explains the one thing that makes Location-wise Summary's per-location asset count
+// look, to an unfamiliar reader, like assets are missing from Asset-wise Summary: an
+// asset that transferred during the period occupies MULTIPLE locations (day-weighted),
+// so it contributes to every one of those locations' rows here — but Asset-wise
+// Summary (by design, one row per asset) shows only its CURRENT location. Nothing is
+// dropped from either sheet — every asset's full-period total always appears exactly
+// once in Asset-wise Summary, and the exact same total is always fully accounted for
+// across whichever Location-wise Summary rows its segments touch (see Movement Detail
+// for the per-segment breakdown that reconciles the two). Investigated 2026-08-29 after
+// a reported "16 assets missing" — confirmed, via direct trace, this is the actual
+// cause, not a pagination/truncation bug: both sheets are built from one single pass
+// over the same asset batch (see streamAssetDepreciationBatches below), so an asset
+// present in one is always present in the other.
+const LOCATION_RECONCILIATION_NOTE =
+  "An asset that transferred during the period contributes to every location it occupied here (day-weighted) — see Movement Detail for the full per-asset breakdown, or Asset-wise Summary for each asset's current location and full-period total. Every asset here also appears in Asset-wise Summary — nothing is dropped from either sheet.";
+const ASSET_RECONCILIATION_NOTE =
+  "Current Location is each asset's location as of the report date. An asset that transferred during the period has its depreciation split across every location it occupied — see Location-wise Summary and Movement Detail for that breakdown — not attributed only to Current Location here.";
+
 /** Streams the export straight to the response — one pass over
  *  `streamAssetDepreciationBatches`, writing Asset-wise Summary + Movement Detail rows
  *  as each batch arrives (same streaming-WorkbookWriter approach as assetsExport.ts) and
  *  accumulating Location-wise Summary's totals in memory (bounded by distinct-location
- *  count, not asset count) to write once the scan finishes. Location-wise Summary is
- *  still the FIRST sheet in the file — `addWorksheet` fixes tab order at creation time,
- *  independent of when each sheet's own rows get written. */
+ *  count, not asset count) to write once the scan finishes. Sheet order: Movement Detail,
+ *  Asset-wise Summary, Location-wise Summary — `addWorksheet` fixes tab order at creation
+ *  time, independent of when each sheet's own rows get written. */
 async function streamTransferDepreciationWorkbook(
   db: Db,
   fy: Fy,
@@ -837,27 +855,6 @@ async function streamTransferDepreciationWorkbook(
 ): Promise<void> {
   const note = transferDepreciationExportNote(fy);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
-
-  const locationSheet = workbook.addWorksheet("Location-wise Summary");
-  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 18 }, { width: 18 }, { width: 18 }];
-  addNoteRow(locationSheet, note, 5);
-  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
-  locationHeader.font = { bold: true };
-  locationHeader.commit();
-
-  const assetSheet = workbook.addWorksheet("Asset-wise Summary");
-  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 20 }];
-  addNoteRow(assetSheet, note, 6);
-  const assetHeader = assetSheet.addRow([
-    "FAR ID",
-    "Sub Classification",
-    "Current Location",
-    "C1 Period Depreciation",
-    "C2 Period Depreciation",
-    "Total Period Depreciation"
-  ]);
-  assetHeader.font = { bold: true };
-  assetHeader.commit();
 
   // Every location-stay segment, for every asset that actually moved during the period
   // (more than one segment) — a single asset with no transfers has nothing to detail
@@ -890,6 +887,29 @@ async function streamTransferDepreciationWorkbook(
   ]);
   detailHeader.font = { bold: true };
   detailHeader.commit();
+
+  const assetSheet = workbook.addWorksheet("Asset-wise Summary");
+  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 20 }];
+  addNoteRow(assetSheet, note, 6);
+  addNoteRow(assetSheet, ASSET_RECONCILIATION_NOTE, 6);
+  const assetHeader = assetSheet.addRow([
+    "FAR ID",
+    "Sub Classification",
+    "Current Location",
+    "C1 Period Depreciation",
+    "C2 Period Depreciation",
+    "Total Period Depreciation"
+  ]);
+  assetHeader.font = { bold: true };
+  assetHeader.commit();
+
+  const locationSheet = workbook.addWorksheet("Location-wise Summary");
+  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 18 }, { width: 18 }, { width: 18 }];
+  addNoteRow(locationSheet, note, 5);
+  addNoteRow(locationSheet, LOCATION_RECONCILIATION_NOTE, 5);
+  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
+  locationHeader.font = { bold: true };
+  locationHeader.commit();
 
   const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
   for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
