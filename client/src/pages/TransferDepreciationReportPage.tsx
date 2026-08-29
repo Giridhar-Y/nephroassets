@@ -170,18 +170,26 @@ function AssetWiseTable({ report }: { report: TransferDepreciationReport }) {
 
   return (
     <div className="max-w-5xl rounded-md border border-gray-200">
-      <div
-        className={`sticky top-0 z-10 grid ${ASSET_GRID_COLS} border-b-2 border-gray-300 bg-gray-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500`}
-      >
-        <span />
-        <span>FAR ID</span>
-        <span>Description</span>
-        <span>Current Location</span>
-        <span className="text-right">C1</span>
-        <span className="text-right">C2</span>
-        <span className="text-right">Total Depreciation</span>
-      </div>
+      {/* The sticky header must be a child of the SAME scrolling element as the rows —
+          `position: sticky` sticks relative to its nearest scrolling ancestor, so a
+          header living outside `scrollRef` (as a sibling, sticky relative to the outer
+          page scroll instead) detaches from this box entirely once the page scrolls,
+          pinning to the viewport's top while the rows scroll independently underneath
+          it — the exact "header floating mid-list" bug. Register's AssetGrid puts its
+          sticky header inside the same scroll container for this reason; this now
+          matches. */}
       <div ref={scrollRef} className="max-h-[60vh] overflow-auto">
+        <div
+          className={`sticky top-0 z-10 grid ${ASSET_GRID_COLS} border-b-2 border-gray-300 bg-gray-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500`}
+        >
+          <span />
+          <span>FAR ID</span>
+          <span>Description</span>
+          <span>Current Location</span>
+          <span className="text-right">C1</span>
+          <span className="text-right">C2</span>
+          <span className="text-right">Total Depreciation</span>
+        </div>
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const item = report.assetWise[virtualRow.index]!;
