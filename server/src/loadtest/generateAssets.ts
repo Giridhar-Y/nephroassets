@@ -1,4 +1,4 @@
-import type { AssetInput } from "../calc/types.js";
+import type { AssetInput, TransferRecord } from "../calc/types.js";
 
 // Deterministic PRNG (same algorithm as db/seed.ts) so the exact same fixture can be
 // regenerated in pure JS — used as the independent oracle the load test checks the
@@ -105,4 +105,29 @@ export function generateAssets(count: number, seed: number): AssetInput[] {
   }
 
   return assets;
+}
+
+/** A minority of assets (5%) get 1-3 transfers within the FY, so the Transfer &
+ *  Depreciation Report's location-wise batching and segment-splitting actually get
+ *  exercised at load-test scale, not just its simple per-asset totals. Deterministic
+ *  (same seed → same transfers) for the same "independent oracle" reason
+ *  generateAssets itself is. */
+export function generateTransfers(assets: AssetInput[], seed: number): TransferRecord[] {
+  const rand = mulberry32(seed);
+  const pick = <T,>(arr: T[]): T => arr[Math.floor(rand() * arr.length)]!;
+  const transfers: TransferRecord[] = [];
+
+  for (const asset of assets) {
+    if (rand() >= 0.05) continue;
+    const transferCount = 1 + Math.floor(rand() * 3);
+    for (let i = 0; i < transferCount; i++) {
+      transfers.push({
+        farId: asset.farId,
+        transactionDate: isoDate(addDays(LOADTEST_FY_START, 10 + i * 30 + Math.floor(rand() * 20))),
+        location: pick(CENTERS)
+      });
+    }
+  }
+
+  return transfers;
 }

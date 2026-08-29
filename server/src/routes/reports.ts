@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
@@ -8,6 +9,12 @@ import { computeAsset } from "../calc/engine.js";
 import type { TransferRecord } from "../calc/types.js";
 import { daysHeldInclusive, maxIsoDate } from "../calc/dates.js";
 import { round2, splitDepreciationByLocation, type LocationSegment } from "../reports/transferDepreciationSplit.js";
+import { buildCalcCteExtras, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
+import {
+  buildTransferDepreciationConditionSql,
+  transferDepreciationConditionsQuerySchema,
+  type RawCondition
+} from "./reportColumnFilters.js";
 
 const EPSILON = 0.01; // one paisa — guards against currency-display rounding only
 
@@ -389,14 +396,33 @@ async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: st
 }
 
 // Transfer & Depreciation Report — new reporting-layer work, read-only against the
-// locked calc engine (engine.ts): it calls `computeAsset` exactly as GET /api/assets
-// already does to get each asset's trusted C1 and C2 period depreciation, then hands
-// those two numbers to `splitDepreciationByLocation` (pure, tested separately) to
-// allocate each — independently, so each reconciles exactly on its own — across the
-// locations the asset physically sat in during the period. Nothing here recomputes
-// depreciation itself. C1/C2 are carried through everywhere this report shows a money
-// figure, matching Register's own component breakdown, with a combined total
-// alongside for convenience (always exactly c1 + c2, never independently rounded).
+// locked calc engine (engine.ts). Built for scale (this report is expected to grow
+// toward the same 2,50,000-asset figure Register already handles), so it deliberately
+// does NOT follow the original round's shape (one Node loop computing every asset's
+// segments up front, returned in a single response):
+//
+//   - Asset-wise list: paginated exactly like GET /api/assets (keyset cursor on far_id,
+//     LIMIT), filtered server-side (Excel-style conditions, reportColumnFilters.ts),
+//     C1/C2 computed via SQL far_calc_component() — never a Node loop over every asset.
+//     Segments are NOT included; see below.
+//   - Movement-timeline expansion: a separate, single-asset endpoint. Computing a
+//     4,000-transfer join's worth of segments for every row of a 250k-row list up front
+//     would be wasted work for the 99% of rows a user never expands — this computes it
+//     only for the one asset actually expanded, so it costs the same at 250,000 assets
+//     as at 3,000 (bounded by that one asset's own transfer count, which is indexed).
+//   - Location-wise summary: the one piece that genuinely needs a full-table scan (every
+//     asset contributes to some location's total). Streamed in bounded batches (same
+//     `far_id`-keyset-cursor idea as assetsExport.ts's EXPORT_BATCH_SIZE), computing
+//     each batch's segments in Node via the same tested `splitDepreciationByLocation`
+//     and accumulating into a location totals Map — never holding more than one batch of
+//     assets+transfers in memory at once, and never returning per-asset data to the
+//     client (the output is bounded by the number of distinct locations, not assets).
+//   - Export: the same batched full-table pass, streamed straight into an
+//     ExcelJS.stream.xlsx.WorkbookWriter (same streaming approach as assetsExport.ts) —
+//     Asset-wise Summary and Movement Detail rows are written as each batch is
+//     processed; Location-wise Summary (whose totals aren't known until the whole scan
+//     finishes) is added as a worksheet FIRST (fixing its position as the first sheet)
+//     but its rows are written last, after the single pass completes.
 interface TransferDepreciationAssetRow {
   farId: string;
   subClassification: string;
@@ -405,7 +431,6 @@ interface TransferDepreciationAssetRow {
   c1TotalDepreciation: number;
   c2TotalDepreciation: number;
   totalDepreciation: number;
-  segments: LocationSegment[];
 }
 
 interface TransferDepreciationLocationRow {
@@ -416,72 +441,100 @@ interface TransferDepreciationLocationRow {
   totalDepreciation: number;
 }
 
-interface TransferDepreciationReport {
-  asAt: string;
-  fyStart: string;
-  locationWise: TransferDepreciationLocationRow[];
-  assetWise: TransferDepreciationAssetRow[];
+type Fy = { asAt: string; fyStart: string; fyEnd: string; daysInFy: number };
+type Db = Awaited<ReturnType<typeof getPool>>;
+
+/** Validates every condition once (against a scratch params array, discarded) so a bad
+ *  column/op combination fails fast with a 400 before any query — including before a
+ *  batched full-table scan starts, rather than surfacing mid-scan. */
+function validateConditions(conditions: RawCondition[], fy: { fyStart: string; fyEnd: string }): string | null {
+  for (const cond of conditions) {
+    const built = buildTransferDepreciationConditionSql(cond, [], fy);
+    if ("error" in built) return built.error;
+  }
+  return null;
 }
 
-async function computeTransferDepreciationReport(
-  db: Awaited<ReturnType<typeof getPool>>,
-  fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number }
-): Promise<TransferDepreciationReport> {
-  // Same "can't have existed before it was capitalized" filter every other report/list
-  // route applies for a given AS_AT — see GET /api/assets's identical condition.
-  const { rows: assetRows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE date_acquired <= $1 ORDER BY far_id`, [
-    fy.asAt
-  ]);
+/** One page of the asset-wise list — filtering and pagination happen in SQL (same
+ *  keyset-cursor-on-far_id shape as GET /api/assets; unlike Register this report has no
+ *  column-sort UI, so a single-value cursor is enough, no tuple needed), but the
+ *  displayed C1/C2/Current Location come from `computeAsset` in Node — same split as
+ *  GET /api/assets itself (SQL calc CTE for the WHERE clause, `computeAsset` for the
+ *  response body), and for the same reason: `effective_location` (the SQL alias, backed
+ *  by the `revised_location` column) is a plain "wherever the latest transfer left it"
+ *  cache, not date-gated by AS_AT — computeAsset's `effectiveLocation` reads the actual
+ *  `transfers` rows up to AS_AT and is the value Register itself displays. Doing this in
+ *  Node is only safe because it's bounded by PAGE SIZE, not table size — the same reason
+ *  it's already proven at 250k scale for Register (scale.loadtest.ts's "Register: first
+ *  page..." case runs this identical pattern). LIMIT is applied in the outer query after
+ *  Excel-style conditions (same structural tradeoff GET /api/assets already has and
+ *  documents: a heavily-selective computed condition means Postgres may need to evaluate
+ *  far_calc_component() past the cursor until it fills a page — accepted there, accepted
+ *  here for the same reason: revisit with a materialized computed column if it ever
+ *  becomes the bottleneck at real 250k scale). */
+async function computeAssetWisePage(
+  db: Db,
+  fy: Fy,
+  conditions: RawCondition[],
+  cursor: string | null,
+  limit: number
+): Promise<{ items: TransferDepreciationAssetRow[]; nextCursor: string | null }> {
+  const params: unknown[] = [fy.asAt];
+  const baseConditions = ["date_acquired <= $1"];
+  if (cursor) {
+    params.push(cursor);
+    baseConditions.push(`far_id > $${params.length}`);
+  }
+  const calcExtras = buildCalcCteExtras(params, fy.asAt, fy);
+  const computedConditions = conditions.map((cond) => {
+    const built = buildTransferDepreciationConditionSql(cond, params, fy);
+    if ("error" in built) throw new Error(built.error);
+    return built.sql;
+  });
+  const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+  params.push(limit);
 
-  const farIds = assetRows.map((r) => r.far_id);
+  const { rows } = await db.query<AssetRow>(
+    `WITH calc_base AS (
+       SELECT assets.*, ${calcExtras}
+       FROM assets
+       WHERE ${baseConditions.join(" AND ")}
+     ), calc AS (
+       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+       FROM calc_base
+     )
+     SELECT * FROM calc
+     ${computedWhereClause}
+     ORDER BY far_id ASC
+     LIMIT $${params.length}`,
+    params
+  );
+
+  const farIds = rows.map((r) => r.far_id);
   let transferRows: TransferRow[] = [];
   if (farIds.length > 0) {
-    const { rows } = await db.query<TransferRow>(
+    const { rows: tRows } = await db.query<TransferRow>(
       `SELECT far_id, transaction_date, location FROM transfers
        WHERE far_id = ANY($1) AND transaction_date <= $2
        ORDER BY far_id, transaction_date, id`,
       [farIds, fy.asAt]
     );
-    transferRows = rows;
+    transferRows = tRows;
   }
   const transfersByFarId = new Map<string, TransferRecord[]>();
-  for (const row of transferRows) {
-    const rec = mapTransferRow(row);
+  for (const tr of transferRows) {
+    const rec = mapTransferRow(tr);
     const list = transfersByFarId.get(rec.farId);
     if (list) list.push(rec);
     else transfersByFarId.set(rec.farId, [rec]);
   }
 
-  const assetWise: TransferDepreciationAssetRow[] = assetRows.map((row) => {
+  const items = rows.map((row) => {
     const asset = mapAssetRow(row);
     const transfers = transfersByFarId.get(asset.farId) ?? [];
     const result = computeAsset(asset, fy, transfers);
-    // Rounded here, once, at the paisa — and used as-is everywhere downstream (as the
-    // split target, in this row, and in the location-wise aggregation of its
-    // segments). Splitting a RAW float total across locations but exposing a
-    // differently-rounded "total" here would make each asset's own segments reconcile
-    // internally while still drifting the report's grand total by a few paise overall
-    // (raw-sum-then-round vs round-then-sum disagree by up to 1 paisa per asset, and
-    // that compounds across thousands of assets) — found via the location-wise vs.
-    // asset-wise grand-total test.
     const c1TotalDepreciation = round2(result.c1.periodDepreciation);
     const c2TotalDepreciation = round2(result.c2.periodDepreciation);
-    // The window this asset could have earned depreciation in during the period: from
-    // whichever is later of FY Start or its own capitalization date (a mid-FY
-    // capitalization can't have depreciated before it existed), through the same
-    // effective end date the engine itself used (an earlier Disposal Date, or AS_AT) —
-    // c1/c2 always share the same effectiveEndDate, since disposal is asset-level, not
-    // per-component.
-    const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
-    const periodEnd = result.c1.effectiveEndDate;
-    const segments = splitDepreciationByLocation(
-      asset.location,
-      transfers,
-      periodStart,
-      periodEnd,
-      c1TotalDepreciation,
-      c2TotalDepreciation
-    );
     return {
       farId: asset.farId,
       subClassification: asset.subClassification,
@@ -489,22 +542,181 @@ async function computeTransferDepreciationReport(
       currentLocation: result.effectiveLocation,
       c1TotalDepreciation,
       c2TotalDepreciation,
-      totalDepreciation: round2(c1TotalDepreciation + c2TotalDepreciation),
-      segments
+      totalDepreciation: round2(c1TotalDepreciation + c2TotalDepreciation)
     };
   });
 
+  const last = rows[rows.length - 1];
+  const nextCursor = last && rows.length === limit ? last.far_id : null;
+  return { items, nextCursor };
+}
+
+/** One asset's movement timeline, computed on demand (not pre-computed for every row of
+ *  the list) — see the module comment above for why. Reuses the exact same Node
+ *  functions (`computeAsset`, `splitDepreciationByLocation`) the rest of this report and
+ *  its tests already trust; cost is bounded by this one asset's own transfer count
+ *  (indexed on far_id), independent of total table size. */
+async function computeAssetSegments(
+  db: Db,
+  fy: Fy,
+  farId: string
+): Promise<{ segments: LocationSegment[] } | null> {
+  const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND date_acquired <= $2`, [
+    farId,
+    fy.asAt
+  ]);
+  const row = rows[0];
+  if (!row) return null;
+
+  const asset = mapAssetRow(row);
+  const { rows: transferRows } = await db.query<TransferRow>(
+    `SELECT far_id, transaction_date, location FROM transfers WHERE far_id = $1 AND transaction_date <= $2 ORDER BY transaction_date, id`,
+    [asset.farId, fy.asAt]
+  );
+  const transfers = transferRows.map(mapTransferRow);
+  const result = computeAsset(asset, fy, transfers);
+  const c1Total = round2(result.c1.periodDepreciation);
+  const c2Total = round2(result.c2.periodDepreciation);
+  const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
+  const periodEnd = result.c1.effectiveEndDate;
+  const segments = splitDepreciationByLocation(asset.location, transfers, periodStart, periodEnd, c1Total, c2Total);
+  return { segments };
+}
+
+const DEPRECIATION_BATCH_SIZE = 2000;
+
+interface AssetDepreciationBatchItem {
+  farId: string;
+  subClassification: string;
+  currentLocation: string;
+  c1Total: number;
+  c2Total: number;
+  segments: LocationSegment[];
+}
+
+/** The one full-table-scan primitive both the location-wise summary and the export
+ *  share: walks every matching asset in bounded batches (same idea as assetsExport.ts's
+ *  EXPORT_BATCH_SIZE), computing each batch's C1/C2 totals via SQL far_calc_component()
+ *  and each asset's location segments via the tested Node split function — never holding
+ *  more than one batch of assets + their transfers in memory at once, regardless of
+ *  whether the table has 3,000 rows or 2,50,000.
+ *
+ *  `currentLocation` here — unlike `computeAssetWisePage`'s — is the SQL
+ *  `effective_location` alias (the `revised_location` cache, not date-gated by AS_AT),
+ *  a deliberate, scoped exception to the "Node computeAsset is correct" rule above: it's
+ *  used only for the Asset-wise Summary export column (display, not reconciliation —
+ *  segments themselves use the asset's real `location` column, never this), and getting
+ *  the AS_AT-correct value here would mean a `computeAsset` call per asset for the WHOLE
+ *  table, reintroducing the exact per-row-at-250k-scale cost this batching exists to
+ *  avoid. Same accepted tradeoff Register's own "Current Location" Excel filter already
+ *  has (assetColumnFilters.ts's `effectiveLocation` maps to this identical SQL alias) —
+ *  not a new gap this report introduces. ponytail: full per-asset AS_AT-correct location
+ *  at full-table scale would need a materialized/indexed computed column; revisit only
+ *  if this specific export column is reported wrong in practice. */
+async function* streamAssetDepreciationBatches(
+  db: Db,
+  fy: Fy,
+  conditions: RawCondition[]
+): AsyncGenerator<AssetDepreciationBatchItem[]> {
+  let lastFarId: string | null = null;
+  for (;;) {
+    const params: unknown[] = [fy.asAt];
+    const baseConditions = ["date_acquired <= $1"];
+    if (lastFarId !== null) {
+      params.push(lastFarId);
+      baseConditions.push(`far_id > $${params.length}`);
+    }
+    const calcExtras = buildCalcCteExtras(params, fy.asAt, fy);
+    const computedConditions = conditions.map((cond) => {
+      const built = buildTransferDepreciationConditionSql(cond, params, fy);
+      if ("error" in built) throw new Error(built.error);
+      return built.sql;
+    });
+    const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+    params.push(DEPRECIATION_BATCH_SIZE);
+
+    const { rows } = await db.query(
+      `WITH calc_base AS (
+         SELECT assets.*, ${calcExtras}
+         FROM assets
+         WHERE ${baseConditions.join(" AND ")}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
+       )
+       SELECT far_id, sub_classification, location, effective_location, date_acquired,
+         (c1).period_depreciation AS c1_period_dep, (c2).period_depreciation AS c2_period_dep,
+         (c1).effective_end_date AS effective_end_date
+       FROM calc
+       ${computedWhereClause}
+       ORDER BY far_id ASC
+       LIMIT $${params.length}`,
+      params
+    );
+    if (rows.length === 0) break;
+
+    const farIds = rows.map((r) => r.far_id as string);
+    const { rows: transferRows } = await db.query<TransferRow>(
+      `SELECT far_id, transaction_date, location FROM transfers
+       WHERE far_id = ANY($1) AND transaction_date <= $2
+       ORDER BY far_id, transaction_date, id`,
+      [farIds, fy.asAt]
+    );
+    const transfersByFarId = new Map<string, TransferRecord[]>();
+    for (const tr of transferRows) {
+      const rec = mapTransferRow(tr);
+      const list = transfersByFarId.get(rec.farId);
+      if (list) list.push(rec);
+      else transfersByFarId.set(rec.farId, [rec]);
+    }
+
+    yield rows.map((r) => {
+      const c1Total = round2(Number(r.c1_period_dep));
+      const c2Total = round2(Number(r.c2_period_dep));
+      const transfers = transfersByFarId.get(r.far_id as string) ?? [];
+      const periodStart = maxIsoDate([fy.fyStart, r.date_acquired as string]);
+      const periodEnd = r.effective_end_date as string;
+      const segments = splitDepreciationByLocation(
+        r.location as string,
+        transfers,
+        periodStart,
+        periodEnd,
+        c1Total,
+        c2Total
+      );
+      return {
+        farId: r.far_id as string,
+        subClassification: r.sub_classification as string,
+        currentLocation: r.effective_location as string,
+        c1Total,
+        c2Total,
+        segments
+      };
+    });
+
+    lastFarId = rows[rows.length - 1]!.far_id as string;
+    if (rows.length < DEPRECIATION_BATCH_SIZE) break;
+  }
+}
+
+async function computeLocationWiseSummary(
+  db: Db,
+  fy: Fy,
+  conditions: RawCondition[]
+): Promise<TransferDepreciationLocationRow[]> {
   const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
-  for (const item of assetWise) {
-    for (const segment of item.segments) {
-      const entry = locationTotals.get(segment.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
-      entry.assetFarIds.add(item.farId);
-      entry.c1 += segment.c1Depreciation;
-      entry.c2 += segment.c2Depreciation;
-      locationTotals.set(segment.location, entry);
+  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
+    for (const item of batch) {
+      for (const seg of item.segments) {
+        const entry = locationTotals.get(seg.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
+        entry.assetFarIds.add(item.farId);
+        entry.c1 += seg.c1Depreciation;
+        entry.c2 += seg.c2Depreciation;
+        locationTotals.set(seg.location, entry);
+      }
     }
   }
-  const locationWise = [...locationTotals.entries()]
+  return [...locationTotals.entries()]
     .map(([location, entry]) => {
       const c1TotalDepreciation = round2(entry.c1);
       const c2TotalDepreciation = round2(entry.c2);
@@ -517,13 +729,11 @@ async function computeTransferDepreciationReport(
       };
     })
     .sort((a, b) => a.location.localeCompare(b.location));
-
-  return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise, assetWise };
 }
 
 const MONEY_FMT_2DP = "#,##0.00;(#,##0.00);-";
 
-function transferDepreciationExportNote(report: TransferDepreciationReport): string {
+function transferDepreciationExportNote(fy: Fy): string {
   const exportedAtParts = new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "2-digit",
@@ -535,7 +745,7 @@ function transferDepreciationExportNote(report: TransferDepreciationReport): str
   }).formatToParts(new Date());
   const part = (type: string) => exportedAtParts.find((p) => p.type === type)?.value ?? "";
   const exportedAtText = `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}`;
-  return `Period: ${report.fyStart} to ${report.asAt}  —  Exported: ${exportedAtText} IST`;
+  return `Period: ${fy.fyStart} to ${fy.asAt}  —  Exported: ${exportedAtText} IST`;
 }
 
 function addNoteRow(sheet: ExcelJS.Worksheet, note: string, columnCount: number) {
@@ -545,9 +755,21 @@ function addNoteRow(sheet: ExcelJS.Worksheet, note: string, columnCount: number)
   noteRow.commit();
 }
 
-async function buildTransferDepreciationWorkbook(report: TransferDepreciationReport): Promise<ExcelJS.Buffer> {
-  const workbook = new ExcelJS.Workbook();
-  const note = transferDepreciationExportNote(report);
+/** Streams the export straight to the response — one pass over
+ *  `streamAssetDepreciationBatches`, writing Asset-wise Summary + Movement Detail rows
+ *  as each batch arrives (same streaming-WorkbookWriter approach as assetsExport.ts) and
+ *  accumulating Location-wise Summary's totals in memory (bounded by distinct-location
+ *  count, not asset count) to write once the scan finishes. Location-wise Summary is
+ *  still the FIRST sheet in the file — `addWorksheet` fixes tab order at creation time,
+ *  independent of when each sheet's own rows get written. */
+async function streamTransferDepreciationWorkbook(
+  db: Db,
+  fy: Fy,
+  conditions: RawCondition[],
+  stream: PassThrough
+): Promise<void> {
+  const note = transferDepreciationExportNote(fy);
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
 
   const locationSheet = workbook.addWorksheet("Location-wise Summary");
   locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 18 }, { width: 18 }, { width: 18 }];
@@ -555,13 +777,6 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
   const locationHeader = locationSheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
   locationHeader.font = { bold: true };
   locationHeader.commit();
-  for (const row of report.locationWise) {
-    const r = locationSheet.addRow([row.location, row.assetCount, row.c1TotalDepreciation, row.c2TotalDepreciation, row.totalDepreciation]);
-    r.getCell(3).numFmt = MONEY_FMT_2DP;
-    r.getCell(4).numFmt = MONEY_FMT_2DP;
-    r.getCell(5).numFmt = MONEY_FMT_2DP;
-    r.commit();
-  }
 
   const assetSheet = workbook.addWorksheet("Asset-wise Summary");
   assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 20 }];
@@ -576,20 +791,6 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
   ]);
   assetHeader.font = { bold: true };
   assetHeader.commit();
-  for (const item of report.assetWise) {
-    const r = assetSheet.addRow([
-      item.farId,
-      item.subClassification,
-      item.currentLocation,
-      item.c1TotalDepreciation,
-      item.c2TotalDepreciation,
-      item.totalDepreciation
-    ]);
-    r.getCell(4).numFmt = MONEY_FMT_2DP;
-    r.getCell(5).numFmt = MONEY_FMT_2DP;
-    r.getCell(6).numFmt = MONEY_FMT_2DP;
-    r.commit();
-  }
 
   // Every location-stay segment, for every asset that actually moved during the period
   // (more than one segment) — a single asset with no transfers has nothing to detail
@@ -622,28 +823,61 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
   ]);
   detailHeader.font = { bold: true };
   detailHeader.commit();
-  for (const item of report.assetWise) {
-    if (item.segments.length < 2) continue;
-    for (const segment of item.segments) {
-      const r = detailSheet.addRow([
-        item.farId,
-        item.subClassification,
-        segment.location,
-        segment.fromDate,
-        segment.toDate,
-        segment.daysHeld,
-        segment.c1Depreciation,
-        segment.c2Depreciation,
-        segment.depreciation
-      ]);
-      r.getCell(7).numFmt = MONEY_FMT_2DP;
-      r.getCell(8).numFmt = MONEY_FMT_2DP;
-      r.getCell(9).numFmt = MONEY_FMT_2DP;
-      r.commit();
+
+  const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
+  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
+    for (const item of batch) {
+      const total = round2(item.c1Total + item.c2Total);
+      const ar = assetSheet.addRow([item.farId, item.subClassification, item.currentLocation, item.c1Total, item.c2Total, total]);
+      ar.getCell(4).numFmt = MONEY_FMT_2DP;
+      ar.getCell(5).numFmt = MONEY_FMT_2DP;
+      ar.getCell(6).numFmt = MONEY_FMT_2DP;
+      ar.commit();
+
+      if (item.segments.length >= 2) {
+        for (const seg of item.segments) {
+          const dr = detailSheet.addRow([
+            item.farId,
+            item.subClassification,
+            seg.location,
+            seg.fromDate,
+            seg.toDate,
+            seg.daysHeld,
+            seg.c1Depreciation,
+            seg.c2Depreciation,
+            seg.depreciation
+          ]);
+          dr.getCell(7).numFmt = MONEY_FMT_2DP;
+          dr.getCell(8).numFmt = MONEY_FMT_2DP;
+          dr.getCell(9).numFmt = MONEY_FMT_2DP;
+          dr.commit();
+        }
+      }
+
+      for (const seg of item.segments) {
+        const entry = locationTotals.get(seg.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
+        entry.assetFarIds.add(item.farId);
+        entry.c1 += seg.c1Depreciation;
+        entry.c2 += seg.c2Depreciation;
+        locationTotals.set(seg.location, entry);
+      }
     }
   }
 
-  return workbook.xlsx.writeBuffer();
+  for (const [location, entry] of [...locationTotals.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const c1 = round2(entry.c1);
+    const c2 = round2(entry.c2);
+    const lr = locationSheet.addRow([location, entry.assetFarIds.size, c1, c2, round2(c1 + c2)]);
+    lr.getCell(3).numFmt = MONEY_FMT_2DP;
+    lr.getCell(4).numFmt = MONEY_FMT_2DP;
+    lr.getCell(5).numFmt = MONEY_FMT_2DP;
+    lr.commit();
+  }
+
+  locationSheet.commit();
+  assetSheet.commit();
+  detailSheet.commit();
+  await workbook.commit();
 }
 
 export default async function reportsRoutes(app: FastifyInstance) {
@@ -780,8 +1014,17 @@ export default async function reportsRoutes(app: FastifyInstance) {
     return { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
   });
 
-  app.get("/api/reports/transfer-depreciation", async (req, reply) => {
-    const parsed = asAtQuerySchema.safeParse(req.query);
+  // Asset-wise list: paginated, filtered, SQL-computed — see the module comment above
+  // for why this deliberately doesn't precompute segments for every row.
+  app.get("/api/reports/transfer-depreciation/asset-wise", async (req, reply) => {
+    const parsed = z
+      .object({
+        asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        cursor: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(150),
+        conditions: transferDepreciationConditionsQuerySchema
+      })
+      .safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Invalid query.", details: parsed.error.flatten() };
@@ -792,12 +1035,84 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
+    const conditionError = validateConditions(parsed.data.conditions, fy);
+    if (conditionError) {
+      reply.code(400);
+      return { error: conditionError };
+    }
 
-    return computeTransferDepreciationReport(db, fy);
+    const { items, nextCursor } = await computeAssetWisePage(
+      db,
+      fy,
+      parsed.data.conditions,
+      parsed.data.cursor ?? null,
+      parsed.data.limit
+    );
+    return { items, nextCursor, asAt: fy.asAt };
+  });
+
+  // Movement timeline for one asset, computed on demand when a row is expanded — see
+  // the module comment above for why this is a separate endpoint, not part of the list.
+  app.get("/api/reports/transfer-depreciation/asset/:farId/segments", async (req, reply) => {
+    const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
+    const queryParsed = asAtQuerySchema.safeParse(req.query);
+    if (!paramsParsed.success || !queryParsed.success) {
+      reply.code(400);
+      return { error: "Invalid request." };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: queryParsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+
+    const result = await computeAssetSegments(db, fy, paramsParsed.data.farId);
+    if (!result) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${paramsParsed.data.farId}".` };
+    }
+    return { farId: paramsParsed.data.farId, segments: result.segments };
+  });
+
+  // Location-wise summary: a full-table scan (every asset contributes to some
+  // location's total), but streamed in bounded batches — see
+  // streamAssetDepreciationBatches above — so it stays memory-bounded regardless of
+  // table size. Output is bounded by distinct-location count, not asset count.
+  app.get("/api/reports/transfer-depreciation/location-wise", async (req, reply) => {
+    const parsed = z
+      .object({
+        asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        conditions: transferDepreciationConditionsQuerySchema
+      })
+      .safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    const conditionError = validateConditions(parsed.data.conditions, fy);
+    if (conditionError) {
+      reply.code(400);
+      return { error: conditionError };
+    }
+
+    const locationWise = await computeLocationWiseSummary(db, fy, parsed.data.conditions);
+    return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise };
   });
 
   app.get("/api/reports/transfer-depreciation/export", async (req, reply) => {
-    const parsed = asAtQuerySchema.safeParse(req.query);
+    const parsed = z
+      .object({
+        asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        conditions: transferDepreciationConditionsQuerySchema
+      })
+      .safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
       return { error: "Invalid query.", details: parsed.error.flatten() };
@@ -808,12 +1123,16 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
-
-    const report = await computeTransferDepreciationReport(db, fy);
-    const buffer = await buildTransferDepreciationWorkbook(report);
+    const conditionError = validateConditions(parsed.data.conditions, fy);
+    if (conditionError) {
+      reply.code(400);
+      return { error: conditionError };
+    }
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     reply.header("Content-Disposition", `attachment; filename="transfer-depreciation-${fy.asAt}.xlsx"`);
-    return reply.send(buffer);
+    const stream = new PassThrough();
+    reply.send(stream);
+    await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream);
   });
 }

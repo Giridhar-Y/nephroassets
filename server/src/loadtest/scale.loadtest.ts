@@ -1,12 +1,15 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { generateAssets, CENTERS } from "./generateAssets.js";
-import { bulkInsertAssets } from "./bulkInsert.js";
+import { generateAssets, generateTransfers, CENTERS } from "./generateAssets.js";
+import { bulkInsertAssets, bulkInsertTransfers } from "./bulkInsert.js";
 import { getPool } from "../db/pool.js";
-import { computeComponent } from "../calc/engine.js";
+import { computeComponent, computeAsset } from "../calc/engine.js";
+import { maxIsoDate } from "../calc/dates.js";
+import { splitDepreciationByLocation } from "../reports/transferDepreciationSplit.js";
 import reportsRoutes from "../routes/reports.js";
 import assetsRoutes from "../routes/assets.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import type { TransferRecord } from "../calc/types.js";
 
 const ASSET_COUNT = Number(process.env.LOADTEST_COUNT ?? 250_000);
 const AS_AT = "2026-08-17";
@@ -17,6 +20,10 @@ const DAYS_IN_FY = 365;
 describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
   let app: FastifyInstance;
   const assets = generateAssets(ASSET_COUNT, 12345);
+  // Same seed relationship as assets itself — deterministic, so the "independent
+  // oracle" comparisons below can regenerate the exact same transfers without ever
+  // reading them back from the database.
+  const transfers = generateTransfers(assets, 67890);
 
   beforeAll(async () => {
     const db = await getPool();
@@ -24,6 +31,11 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     const insertStart = performance.now();
     await bulkInsertAssets(db, assets, 1000);
     console.log(`  done in ${((performance.now() - insertStart) / 1000).toFixed(1)}s`);
+
+    console.log(`Bulk-inserting ${transfers.length.toLocaleString()} transfers...`);
+    const transferInsertStart = performance.now();
+    await bulkInsertTransfers(db, transfers, 1000);
+    console.log(`  done in ${((performance.now() - transferInsertStart) / 1000).toFixed(1)}s`);
 
     await db.query(
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
@@ -181,4 +193,100 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     expect(page3.statusCode).toBe(200);
     expect(elapsed3).toBeLessThan(2000);
   });
+
+  it("Transfer & Depreciation Report: asset-wise first page, unfiltered and filtered, both stay fast", async () => {
+    const start1 = performance.now();
+    const page1 = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/transfer-depreciation/asset-wise?asAt=${AS_AT}&limit=150`
+    });
+    const elapsed1 = performance.now() - start1;
+    console.log(`Transfer & Depreciation asset-wise first page: ${elapsed1.toFixed(0)}ms`);
+    expect(page1.statusCode).toBe(200);
+    expect(page1.json().items.length).toBe(150);
+    expect(elapsed1).toBeLessThan(2000);
+
+    const conditions = encodeURIComponent(JSON.stringify([{ columnId: "c1TotalDepreciation", op: "gt", value: 20000 }]));
+    const start2 = performance.now();
+    const page2 = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/transfer-depreciation/asset-wise?asAt=${AS_AT}&limit=150&conditions=${conditions}`
+    });
+    const elapsed2 = performance.now() - start2;
+    console.log(`Transfer & Depreciation asset-wise filtered page (C1 > 20,000): ${elapsed2.toFixed(0)}ms`);
+    expect(page2.statusCode).toBe(200);
+    expect(elapsed2).toBeLessThan(3000);
+  });
+
+  it("Transfer & Depreciation Report: one asset's movement-timeline (segments) endpoint stays fast regardless of table size", async () => {
+    const moved = transfers[0]!;
+    const start = performance.now();
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/transfer-depreciation/asset/${moved.farId}/segments?asAt=${AS_AT}`
+    });
+    const elapsedMs = performance.now() - start;
+    console.log(`Transfer & Depreciation segments (${moved.farId}): ${elapsedMs.toFixed(0)}ms`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().segments.length).toBeGreaterThan(0);
+    // Bounded by this one asset's own transfer count (a handful), not the 250k-row
+    // table — should be effectively instant, well under the page-level budget above.
+    expect(elapsedMs).toBeLessThan(500);
+  });
+
+  it(
+    "Transfer & Depreciation Report: location-wise grand total matches an independently computed total (TS engine + the same split function, summed in JS — never reads the seeded rows back), and stays within budget",
+    async () => {
+      const fy = { asAt: AS_AT, fyStart: FY_START, fyEnd: FY_END, daysInFy: DAYS_IN_FY };
+      const transfersByFarId = new Map<string, TransferRecord[]>();
+      for (const t of transfers) {
+        const list = transfersByFarId.get(t.farId);
+        if (list) list.push(t);
+        else transfersByFarId.set(t.farId, [t]);
+      }
+
+      let expectedC1Paise = 0;
+      let expectedC2Paise = 0;
+      for (const asset of assets) {
+        const assetTransfers = transfersByFarId.get(asset.farId) ?? [];
+        const result = computeAsset(asset, fy, assetTransfers);
+        const c1Total = Math.round(result.c1.periodDepreciation * 100) / 100;
+        const c2Total = Math.round(result.c2.periodDepreciation * 100) / 100;
+        const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
+        const segments = splitDepreciationByLocation(
+          asset.location,
+          assetTransfers,
+          periodStart,
+          result.c1.effectiveEndDate,
+          c1Total,
+          c2Total
+        );
+        for (const seg of segments) {
+          expectedC1Paise += Math.round(seg.c1Depreciation * 100);
+          expectedC2Paise += Math.round(seg.c2Depreciation * 100);
+        }
+      }
+
+      const start = performance.now();
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/reports/transfer-depreciation/location-wise?asAt=${AS_AT}`
+      });
+      const elapsedMs = performance.now() - start;
+      console.log(
+        `Transfer & Depreciation location-wise (full ${ASSET_COUNT.toLocaleString()}-asset scan, ${transfers.length.toLocaleString()} transfers): ${elapsedMs.toFixed(0)}ms, ${res.json().locationWise.length} locations`
+      );
+
+      expect(res.statusCode).toBe(200);
+      const locationWise: Array<{ c1TotalDepreciation: number; c2TotalDepreciation: number }> = res.json().locationWise;
+      const actualC1Paise = locationWise.reduce((s, l) => s + Math.round(l.c1TotalDepreciation * 100), 0);
+      const actualC2Paise = locationWise.reduce((s, l) => s + Math.round(l.c2TotalDepreciation * 100), 0);
+      expect(actualC1Paise).toBe(expectedC1Paise);
+      expect(actualC2Paise).toBe(expectedC2Paise);
+      // Batched full-table scan over 250k assets + their transfers — generous budget
+      // (this is the one genuinely O(table size) endpoint in the report), but must
+      // still complete well within a request timeout, not run for minutes.
+      expect(elapsedMs).toBeLessThan(60_000);
+    }
+  );
 });

@@ -6,6 +6,7 @@ import type {
   AssetListResponse,
   FySettings
 } from "../lib/types.js";
+import type { ColumnCondition } from "../lib/columnFilters.js";
 
 export class ApiError extends Error {
   status: number;
@@ -492,7 +493,6 @@ export interface TransferDepreciationAssetRow {
   c1TotalDepreciation: number;
   c2TotalDepreciation: number;
   totalDepreciation: number;
-  segments: LocationSegment[];
 }
 
 export interface TransferDepreciationLocationRow {
@@ -503,21 +503,63 @@ export interface TransferDepreciationLocationRow {
   totalDepreciation: number;
 }
 
-export interface TransferDepreciationReport {
+// Built for scale (this report is expected to grow toward Register's own 2,50,000-asset
+// figure) — the asset-wise list is a real paginated endpoint (keyset cursor on farId,
+// same shape as fetchAssets/GET /api/assets), not a single call returning everything.
+// Segments (a movement timeline) are fetched separately, only for the one asset a user
+// actually expands — see fetchTransferDepreciationSegments.
+export interface TransferDepreciationAssetWisePage {
+  items: TransferDepreciationAssetRow[];
+  nextCursor: string | null;
   asAt: string;
-  fyStart: string;
-  locationWise: TransferDepreciationLocationRow[];
-  assetWise: TransferDepreciationAssetRow[];
 }
 
-export function fetchTransferDepreciationReport(asAt: string): Promise<TransferDepreciationReport> {
-  return request(`/api/reports/transfer-depreciation?${new URLSearchParams({ asAt })}`);
+function transferDepreciationConditionsParam(conditions: ColumnCondition[]): string {
+  return conditions.length > 0 ? JSON.stringify(conditions) : "";
+}
+
+export interface FetchTransferDepreciationAssetWiseParams {
+  asAt: string;
+  conditions?: ColumnCondition[];
+  cursor?: string | null;
+  limit?: number;
+}
+
+export function fetchTransferDepreciationAssetWise(
+  params: FetchTransferDepreciationAssetWiseParams
+): Promise<TransferDepreciationAssetWisePage> {
+  const search = new URLSearchParams({ asAt: params.asAt });
+  if (params.cursor) search.set("cursor", params.cursor);
+  if (params.limit) search.set("limit", String(params.limit));
+  const conditionsParam = transferDepreciationConditionsParam(params.conditions ?? []);
+  if (conditionsParam) search.set("conditions", conditionsParam);
+  return request(`/api/reports/transfer-depreciation/asset-wise?${search}`);
+}
+
+// On-demand movement timeline for one asset — computed only when a row is expanded, not
+// pre-computed for every row of the list (see reports.ts's module comment for why that
+// matters at scale).
+export function fetchTransferDepreciationSegments(farId: string, asAt: string): Promise<{ segments: LocationSegment[] }> {
+  return request(`/api/reports/transfer-depreciation/asset/${encodeURIComponent(farId)}/segments?${new URLSearchParams({ asAt })}`);
+}
+
+export function fetchTransferDepreciationLocationWise(
+  asAt: string,
+  conditions: ColumnCondition[] = []
+): Promise<{ asAt: string; fyStart: string; locationWise: TransferDepreciationLocationRow[] }> {
+  const search = new URLSearchParams({ asAt });
+  const conditionsParam = transferDepreciationConditionsParam(conditions);
+  if (conditionsParam) search.set("conditions", conditionsParam);
+  return request(`/api/reports/transfer-depreciation/location-wise?${search}`);
 }
 
 // Same pattern as Audit Reconciliation's getAuditReconciliationExportUrl — the browser
 // downloads it directly via the Content-Disposition header, this just builds the URL.
-export function getTransferDepreciationExportUrl(asAt: string): string {
-  return `/api/reports/transfer-depreciation/export?${new URLSearchParams({ asAt })}`;
+export function getTransferDepreciationExportUrl(asAt: string, conditions: ColumnCondition[] = []): string {
+  const search = new URLSearchParams({ asAt });
+  const conditionsParam = transferDepreciationConditionsParam(conditions);
+  if (conditionsParam) search.set("conditions", conditionsParam);
+  return `/api/reports/transfer-depreciation/export?${search}`;
 }
 
 // Masters: managed lists for Center/Location, Sub Classification, and Status — replacing

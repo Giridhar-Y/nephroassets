@@ -1,5 +1,5 @@
 import type pg from "pg";
-import type { AssetInput } from "../calc/types.js";
+import type { AssetInput, TransferRecord } from "../calc/types.js";
 
 const COLUMNS = [
   "far_id",
@@ -74,6 +74,31 @@ export async function bulkInsertAssets(
 
     await pool.query(
       `INSERT INTO assets (${COLUMNS.join(",")}) VALUES ${rowPlaceholders.join(",")}`,
+      params
+    );
+  }
+}
+
+/** Same batched-multi-row-INSERT idea as bulkInsertAssets, for the transfers this load
+ *  test also needs (so the Transfer & Depreciation Report's location-wise batching and
+ *  segment-splitting are actually exercised, not just its simple per-asset totals). */
+export async function bulkInsertTransfers(
+  pool: pg.Pool,
+  transfers: TransferRecord[],
+  batchSize = 1000
+): Promise<void> {
+  for (let start = 0; start < transfers.length; start += batchSize) {
+    const batch = transfers.slice(start, start + batchSize);
+    const params: unknown[] = [];
+    const rowPlaceholders = batch.map((t, rowIdx) => {
+      const values = [t.farId, t.transactionDate, t.location];
+      const placeholders = values.map((_, colIdx) => `$${rowIdx * 3 + colIdx + 1}`);
+      params.push(...values);
+      return `(${placeholders.join(",")})`;
+    });
+
+    await pool.query(
+      `INSERT INTO transfers (far_id, transaction_date, location) VALUES ${rowPlaceholders.join(",")}`,
       params
     );
   }
