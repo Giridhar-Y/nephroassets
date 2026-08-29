@@ -89,6 +89,14 @@ CREATE TABLE sub_classifications (
   name                           TEXT NOT NULL,
   default_useful_life_c1_years   NUMERIC,
   default_useful_life_c2_years   NUMERIC,
+  -- Whether this classification's assets carry a Component 2 at all. Defaults TRUE so
+  -- every existing classification (and every new one, unless set otherwise) behaves
+  -- exactly as before rollout. FALSE hides C2 fields/columns everywhere the app shows
+  -- them and blocks both (a) turning this off while any asset under the classification
+  -- still has real C2 data, and (b) moving an asset with real C2 data into a
+  -- has_component2 = FALSE classification — see routes/masters.ts's
+  -- updateSubClassificationById and routes/assets.ts's PATCH handler.
+  has_component2                 BOOLEAN NOT NULL DEFAULT TRUE,
   active                         BOOLEAN NOT NULL DEFAULT TRUE
 );
 CREATE UNIQUE INDEX idx_sub_classifications_name_ci ON sub_classifications (LOWER(name));

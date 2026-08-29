@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, fetchAssetDetail, type AssetDetailResponse } from "../api/client.js";
+import { ApiError, fetchAssetDetail, fetchSubClassifications, type AssetDetailResponse, type SubClassificationOption } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
@@ -189,20 +189,20 @@ function TimelineRow({ event }: { event: TimelineEvent }) {
   }
 }
 
-const DETAIL_FIELDS: Array<{ label: string; render: (d: AssetDetailResponse) => string }> = [
+const DETAIL_FIELDS: Array<{ label: string; render: (d: AssetDetailResponse) => string; c2?: boolean }> = [
   { label: "Serial No", render: (d) => d.asset.serialNo || "—" },
   { label: "Quantity", render: (d) => String(d.asset.qty) },
   { label: "Component 1 Useful Life", render: (d) => `${d.asset.usefulLifeC1Years} years` },
-  { label: "Component 2 Useful Life", render: (d) => `${d.asset.usefulLifeC2Years} years` },
+  { label: "Component 2 Useful Life", render: (d) => `${d.asset.usefulLifeC2Years} years`, c2: true },
   { label: "Component 1 Opening Cost", render: (d) => formatCurrency(d.asset.c1OpeningCost) },
-  { label: "Component 2 Opening Cost", render: (d) => formatCurrency(d.asset.c2OpeningCost) },
+  { label: "Component 2 Opening Cost", render: (d) => formatCurrency(d.asset.c2OpeningCost), c2: true },
   { label: "Additions (C1)", render: (d) => formatCurrency(d.asset.additionsC1) },
-  { label: "Additions (C2)", render: (d) => formatCurrency(d.asset.additionsC2) },
+  { label: "Additions (C2)", render: (d) => formatCurrency(d.asset.additionsC2), c2: true },
   { label: "Date of Addition", render: (d) => formatDate(d.asset.dateOfAddition) },
   { label: "Opening Accumulated Depreciation (C1)", render: (d) => formatCurrency(d.asset.accDepC1Opening) },
-  { label: "Opening Accumulated Depreciation (C2)", render: (d) => formatCurrency(d.asset.accDepC2Opening) },
+  { label: "Opening Accumulated Depreciation (C2)", render: (d) => formatCurrency(d.asset.accDepC2Opening), c2: true },
   { label: "C1 Depreciation This Period", render: (d) => formatCurrency(d.result.c1.periodDepreciation) },
-  { label: "C2 Depreciation This Period", render: (d) => formatCurrency(d.result.c2.periodDepreciation) },
+  { label: "C2 Depreciation This Period", render: (d) => formatCurrency(d.result.c2.periodDepreciation), c2: true },
   { label: "Original Location", render: (d) => d.asset.location },
   { label: "Last Date of Transaction", render: (d) => formatDate(d.result.lastDateOfTransaction) }
 ];
@@ -217,6 +217,11 @@ export function AssetLifecyclePage() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
+
+  useEffect(() => {
+    fetchSubClassifications().then(setSubClassifications).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!farId || !asAt) return;
@@ -390,7 +395,9 @@ export function AssetLifecyclePage() {
         </button>
         {detailsOpen && (
           <dl className="mt-4 grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-            {DETAIL_FIELDS.map((f) => (
+            {DETAIL_FIELDS.filter(
+              (f) => !f.c2 || (subClassifications.find((s) => s.name === data.asset.subClassification)?.hasComponent2 ?? true)
+            ).map((f) => (
               <div key={f.label} className="flex items-center justify-between border-b border-gray-100 pb-2 text-sm">
                 <dt className="text-gray-500">{f.label}</dt>
                 <dd className="font-medium text-ink">{f.render(data)}</dd>

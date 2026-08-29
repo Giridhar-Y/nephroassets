@@ -173,6 +173,10 @@ export interface MasterLookupMaps {
   centers: Map<string, string>;
   subClassifications: Map<string, string>;
   statuses: Map<string, string>;
+  /** canonical Sub Classification name -> has_component2 — lets any route that already
+   *  resolved a canonical Sub Classification (via lookupCanonical) also check whether it
+   *  allows Component 2, without a second query. See routes/componentTwoGuard.ts. */
+  subClassificationHasComponent2: Map<string, boolean>;
 }
 
 /** Loaded fresh per request (not cached) — the whole point is that Masters (routes/
@@ -183,13 +187,14 @@ export interface MasterLookupMaps {
 export async function loadActiveMasterMaps(db: pg.Pool): Promise<MasterLookupMaps> {
   const [centers, subClasses, statuses] = await Promise.all([
     db.query<{ code: string }>(`SELECT code FROM centers WHERE active = TRUE`),
-    db.query<{ name: string }>(`SELECT name FROM sub_classifications WHERE active = TRUE`),
+    db.query<{ name: string; has_component2: boolean }>(`SELECT name, has_component2 FROM sub_classifications WHERE active = TRUE`),
     db.query<{ name: string }>(`SELECT name FROM statuses WHERE active = TRUE`)
   ]);
   return {
     centers: new Map(centers.rows.map((r) => [r.code.toLowerCase(), r.code])),
     subClassifications: new Map(subClasses.rows.map((r) => [r.name.toLowerCase(), r.name])),
-    statuses: new Map(statuses.rows.map((r) => [r.name.toLowerCase(), r.name]))
+    statuses: new Map(statuses.rows.map((r) => [r.name.toLowerCase(), r.name])),
+    subClassificationHasComponent2: new Map(subClasses.rows.map((r) => [r.name, r.has_component2]))
   };
 }
 

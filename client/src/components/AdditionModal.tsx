@@ -13,12 +13,14 @@ type Step = "form" | "confirm";
 // (see the server's additionSchema comment), so there's nothing to batch.
 export function AdditionModal({
   asset,
+  hasComponent2,
   defaultDate,
   asAt,
   onClose,
   onDone
 }: {
   asset: AssetListItem["asset"];
+  hasComponent2: boolean;
   defaultDate: string;
   asAt: string;
   onClose: () => void;
@@ -110,19 +112,21 @@ export function AdditionModal({
                   onChange={(e) => setAdditionsC1(Number(e.target.value))}
                 />
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="add-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                  Additions C2
-                </label>
-                <input
-                  id="add-c2"
-                  type="number"
-                  min={0}
-                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                  value={additionsC2}
-                  onChange={(e) => setAdditionsC2(Number(e.target.value))}
-                />
-              </div>
+              {hasComponent2 && (
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="add-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                    Additions C2
+                  </label>
+                  <input
+                    id="add-c2"
+                    type="number"
+                    min={0}
+                    className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                    value={additionsC2}
+                    onChange={(e) => setAdditionsC2(Number(e.target.value))}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="mt-3 flex flex-col gap-1">
@@ -212,10 +216,12 @@ export function AdditionModal({
                     <td className="px-3 py-1.5 font-medium text-ink">Additions C1</td>
                     <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(additionsC1)}</td>
                   </tr>
-                  <tr className="border-b border-gray-100">
-                    <td className="px-3 py-1.5 font-medium text-ink">Additions C2</td>
-                    <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(additionsC2)}</td>
-                  </tr>
+                  {hasComponent2 && (
+                    <tr className="border-b border-gray-100">
+                      <td className="px-3 py-1.5 font-medium text-ink">Additions C2</td>
+                      <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(additionsC2)}</td>
+                    </tr>
+                  )}
                   <tr className={linkParentFarId ? "border-b border-gray-100" : ""}>
                     <td className="px-3 py-1.5 font-medium text-ink">Date of Addition</td>
                     <td className="px-3 py-1.5 text-right text-gray-600">{formatDate(dateOfAddition)}</td>

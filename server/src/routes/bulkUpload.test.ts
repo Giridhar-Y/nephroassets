@@ -39,6 +39,7 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     await db.query(`DELETE FROM statuses`);
     await db.query(`INSERT INTO centers (code) VALUES ('Center-A')`);
     await db.query(`INSERT INTO sub_classifications (name) VALUES ('Test-Sub')`);
+    await db.query(`INSERT INTO sub_classifications (name, has_component2) VALUES ('C1-Only-Sub', FALSE)`);
     await db.query(
       `INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE), ('Under Repair', FALSE), ('Disposed', TRUE)`
     );
@@ -224,6 +225,48 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     const db = await getPool();
     const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id LIKE 'BULK-%ACCDEP'`);
     expect(rows.map((r) => r.far_id)).toEqual(["BULK-OK-ACCDEP"]);
+  });
+
+  describe("Has Component 2", () => {
+    it("rejects a row with non-zero C2 opening cost against a C1-only Sub Classification", async () => {
+      const csv = [
+        HEADER,
+        "BULK-C1ONLY-1,C1-Only-Sub,Real C2 Data,Active,2020-01-01,Center-A,5,5,1000,500",
+        "BULK-C1ONLY-OK,C1-Only-Sub,No C2 Data,Active,2020-01-01,Center-A,5,0,1000,0"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].farId).toBe("BULK-C1ONLY-1");
+      expect(body.errors[0].message).toContain("C1-Only-Sub");
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id LIKE 'BULK-C1ONLY%'`);
+      expect(rows.map((r) => r.far_id)).toEqual(["BULK-C1ONLY-OK"]);
+    });
+
+    it("rejects on non-zero deletionsC2/accDepC2Opening/additionsC2 too, not just opening cost", async () => {
+      const withExtraCols = HEADER + ",additionsC2,dateOfAddition,deletionsC2,accDepC2Opening";
+      const csv = [
+        withExtraCols,
+        "BULK-C1ONLY-ADD,C1-Only-Sub,Real Addition,Active,2020-01-01,Center-A,5,0,1000,0,500,01-05-2026,0,0",
+        "BULK-C1ONLY-DEP,C1-Only-Sub,Real Acc Dep,Active,2020-01-01,Center-A,5,0,1000,0,0,,0,50"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors).toHaveLength(2);
+      expect(body.errors.map((e: { farId: string }) => e.farId).sort()).toEqual(["BULK-C1ONLY-ADD", "BULK-C1ONLY-DEP"]);
+    });
+
+    it("does not reject on a leftover non-zero usefulLifeC2Years alone", async () => {
+      const csv = [HEADER, "BULK-C1ONLY-LIFE,C1-Only-Sub,Stale Life Only,Active,2020-01-01,Center-A,5,5,1000,0"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.errors).toHaveLength(0);
+    });
   });
 
   it("accepts DD-MM-YYYY dates, and reports a clear error for a malformed one", async () => {

@@ -126,8 +126,13 @@ export function fetchCenters(): Promise<string[]> {
   return request<string[]>("/api/meta/centers");
 }
 
-export function fetchSubClassifications(): Promise<string[]> {
-  return request<string[]>("/api/meta/sub-classifications");
+export interface SubClassificationOption {
+  name: string;
+  hasComponent2: boolean;
+}
+
+export function fetchSubClassifications(): Promise<SubClassificationOption[]> {
+  return request<SubClassificationOption[]>("/api/meta/sub-classifications");
 }
 
 // excludeSystemManaged=true drops "Disposed" from the list — used by Capitalization,
@@ -602,6 +607,7 @@ export interface MasterSubClassification {
   name: string;
   defaultUsefulLifeC1Years: number | null;
   defaultUsefulLifeC2Years: number | null;
+  hasComponent2: boolean;
   active: boolean;
   usageCount: number;
 }
@@ -614,6 +620,7 @@ export function createMasterSubClassification(payload: {
   name: string;
   defaultUsefulLifeC1Years?: number | null;
   defaultUsefulLifeC2Years?: number | null;
+  hasComponent2?: boolean;
 }): Promise<MasterSubClassification> {
   return request("/api/masters/sub-classifications", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -624,6 +631,7 @@ export function updateMasterSubClassification(
     name: string;
     defaultUsefulLifeC1Years: number | null;
     defaultUsefulLifeC2Years: number | null;
+    hasComponent2: boolean;
     active: boolean;
   }>
 ): Promise<MasterSubClassification & { assetsUpdated?: number }> {

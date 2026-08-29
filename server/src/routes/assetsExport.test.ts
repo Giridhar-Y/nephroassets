@@ -329,6 +329,64 @@ describe("Register Export: GET /api/assets/export", () => {
     });
   });
 
+  describe("Has Component 2: hides C2 columns only when filtered to Sub Classification(s) that are all C1-only", () => {
+    beforeEach(async () => {
+      const db = await getPool();
+      await db.query(`DELETE FROM sub_classifications`);
+      await db.query(`INSERT INTO sub_classifications (name, has_component2) VALUES ('C1-Only-Export', FALSE), ('Mixed-Export', TRUE)`);
+    });
+
+    it("drops every C2 column when filtered to a single C1-only Sub Classification", async () => {
+      await insertAsset("EXP-C1ONLY-1", { sub_classification: "C1-Only-Export" });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: "/api/assets/export?subClassification=C1-Only-Export"
+      });
+      expect(res.statusCode).toBe(200);
+      const worksheet = await readWorkbook(res.rawPayload);
+      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      // 40 columns total normally, 12 of them Component 2 — see assetsExport.ts's
+      // C2_EXPORT_KEYS.
+      expect(headerRow.length).toBe(28);
+      expect(headerRow.some((h) => /\bC2\b/.test(h))).toBe(false);
+      expect(headerRow.some((h) => /\bC1\b/.test(h))).toBe(true);
+    });
+
+    it("keeps every column when filtered to a Sub Classification that has Component 2", async () => {
+      await insertAsset("EXP-MIXED-1", { sub_classification: "Mixed-Export" });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export?subClassification=Mixed-Export" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      expect(headerRow.length).toBe(40);
+      expect(headerRow.some((h) => /\bC2\b/.test(h))).toBe(true);
+    });
+
+    it("keeps every column when filtered to a mix of C1-only and C1+C2 classifications", async () => {
+      await insertAsset("EXP-MIX-A", { sub_classification: "C1-Only-Export" });
+      await insertAsset("EXP-MIX-B", { sub_classification: "Mixed-Export" });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: "/api/assets/export?subClassification=C1-Only-Export,Mixed-Export"
+      });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      expect(headerRow.length).toBe(40);
+      expect(headerRow.some((h) => /\bC2\b/.test(h))).toBe(true);
+    });
+
+    it("keeps every column with no Sub Classification filter at all, even if every asset happens to be C1-only", async () => {
+      await insertAsset("EXP-UNFILTERED-1", { sub_classification: "C1-Only-Export" });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const headerRow = worksheet.getRow(HEADER_ROW).values as unknown[];
+      expect(headerRow.length - 1).toBe(40);
+    });
+  });
+
   describe("an unexpected DB-level query failure is reported gracefully, not as a raw 500", () => {
     it("the totals query throwing returns a plain-language JSON error, never the raw driver error text", async () => {
       await insertAsset("EXP-DBFAIL-1");

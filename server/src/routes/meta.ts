@@ -13,12 +13,16 @@ export default async function metaRoutes(app: FastifyInstance) {
     return rows.map((r) => r.code);
   });
 
+  // hasComponent2 rides along so every C2-aware form (Capitalization, Edit, Additions,
+  // Register's filters) can hide C2 fields for a classification without a second
+  // request — see routes/componentTwoGuard.ts for what "has real C2 data" means
+  // elsewhere in the app.
   app.get("/api/meta/sub-classifications", async () => {
     const db = await getPool();
-    const { rows } = await db.query<{ name: string }>(
-      `SELECT name FROM sub_classifications WHERE active = TRUE ORDER BY name`
+    const { rows } = await db.query<{ name: string; has_component2: boolean }>(
+      `SELECT name, has_component2 FROM sub_classifications WHERE active = TRUE ORDER BY name`
     );
-    return rows.map((r) => r.name);
+    return rows.map((r) => ({ name: r.name, hasComponent2: r.has_component2 }));
   });
 
   // Capitalization excludes system-managed statuses (Disposed) — a brand-new asset must

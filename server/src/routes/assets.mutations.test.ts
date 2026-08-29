@@ -28,6 +28,7 @@ async function seedMasters() {
   await db.query(`DELETE FROM statuses`);
   await db.query(`INSERT INTO centers (code) VALUES ('Center-Test')`);
   await db.query(`INSERT INTO sub_classifications (name) VALUES ('Test-Sub')`);
+  await db.query(`INSERT INTO sub_classifications (name, has_component2) VALUES ('C1-Only-Sub', FALSE)`);
   await db.query(`INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE), ('Disposed', TRUE)`);
 }
 
@@ -132,6 +133,39 @@ describe("Capitalization: POST /api/assets", () => {
     const db = await getPool();
     const { rows } = await db.query(`SELECT sub_classification, status, location FROM assets WHERE far_id = 'CAP-CASING'`);
     expect(rows[0]).toEqual({ sub_classification: "Test-Sub", status: "Active", location: "Center-Test" });
+  });
+
+  describe("Has Component 2", () => {
+    it("rejects a non-zero C2 opening cost against a C1-only Sub Classification", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-C1ONLY-1", subClassification: "C1-Only-Sub", c2OpeningCost: 5000 }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("CAP-C1ONLY-1");
+      expect(res.json().error).toContain("C1-Only-Sub");
+    });
+
+    it("accepts a C1-only Sub Classification when every C2 field is zero", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-C1ONLY-2", subClassification: "C1-Only-Sub", c2OpeningCost: 0, accDepC2Opening: 0 }
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("does not reject a C1-only Sub Classification just because usefulLifeC2Years is left non-zero", async () => {
+      // Matches decision 2: a leftover useful-life value with no real C2 figures behind
+      // it is inert (see server/src/routes/componentTwoGuard.ts) and must not block.
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets",
+        payload: { ...NEW_ASSET, farId: "CAP-C1ONLY-3", subClassification: "C1-Only-Sub", c2OpeningCost: 0, usefulLifeC2Years: 5 }
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 
   it("rejects additions with no dateOfAddition (would silently never depreciate)", async () => {
@@ -591,6 +625,65 @@ describe("Edit: PATCH /api/assets/:farId", () => {
       expect(afterNewParentDisposal[0].date_of_disposal).not.toBeNull();
     });
   });
+
+  describe("Has Component 2", () => {
+    it("blocks changing Sub Classification to a C1-only one while the asset still has real C2 data (non-zero C2 opening cost from Capitalization)", async () => {
+      // NEW_ASSET capitalized EDIT-TEST-1 with c2OpeningCost: 10000 — real C2 data,
+      // untouched by this edit (c2OpeningCost isn't editable here).
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, subClassification: "C1-Only-Sub" }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("EDIT-TEST-1");
+      expect(res.json().error).toContain("C1-Only-Sub");
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT sub_classification FROM assets WHERE far_id = 'EDIT-TEST-1'`);
+      expect(rows[0].sub_classification).toBe("Test-Sub");
+    });
+
+    it("blocks setting a non-zero Opening Acc Dep C2 on an asset already sitting in a C1-only classification", async () => {
+      const db = await getPool();
+      // c2_opening_cost stays non-zero here on purpose, so the accDep-vs-cost check
+      // (accDepC2Opening can't exceed c2OpeningCost) passes and the has_component2 check
+      // below is what's actually being tested, in isolation.
+      await db.query(`UPDATE assets SET sub_classification = 'C1-Only-Sub' WHERE far_id = 'EDIT-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, subClassification: "C1-Only-Sub", accDepC2Opening: 100 }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("C1-Only-Sub");
+    });
+
+    it("allows changing Sub Classification to a C1-only one once the asset's C2 data is actually cleared", async () => {
+      const db = await getPool();
+      await db.query(`UPDATE assets SET c2_opening_cost = 0, additions_c2 = 0, deletions_c2 = 0 WHERE far_id = 'EDIT-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, subClassification: "C1-Only-Sub", accDepC2Opening: 0 }
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("does not block on a leftover non-zero Useful Life C2 alone", async () => {
+      const db = await getPool();
+      await db.query(`UPDATE assets SET c2_opening_cost = 0, additions_c2 = 0, deletions_c2 = 0 WHERE far_id = 'EDIT-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, subClassification: "C1-Only-Sub", usefulLifeC2Years: 5, accDepC2Opening: 0 }
+      });
+      expect(res.statusCode).toBe(200);
+    });
+  });
 });
 
 describe("Addition: PATCH /api/assets/:farId/addition", () => {
@@ -751,6 +844,38 @@ describe("Addition: PATCH /api/assets/:farId/addition", () => {
       const { rows } = await db.query(`SELECT additions_c1, parent_far_id FROM assets WHERE far_id = 'ADD-TEST-1'`);
       expect(Number(rows[0].additions_c1)).toBe(0);
       expect(rows[0].parent_far_id).toBeNull();
+    });
+  });
+
+  describe("Has Component 2", () => {
+    it("rejects a non-zero additionsC2 when the asset's Sub Classification is C1-only", async () => {
+      const db = await getPool();
+      await db.query(`UPDATE assets SET sub_classification = 'C1-Only-Sub', c2_opening_cost = 0 WHERE far_id = 'ADD-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-TEST-1/addition",
+        payload: { additionsC1: 1000, additionsC2: 500, dateOfAddition: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("ADD-TEST-1");
+      expect(res.json().error).toContain("C1-Only-Sub");
+
+      const { rows } = await db.query(`SELECT additions_c1, additions_c2 FROM assets WHERE far_id = 'ADD-TEST-1'`);
+      expect(Number(rows[0].additions_c1)).toBe(0);
+      expect(Number(rows[0].additions_c2)).toBe(0);
+    });
+
+    it("allows a C1-only addition (additionsC2 zero) on a C1-only Sub Classification", async () => {
+      const db = await getPool();
+      await db.query(`UPDATE assets SET sub_classification = 'C1-Only-Sub', c2_opening_cost = 0 WHERE far_id = 'ADD-TEST-1'`);
+
+      const res = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ADD-TEST-1/addition",
+        payload: { additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
     });
   });
 });

@@ -1,15 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { AdditionModal } from "../components/AdditionModal.js";
-import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
+import { ALL_COLUMNS, allScopedC1Only, hideC2Columns, resolveColumns, scopedSubClassificationNames } from "../lib/columns.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
+import { fetchSubClassifications, type SubClassificationOption } from "../api/client.js";
 
 type Tab = "new" | "log";
 
@@ -29,12 +30,14 @@ const LOG_CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilt
   { id: "effectiveLocation", label: "Current Location", type: "text" }
 ];
 
-function NewAdditionTab({ onDone }: { onDone: () => void }) {
+function NewAdditionTab({ onDone, subClassifications }: { onDone: () => void; subClassifications: SubClassificationOption[] }) {
   const { settings } = useSettings();
   const asAt = settings?.asAt ?? "";
   const [selected, setSelected] = useState<AssetListItem | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
+  const hasComponent2 =
+    subClassifications.find((s) => s.name === selected?.asset.subClassification)?.hasComponent2 ?? true;
   const hasExistingAddition = selected ? selected.asset.additionsC1 !== 0 || selected.asset.additionsC2 !== 0 : false;
   const isDisposed = selected ? selected.asset.dateOfDisposal !== null : false;
   const blocked = hasExistingAddition || isDisposed;
@@ -86,6 +89,7 @@ function NewAdditionTab({ onDone }: { onDone: () => void }) {
       {modalOpen && selected && asAt && (
         <AdditionModal
           asset={selected.asset}
+          hasComponent2={hasComponent2}
           defaultDate={asAt}
           asAt={asAt}
           onClose={() => setModalOpen(false)}
@@ -100,14 +104,21 @@ function NewAdditionTab({ onDone }: { onDone: () => void }) {
   );
 }
 
-function AdditionLogTab() {
+function AdditionLogTab({ subClassifications }: { subClassifications: SubClassificationOption[] }) {
   const { settings } = useSettings();
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const filters = useMemo(() => ({ hasAddition: true, conditions }), [conditions]);
   const setCondition = makeSetCondition(conditions, setConditions);
   const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
-  const COLUMNS = resolveColumns(RAW_LOG_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
-  const headerFilters = buildConditionHeaderFilters(LOG_CONDITION_COLUMNS, conditions, setCondition);
+
+  // No multi-select Sub Classification filter on this tab (unlike Register) — only an
+  // "Equals" custom condition can name an exact classification, same detection
+  // scopedSubClassificationNames uses for Register's own condition-based filters.
+  const hideC2 = allScopedC1Only(scopedSubClassificationNames(undefined, conditions), subClassifications);
+  const rawColumns = hideC2 ? hideC2Columns(RAW_LOG_COLUMNS) : RAW_LOG_COLUMNS;
+  const conditionColumns = hideC2 ? LOG_CONDITION_COLUMNS.filter((c) => c.id !== "additionsC2") : LOG_CONDITION_COLUMNS;
+  const COLUMNS = resolveColumns(rawColumns, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
+  const headerFilters = buildConditionHeaderFilters(conditionColumns, conditions, setCondition);
 
   return (
     <AssetGrid
@@ -129,6 +140,11 @@ function AdditionLogTab() {
 export function AdditionsPage() {
   const [tab, setTab] = useState<Tab>("new");
   const [logRefreshKey, setLogRefreshKey] = useState(0);
+  const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
+
+  useEffect(() => {
+    fetchSubClassifications().then(setSubClassifications).catch(() => {});
+  }, []);
 
   return (
     <div className="flex h-full flex-col bg-white">
@@ -163,6 +179,7 @@ export function AdditionsPage() {
 
       {tab === "new" && (
         <NewAdditionTab
+          subClassifications={subClassifications}
           onDone={() => {
             setLogRefreshKey((k) => k + 1);
             setTab("log");
@@ -171,7 +188,7 @@ export function AdditionsPage() {
       )}
       {tab === "log" && (
         <div className="flex min-h-0 flex-1 flex-col" key={logRefreshKey}>
-          <AdditionLogTab />
+          <AdditionLogTab subClassifications={subClassifications} />
         </div>
       )}
     </div>

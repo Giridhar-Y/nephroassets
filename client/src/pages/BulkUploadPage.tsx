@@ -60,7 +60,7 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "FAR ID",
     path: BULK_UPLOAD_PATHS.assets,
     templateName: "assets",
-    note: "FAR ID may only contain uppercase letters, numbers, and hyphens (e.g. 616-PB-BTI-GNR-C). Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
+    note: "FAR ID may only contain uppercase letters, numbers, and hyphens (e.g. 616-PB-BTI-GNR-C). Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row."
   },
   disposals: {
     label: "Disposals",
@@ -112,11 +112,11 @@ const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: str
     pillLabel: "Sub Classifications",
     description: "Add or update Sub Classifications, matched by Name. An unmatched name creates a new entry; a matched one updates it.",
     required: ["name"],
-    optional: ["defaultUsefulLifeC1Years", "defaultUsefulLifeC2Years", "active"],
+    optional: ["defaultUsefulLifeC1Years", "hasComponent2", "defaultUsefulLifeC2Years", "active"],
     keyColumnLabel: "Name",
     path: MASTERS_BULK_UPLOAD_PATHS.subClassifications,
     templateName: "sub-classifications",
-    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new entries to Active and leave existing ones unchanged. Leave defaultUsefulLifeC1Years/C2Years blank to leave them unset (new entries) or unchanged (existing ones)."
+    note: "active and hasComponent2 both accept true/false or yes/no (case-insensitive) — omit either to default new entries to true and leave existing ones unchanged. Leave defaultUsefulLifeC1Years/C2Years blank to leave them unset (new entries) or unchanged (existing ones). Turning hasComponent2 off for an entry that already has assets with real C2 data is rejected, same as doing it from the Sub Classifications screen."
   },
   statuses: {
     label: "Statuses",
@@ -184,6 +184,7 @@ const MASTER_EXAMPLE_ROWS: Record<MasterListType, Record<string, string>> = {
   subClassifications: {
     name: "Sample Sub Classification",
     defaultUsefulLifeC1Years: "5",
+    hasComponent2: "true",
     defaultUsefulLifeC2Years: "5",
     active: "true"
   },

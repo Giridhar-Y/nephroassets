@@ -129,6 +129,7 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       name                           TEXT NOT NULL,
       default_useful_life_c1_years   NUMERIC,
       default_useful_life_c2_years   NUMERIC,
+      has_component2                 BOOLEAN NOT NULL DEFAULT TRUE,
       active                         BOOLEAN NOT NULL DEFAULT TRUE
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_classifications_name_ci ON sub_classifications (LOWER(name));
@@ -231,6 +232,13 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_settings_audit_log_created_at ON settings_audit_log (created_at DESC);
+
+    -- Has Component 2, per Sub Classification — see schema.sql's column comment for the
+    -- full reasoning. Covers a database whose sub_classifications table predates this
+    -- column (created via the schema.sql path above, before has_component2 existed) —
+    -- ADD COLUMN IF NOT EXISTS is a no-op on every boot after the first, and on a
+    -- brand-new database where schema.sql already created the column directly.
+    ALTER TABLE sub_classifications ADD COLUMN IF NOT EXISTS has_component2 BOOLEAN NOT NULL DEFAULT TRUE;
 
     -- Bulk asset actions audit trail (Bulk Merge) — see schema.sql's comment for the full
     -- reasoning. IF NOT EXISTS makes this a no-op on every boot after the first.

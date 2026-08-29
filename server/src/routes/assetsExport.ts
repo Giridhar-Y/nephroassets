@@ -14,6 +14,26 @@ import {
   conditionsQuerySchema,
   TOTAL_WDV_AND_PROFIT_LOSS_SQL
 } from "./assetColumnFilters.js";
+import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+
+// Every Component 2 export column key — mirrors client/src/lib/columns.ts's
+// C2_COLUMN_IDS (minus expiryDateC1/C2, which are Register-screen-only, never
+// exported). Dropped from the export when every Sub Classification the request is
+// filtered to is C1-only — see shouldHideC2Columns below.
+const C2_EXPORT_KEYS = new Set([
+  "usefulLifeC2Years",
+  "c2OpeningCost",
+  "additionsC2",
+  "deletionsC2",
+  "c2GrossBlock",
+  "accDepC2Opening",
+  "c2PeriodDep",
+  "accDepOnDisposedC2",
+  "c2AccDep",
+  "c2Wdv",
+  "c2NbvOpening",
+  "c2Nbv"
+]);
 
 // Matched to a keyset page at a time (ordered by far_id) rather than one giant query, so
 // exporting the full 2,50,000+ row register doesn't hold the whole result set in memory
@@ -613,6 +633,21 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       c2Nbv: num(t.c2_nbv)
     };
 
+    // Same "scoped to C1-only Sub Classification(s)" rule Register's own screen uses
+    // (client/src/lib/columns.ts's allScopedC1Only) — only the exact multi-select filter
+    // is checked here (not a custom-condition "equals", which the screen also honors),
+    // since that's what this export's own query params carry. An unfiltered or
+    // mixed-classification export always keeps every column.
+    let shouldHideC2 = false;
+    if (q.subClassification && q.subClassification.length > 0) {
+      const maps = await loadActiveMasterMaps(db);
+      shouldHideC2 = q.subClassification.every((name) => {
+        const canonical = lookupCanonical(maps.subClassifications, name);
+        return canonical !== undefined && maps.subClassificationHasComponent2.get(canonical) === false;
+      });
+    }
+    const exportColumns = shouldHideC2 ? EXPORT_COLUMNS.filter((c) => !C2_EXPORT_KEYS.has(c.key)) : EXPORT_COLUMNS;
+
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     reply.header("Content-Disposition", `attachment; filename="far-register-${asAt}.xlsx"`);
 
@@ -625,7 +660,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       // this low even at 2,50,000+ rows, unlike setting styles on every individual cell.
       const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
       const worksheet = workbook.addWorksheet("Register");
-      worksheet.columns = EXPORT_COLUMNS.map((c) => ({
+      worksheet.columns = exportColumns.map((c) => ({
         width: c.width,
         style: c.kind === "number" ? { numFmt: "#,##0.00" } : undefined
       }));
@@ -638,13 +673,13 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       // hardcoded row index) instead of disrupting the column layout itself.
       const noteRow = worksheet.addRow([`Filters applied: ${filterSummaryText}  —  Exported: ${exportedAtText} IST`]);
       noteRow.font = { italic: true, color: { argb: "FF52525B" } };
-      worksheet.mergeCells(noteRow.number, 1, noteRow.number, EXPORT_COLUMNS.length);
+      worksheet.mergeCells(noteRow.number, 1, noteRow.number, exportColumns.length);
       noteRow.commit();
 
       // Row 2: totals — "TOTAL" in the first column, a sum under every totalable numeric
       // column, blank everywhere else (text/date columns, and non-totalable numbers like
       // Useful Life).
-      const totalsRowValues = EXPORT_COLUMNS.map((c, i) => {
+      const totalsRowValues = exportColumns.map((c, i) => {
         if (i === 0) return "TOTAL";
         if (c.kind === "number" && c.totalable !== false) return totals[c.key] ?? 0;
         return "";
@@ -657,8 +692,8 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       // distinct muted fill per group (every cell in the run gets it, not just the
       // merged range's top-left, so it renders correctly regardless of how a given
       // reader handles merge-range styling).
-      const groupRow = worksheet.addRow(EXPORT_COLUMNS.map(() => ""));
-      for (const run of groupRuns(EXPORT_COLUMNS)) {
+      const groupRow = worksheet.addRow(exportColumns.map(() => ""));
+      for (const run of groupRuns(exportColumns)) {
         const info = GROUP_INFO[run.groupKey]!;
         groupRow.getCell(run.startCol).value = info.label;
         for (let c = run.startCol; c <= run.endCol; c++) {
@@ -670,7 +705,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       groupRow.commit();
 
       // Row 4: column names — resolves each column's live "as at ..." date text.
-      const headerRow = worksheet.addRow(EXPORT_COLUMNS.map((c) => resolveLabel(c, ctx)));
+      const headerRow = worksheet.addRow(exportColumns.map((c) => resolveLabel(c, ctx)));
       headerRow.font = { bold: true };
       headerRow.commit();
 
@@ -726,7 +761,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           const asset = mapAssetRow(row);
           const relevantTransfers = transferRows.filter((t) => t.far_id === row.far_id).map(mapTransferRow);
           const result = computeAsset(asset, fy, relevantTransfers);
-          const values = EXPORT_COLUMNS.map((c) => {
+          const values = exportColumns.map((c) => {
             const v = c.value(asset, result);
             if (c.kind === "date") return ddmmyyyy(v as string | null);
             return v ?? "";

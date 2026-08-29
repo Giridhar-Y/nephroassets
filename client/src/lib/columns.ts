@@ -1,4 +1,6 @@
 import type { AssetListItem } from "./types.js";
+import type { SubClassificationOption } from "../api/client.js";
+import type { ColumnCondition } from "./columnFilters.js";
 import { addYearsToIsoDate, formatCurrency, formatDateDDMMYYYY } from "./format.js";
 
 // The 10 groups of the reference Fixed Asset Register export, left to right. Two pairs
@@ -471,3 +473,54 @@ export const ALL_COLUMNS: RawColumnDef[] = [
 // "My View" (see useColumnPrefs.ts), or collapse a whole group at a glance in the
 // Register table itself (see AssetGrid.tsx).
 export const DEFAULT_VISIBLE_COLUMNS = ALL_COLUMNS.map((c) => c.id);
+
+// Every Component 2 column id, hardcoded rather than pattern-matched — the mixed
+// "C2"/"c2" casing across ids (usefulLifeC2Years, c2OpeningCost, accDepOnDisposedC2…)
+// isn't regular enough to detect reliably any other way. Must be kept in sync with
+// ALL_COLUMNS above by hand if a new C2 column is ever added.
+export const C2_COLUMN_IDS = new Set<string>([
+  "usefulLifeC2Years",
+  "expiryDateC2",
+  "c2OpeningCost",
+  "additionsC2",
+  "deletionsC2",
+  "c2GrossBlock",
+  "accDepC2Opening",
+  "c2PeriodDep",
+  "accDepOnDisposedC2",
+  "c2AccDep",
+  "c2Wdv",
+  "c2NbvOpening",
+  "c2Nbv"
+]);
+
+/** The exact set of Sub Classification names a table view is currently scoped to, or
+ *  null if it isn't scoped to a known set at all (no filter, a free-text search, or a
+ *  condition too broad to pin down an exact list — "contains", "notEquals", etc.).
+ *  `multiSelect` is Register's own dedicated Sub Classification filter (an exact set by
+ *  construction); the Log tabs have no equivalent, so an "Equals" custom-condition
+ *  filter on the subClassification column is read the same way — the one case where a
+ *  free-text condition filter unambiguously names a single classification. */
+export function scopedSubClassificationNames(
+  multiSelect: string[] | undefined,
+  conditions: ColumnCondition[]
+): string[] | null {
+  if (multiSelect && multiSelect.length > 0) return multiSelect;
+  const eq = conditions.find((c) => c.columnId === "subClassification" && c.op === "equals" && !!c.value);
+  return eq ? [eq.value!] : null;
+}
+
+/** Whether every Sub Classification a view is currently scoped to is C1-only — the
+ *  trigger for hiding C2 columns/fields per the Has Component 2 feature. An unscoped
+ *  view (mixed or no filter) never hides C2, since some visible rows may still need it. */
+export function allScopedC1Only(names: string[] | null, subClassifications: SubClassificationOption[]): boolean {
+  if (!names || names.length === 0) return false;
+  const hasC2ByName = new Map(subClassifications.map((s) => [s.name, s.hasComponent2]));
+  return names.every((name) => hasC2ByName.get(name) === false);
+}
+
+/** Drops every Component 2 column from a column list — used once a view is confirmed
+ *  scoped to C1-only classification(s) (see allScopedC1Only above). */
+export function hideC2Columns<T extends { id: string }>(cols: T[]): T[] {
+  return cols.filter((c) => !C2_COLUMN_IDS.has(c.id));
+}

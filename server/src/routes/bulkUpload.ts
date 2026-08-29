@@ -3,6 +3,7 @@ import { getPool } from "../db/pool.js";
 import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
 import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
 import { requireEditor } from "../auth/middleware.js";
+import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 
 // Rejects (rather than silently accepting) a status/subClassification/location that
 // doesn't match an active Masters entry (routes/masters.ts) — case-insensitively, but the
@@ -25,6 +26,11 @@ async function validateAgainstMasters(
       messages.push(`Sub Classification "${data.subClassification}" not recognized — see Masters for valid values.`);
     }
     if (!canonicalLocation) messages.push(`Location "${data.location}" not recognized — see Masters for valid values.`);
+    // Only checked once canonicalSubClass itself resolved — an unrecognized Sub
+    // Classification is already rejected above, so there's no has_component2 to look up.
+    if (canonicalSubClass && maps.subClassificationHasComponent2.get(canonicalSubClass) === false && hasRealC2Data(data)) {
+      messages.push(blockingAssetMessage(data.farId, canonicalSubClass));
+    }
     if (messages.length > 0) {
       allErrors.push({ row, farId: data.farId, message: messages.join("; ") });
       continue;

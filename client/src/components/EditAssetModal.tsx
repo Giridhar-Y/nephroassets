@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { updateAsset, type AssetEditInput } from "../api/client.js";
+import { updateAsset, type AssetEditInput, type SubClassificationOption } from "../api/client.js";
 import { formatCurrency } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { EditIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
@@ -23,7 +23,7 @@ export function EditAssetModal({
   onDone
 }: {
   asset: AssetListItem["asset"];
-  subClassifications: string[];
+  subClassifications: SubClassificationOption[];
   asAt: string;
   onClose: () => void;
   onDone: () => void;
@@ -55,6 +55,16 @@ export function EditAssetModal({
 
   function update(patch: Partial<AssetEditInput>) {
     setForm((prev) => ({ ...prev, ...patch }));
+  }
+
+  const hasComponent2 = subClassifications.find((s) => s.name === form.subClassification)?.hasComponent2 ?? true;
+
+  // Same reasoning as CapitalizationPage's updateSubClassification: clear C2 fields
+  // (not just hide them) when switching to a C1-only classification, so a stale value
+  // left in state can't get silently submitted and rejected by the server's own check.
+  function updateSubClassification(name: string) {
+    const nowHasC2 = subClassifications.find((s) => s.name === name)?.hasComponent2 ?? true;
+    update(nowHasC2 ? { subClassification: name } : { subClassification: name, usefulLifeC2Years: 0, accDepC2Opening: 0 });
   }
 
   function handleReview() {
@@ -165,14 +175,14 @@ export function EditAssetModal({
                   id="edit-sub-class"
                   className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                   value={form.subClassification}
-                  onChange={(e) => update({ subClassification: e.target.value })}
+                  onChange={(e) => updateSubClassification(e.target.value)}
                 >
-                  {!subClassifications.includes(form.subClassification) && (
+                  {!subClassifications.some((s) => s.name === form.subClassification) && (
                     <option value={form.subClassification}>{form.subClassification}</option>
                   )}
                   {subClassifications.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                    <option key={s.name} value={s.name}>
+                      {s.name}
                     </option>
                   ))}
                 </select>
@@ -247,20 +257,22 @@ export function EditAssetModal({
                   onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
                 />
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="edit-life-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                  Useful Life C2 (Yrs)
-                </label>
-                <input
-                  id="edit-life-c2"
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                  value={form.usefulLifeC2Years}
-                  onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
-                />
-              </div>
+              {hasComponent2 && (
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="edit-life-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                    Useful Life C2 (Yrs)
+                  </label>
+                  <input
+                    id="edit-life-c2"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                    value={form.usefulLifeC2Years}
+                    onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <label htmlFor="edit-accdep-c1" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
                   Opening Acc Dep C1
@@ -274,19 +286,21 @@ export function EditAssetModal({
                   onChange={(e) => update({ accDepC1Opening: Number(e.target.value) })}
                 />
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="edit-accdep-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                  Opening Acc Dep C2
-                </label>
-                <input
-                  id="edit-accdep-c2"
-                  type="number"
-                  min={0}
-                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-                  value={form.accDepC2Opening}
-                  onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
-                />
-              </div>
+              {hasComponent2 && (
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="edit-accdep-c2" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                    Opening Acc Dep C2
+                  </label>
+                  <input
+                    id="edit-accdep-c2"
+                    type="number"
+                    min={0}
+                    className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                    value={form.accDepC2Opening}
+                    onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
+                  />
+                </div>
+              )}
             </div>
 
             <p className="mt-3 text-[11px] text-gray-400">

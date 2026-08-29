@@ -6,6 +6,7 @@ import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
@@ -435,6 +436,13 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: `Status "${canonicalStatus}" can only be set through the Disposal flow, not Capitalization.` };
     }
+    if (
+      maps.subClassificationHasComponent2.get(canonicalSubClass!) === false &&
+      hasRealC2Data(parsed.data)
+    ) {
+      reply.code(400);
+      return { error: blockingAssetMessage(parsed.data.farId, canonicalSubClass!) };
+    }
     const input = { ...parsed.data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! };
 
     const { rows: existing } = await db.query(`SELECT 1 FROM assets WHERE far_id = $1`, [input.farId]);
@@ -492,8 +500,11 @@ export default async function assetsRoutes(app: FastifyInstance) {
       parent_far_id: string | null;
       c1_opening_cost: string | number;
       c2_opening_cost: string | number;
+      additions_c2: string | number;
+      deletions_c2: string | number;
     }>(
-      `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost FROM assets WHERE far_id = $1`,
+      `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost, additions_c2, deletions_c2
+       FROM assets WHERE far_id = $1`,
       [farId]
     );
     if (existing.length === 0) {
@@ -535,6 +546,24 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (!canonicalSubClass) {
       reply.code(400);
       return { error: `Sub Classification "${input.subClassification}" not recognized — see Masters for valid values.` };
+    }
+
+    // Rule 4 of Has Component 2: an asset can't sit under a C1-only classification while
+    // it still has real C2 data. c2OpeningCost/additionsC2/deletionsC2 aren't editable
+    // here (see editAssetSchema's comment), so they come from the existing row; only
+    // accDepC2Opening is checked against the submitted value, since this same request
+    // can change it.
+    if (
+      maps.subClassificationHasComponent2.get(canonicalSubClass) === false &&
+      hasRealC2Data({
+        c2OpeningCost,
+        additionsC2: Number(existing[0]!.additions_c2),
+        deletionsC2: Number(existing[0]!.deletions_c2),
+        accDepC2Opening: input.accDepC2Opening
+      })
+    ) {
+      reply.code(400);
+      return { error: blockingAssetMessage(input.farId, canonicalSubClass) };
     }
 
     // far_id is the primary key everything else (transfers, and now this same row) keys
@@ -647,8 +676,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
       additions_c1: string;
       additions_c2: string;
       date_of_addition: string | null;
+      sub_classification: string;
     }>(
-      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition FROM assets WHERE far_id = $1`,
+      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification
+       FROM assets WHERE far_id = $1`,
       [farId]
     );
     if (existing.length === 0) {
@@ -659,6 +690,16 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (row.date_of_disposal !== null) {
       reply.code(409);
       return { error: `Asset "${farId}" has been disposed — no further additions can be recorded.` };
+    }
+    if (input.additionsC2 !== 0) {
+      const { rows: subClassRow } = await db.query<{ has_component2: boolean }>(
+        `SELECT has_component2 FROM sub_classifications WHERE name = $1`,
+        [row.sub_classification]
+      );
+      if (subClassRow[0]?.has_component2 === false) {
+        reply.code(400);
+        return { error: blockingAssetMessage(farId, row.sub_classification) };
+      }
     }
     if (Number(row.additions_c1) !== 0 || Number(row.additions_c2) !== 0 || row.date_of_addition !== null) {
       reply.code(409);

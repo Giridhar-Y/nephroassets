@@ -15,8 +15,9 @@ import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { ExportIcon, SearchIcon, UploadIcon } from "../lib/icons.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
-import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl } from "../api/client.js";
+import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
 import { isConditionComplete, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
+import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
 
 // Every Register column that gets a plain Excel-style custom-condition filter (operator
 // + value, no "distinct values" checklist) — the four columns that also get a checklist
@@ -74,7 +75,7 @@ export function RegisterPage() {
   const asAt = settings?.asAt ?? null;
 
   const [centers, setCenters] = useState<string[]>([]);
-  const [subClassifications, setSubClassifications] = useState<string[]>([]);
+  const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
 
   useEffect(() => {
@@ -126,6 +127,14 @@ export function RegisterPage() {
     setConditions(isConditionComplete(next) ? [...rest, next] : rest);
   };
 
+  // Component 2 columns/filters disappear only once the Register is scoped (via the Sub
+  // Classification filter) to classification(s) that are ALL C1-only — an unfiltered or
+  // mixed view keeps them, since some visible rows may still need them.
+  const scopedNames = scopedSubClassificationNames(filters.subClassification, conditions);
+  const hideC2 = allScopedC1Only(scopedNames, subClassifications);
+  const visibleColumns = hideC2 ? hideC2Columns(columns) : columns;
+  const visibleConditionColumns = hideC2 ? CONDITION_COLUMNS.filter((c) => !C2_COLUMN_IDS.has(c.id)) : CONDITION_COLUMNS;
+
   const headerFilters: Partial<Record<string, ReactNode>> = {
     subClassification: (
       <ColumnFilterPopover
@@ -137,7 +146,7 @@ export function RegisterPage() {
             label="Sub Classification"
             columnId="subClassification"
             type="text"
-            options={subClassifications}
+            options={subClassifications.map((s) => s.name)}
             selectValue={filters.subClassification ?? []}
             onSelectChange={(v) => (v.length > 0 ? setFilter("subClassification", v) : clearFilter("subClassification"))}
             condition={conditions.find((c) => c.columnId === "subClassification")}
@@ -205,7 +214,7 @@ export function RegisterPage() {
     )
   };
 
-  for (const col of CONDITION_COLUMNS) {
+  for (const col of visibleConditionColumns) {
     const current = conditions.find((c) => c.columnId === col.id);
     headerFilters[col.id] = (
       <ColumnFilterPopover label={col.label} active={!!current}>
@@ -292,7 +301,7 @@ export function RegisterPage() {
 
       <AssetGrid
         items={items}
-        columns={columns}
+        columns={visibleColumns}
         loading={loading}
         error={error}
         hasMore={!!nextCursor}

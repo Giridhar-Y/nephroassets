@@ -115,6 +115,14 @@ async function computeReconciliationItems(
   db: Awaited<ReturnType<typeof getPool>>,
   fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number }
 ) {
+  // Unfiltered (not WHERE active = TRUE, unlike loadActiveMasterMaps) — a deactivated
+  // Sub Classification's already-on-the-books assets still need to reconcile here, so
+  // its has_component2 value must still resolve even after deactivation.
+  const { rows: subClassRows } = await db.query<{ name: string; has_component2: boolean }>(
+    `SELECT name, has_component2 FROM sub_classifications`
+  );
+  const hasComponent2ByName = new Map(subClassRows.map((r) => [r.name, r.has_component2]));
+
   const { rows } = await db.query<ReconciliationRow>(
     `WITH calc AS (
        SELECT
@@ -193,7 +201,13 @@ async function computeReconciliationItems(
     [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
   );
 
-  return rows.map((r) => {
+  // Has Component 2, decision 3: a C1-only Sub Classification shows a single row (C1),
+  // never separate C2/Combined rows — Combined would just equal C1 anyway. Rows for an
+  // unrecognized sub_classification (hasComponent2ByName.get returns undefined, not
+  // false) are left alone, same "default true" fallback as everywhere else.
+  const filteredRows = rows.filter((r) => hasComponent2ByName.get(r.sub_classification) !== false || r.component === "C1");
+
+  return filteredRows.map((r) => {
     const openingSum = Number(r.opening_sum);
     const additionsSum = Number(r.additions_sum);
     const deletionsSum = Number(r.deletions_sum);

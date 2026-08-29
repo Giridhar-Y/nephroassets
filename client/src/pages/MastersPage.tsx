@@ -220,10 +220,12 @@ function SubClassificationsTab() {
   const [name, setName] = useState("");
   const [lifeC1, setLifeC1] = useState("");
   const [lifeC2, setLifeC2] = useState("");
+  const [hasC2, setHasC2] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editLifeC1, setEditLifeC1] = useState("");
   const [editLifeC2, setEditLifeC2] = useState("");
+  const [editHasC2, setEditHasC2] = useState(true);
   const [busy, setBusy] = useState(false);
 
   function load() {
@@ -241,12 +243,14 @@ function SubClassificationsTab() {
       await createMasterSubClassification({
         name: name.trim(),
         defaultUsefulLifeC1Years: lifeC1 ? Number(lifeC1) : null,
-        defaultUsefulLifeC2Years: lifeC2 ? Number(lifeC2) : null
+        defaultUsefulLifeC2Years: hasC2 && lifeC2 ? Number(lifeC2) : null,
+        hasComponent2: hasC2
       });
       showToast(`${name.trim()} added successfully.`);
       setName("");
       setLifeC1("");
       setLifeC2("");
+      setHasC2(true);
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not add sub classification.", "error");
@@ -260,6 +264,7 @@ function SubClassificationsTab() {
     setEditName(row.name);
     setEditLifeC1(row.defaultUsefulLifeC1Years?.toString() ?? "");
     setEditLifeC2(row.defaultUsefulLifeC2Years?.toString() ?? "");
+    setEditHasC2(row.hasComponent2);
   }
 
   async function saveEdit(row: MasterSubClassification) {
@@ -268,7 +273,8 @@ function SubClassificationsTab() {
       const res = await updateMasterSubClassification(row.id, {
         name: editName.trim(),
         defaultUsefulLifeC1Years: editLifeC1 ? Number(editLifeC1) : null,
-        defaultUsefulLifeC2Years: editLifeC2 ? Number(editLifeC2) : null
+        defaultUsefulLifeC2Years: editHasC2 && editLifeC2 ? Number(editLifeC2) : null,
+        hasComponent2: editHasC2
       });
       setEditingId(null);
       showToast(
@@ -320,16 +326,24 @@ function SubClassificationsTab() {
           />
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Default C2 Life (yrs)</label>
-          <input
-            type="number"
-            min={0}
-            className={`${INPUT_CLASS} w-32`}
-            placeholder="Optional"
-            value={lifeC2}
-            onChange={(e) => setLifeC2(e.target.value)}
-          />
+          <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+            <input type="checkbox" checked={hasC2} onChange={(e) => setHasC2(e.target.checked)} />
+            Has Component 2
+          </label>
         </div>
+        {hasC2 && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Default C2 Life (yrs)</label>
+            <input
+              type="number"
+              min={0}
+              className={`${INPUT_CLASS} w-32`}
+              placeholder="Optional"
+              value={lifeC2}
+              onChange={(e) => setLifeC2(e.target.value)}
+            />
+          </div>
+        )}
         <button
           type="button"
           className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
@@ -345,6 +359,7 @@ function SubClassificationsTab() {
           <tr>
             <th className={TH_CLASS}>Name</th>
             <th className={TH_CLASS}>Default C1 Life</th>
+            <th className={TH_CLASS}>Has C2</th>
             <th className={TH_CLASS}>Default C2 Life</th>
             <th className={TH_CLASS}>Used By</th>
             <th className={TH_CLASS}>Status</th>
@@ -369,13 +384,18 @@ function SubClassificationsTab() {
                     />
                   </td>
                   <td className={TD_CLASS}>
-                    <input
-                      type="number"
-                      min={0}
-                      className={`${INPUT_CLASS} w-24`}
-                      value={editLifeC2}
-                      onChange={(e) => setEditLifeC2(e.target.value)}
-                    />
+                    <input type="checkbox" checked={editHasC2} onChange={(e) => setEditHasC2(e.target.checked)} />
+                  </td>
+                  <td className={TD_CLASS}>
+                    {editHasC2 && (
+                      <input
+                        type="number"
+                        min={0}
+                        className={`${INPUT_CLASS} w-24`}
+                        value={editLifeC2}
+                        onChange={(e) => setEditLifeC2(e.target.value)}
+                      />
+                    )}
                   </td>
                   <td className={TD_CLASS}>{row.usageCount}</td>
                   <td className={TD_CLASS}>
@@ -399,7 +419,8 @@ function SubClassificationsTab() {
                 <>
                   <td className={`${TD_CLASS} font-medium`}>{row.name}</td>
                   <td className={TD_CLASS}>{row.defaultUsefulLifeC1Years ?? "—"}</td>
-                  <td className={TD_CLASS}>{row.defaultUsefulLifeC2Years ?? "—"}</td>
+                  <td className={TD_CLASS}>{row.hasComponent2 ? "Yes" : "No"}</td>
+                  <td className={TD_CLASS}>{row.hasComponent2 ? (row.defaultUsefulLifeC2Years ?? "—") : "—"}</td>
                   <td className={TD_CLASS}>{row.usageCount}</td>
                   <td className={TD_CLASS}>
                     <ActiveBadge active={row.active} />

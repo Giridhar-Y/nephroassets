@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications } from "../api/client.js";
+import { createAsset, fetchCenters, fetchStatuses, fetchSubClassifications, type SubClassificationOption } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { useToast } from "../components/Toast.js";
 import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
-import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
+import { ALL_COLUMNS, allScopedC1Only, hideC2Columns, resolveColumns, scopedSubClassificationNames } from "../lib/columns.js";
 import { useAuth } from "../lib/AuthContext.js";
 import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
@@ -92,7 +92,7 @@ export function CapitalizationPage() {
   const [tab, setTab] = useState<Tab>("add");
   const [centers, setCenters] = useState<string[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
-  const [subClassifications, setSubClassifications] = useState<string[]>([]);
+  const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
   const [form, setForm] = useState<AssetCreateInput>(() => blankForm(settings?.asAt ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +104,12 @@ export function CapitalizationPage() {
   const logFilters: AssetFilters = useMemo(() => ({ conditions: logConditions }), [logConditions]);
   const setLogCondition = makeSetCondition(logConditions, setLogConditions);
   const logSort = useMemo(() => ({ sortBy: "dateAcquired" as const, sortDir: "desc" as const }), []);
-  const LOG_COLUMNS = resolveColumns(RAW_LOG_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
+  // No multi-select Sub Classification filter on this log tab (unlike Register) — only
+  // an "Equals" custom condition can name an exact classification.
+  const logHideC2 = allScopedC1Only(scopedSubClassificationNames(undefined, logConditions), subClassifications);
+  const logRawColumns = logHideC2 ? hideC2Columns(RAW_LOG_COLUMNS) : RAW_LOG_COLUMNS;
+  const logConditionColumns = logHideC2 ? LOG_CONDITION_COLUMNS.filter((c) => c.id !== "c2OpeningCost") : LOG_CONDITION_COLUMNS;
+  const LOG_COLUMNS = resolveColumns(logRawColumns, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const {
     items: logItems,
     nextCursor: logNextCursor,
@@ -126,8 +131,23 @@ export function CapitalizationPage() {
     setForm((prev) => ({ ...prev, ...patch }));
   };
 
+  const hasComponent2 = subClassifications.find((s) => s.name === form.subClassification)?.hasComponent2 ?? true;
+
+  // Clearing C2 fields when the newly-picked Sub Classification is C1-only, not just
+  // hiding them — a value left over in state from before the switch would otherwise
+  // still get submitted and rejected by the server's own C2-on-C1-only check, a
+  // confusing error for fields the user can no longer even see.
+  function updateSubClassification(name: string) {
+    const nowHasC2 = subClassifications.find((s) => s.name === name)?.hasComponent2 ?? true;
+    update(
+      nowHasC2
+        ? { subClassification: name }
+        : { subClassification: name, usefulLifeC2Years: 0, c2OpeningCost: 0, additionsC2: 0, accDepC2Opening: 0 }
+    );
+  }
+
   const logHeaderFilters: Partial<Record<string, ReactNode>> = buildConditionHeaderFilters(
-    LOG_CONDITION_COLUMNS,
+    logConditionColumns,
     logConditions,
     setLogCondition
   );
@@ -239,12 +259,12 @@ export function CapitalizationPage() {
                   id="cap-sub-class"
                   className={INPUT_CLASS}
                   value={form.subClassification}
-                  onChange={(e) => update({ subClassification: e.target.value })}
+                  onChange={(e) => updateSubClassification(e.target.value)}
                 >
                   <option value="">Select…</option>
                   {subClassifications.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                    <option key={s.name} value={s.name}>
+                      {s.name}
                     </option>
                   ))}
                 </select>
@@ -330,17 +350,19 @@ export function CapitalizationPage() {
                     onChange={(e) => update({ usefulLifeC1Years: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="Component 2 Useful Life (Years)" htmlFor="cap-life-c2">
-                  <input
-                    id="cap-life-c2"
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    className={INPUT_CLASS}
-                    value={form.usefulLifeC2Years}
-                    onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
-                  />
-                </Field>
+                {hasComponent2 && (
+                  <Field label="Component 2 Useful Life (Years)" htmlFor="cap-life-c2">
+                    <input
+                      id="cap-life-c2"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      className={INPUT_CLASS}
+                      value={form.usefulLifeC2Years}
+                      onChange={(e) => update({ usefulLifeC2Years: Number(e.target.value) })}
+                    />
+                  </Field>
+                )}
                 <Field label="Component 1 Opening Cost" htmlFor="cap-cost-c1">
                   <input
                     id="cap-cost-c1"
@@ -351,16 +373,18 @@ export function CapitalizationPage() {
                     onChange={(e) => update({ c1OpeningCost: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="Component 2 Opening Cost" htmlFor="cap-cost-c2">
-                  <input
-                    id="cap-cost-c2"
-                    type="number"
-                    min={0}
-                    className={INPUT_CLASS}
-                    value={form.c2OpeningCost}
-                    onChange={(e) => update({ c2OpeningCost: Number(e.target.value) })}
-                  />
-                </Field>
+                {hasComponent2 && (
+                  <Field label="Component 2 Opening Cost" htmlFor="cap-cost-c2">
+                    <input
+                      id="cap-cost-c2"
+                      type="number"
+                      min={0}
+                      className={INPUT_CLASS}
+                      value={form.c2OpeningCost}
+                      onChange={(e) => update({ c2OpeningCost: Number(e.target.value) })}
+                    />
+                  </Field>
+                )}
               </div>
             </div>
 
@@ -377,16 +401,18 @@ export function CapitalizationPage() {
                     onChange={(e) => update({ additionsC1: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="Additions C2" htmlFor="cap-add-c2">
-                  <input
-                    id="cap-add-c2"
-                    type="number"
-                    min={0}
-                    className={INPUT_CLASS}
-                    value={form.additionsC2}
-                    onChange={(e) => update({ additionsC2: Number(e.target.value) })}
-                  />
-                </Field>
+                {hasComponent2 && (
+                  <Field label="Additions C2" htmlFor="cap-add-c2">
+                    <input
+                      id="cap-add-c2"
+                      type="number"
+                      min={0}
+                      className={INPUT_CLASS}
+                      value={form.additionsC2}
+                      onChange={(e) => update({ additionsC2: Number(e.target.value) })}
+                    />
+                  </Field>
+                )}
                 <Field label="Date of Addition" htmlFor="cap-add-date">
                   <input
                     id="cap-add-date"
@@ -440,16 +466,18 @@ export function CapitalizationPage() {
                     onChange={(e) => update({ accDepC1Opening: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="Component 2" htmlFor="cap-accdep-c2">
-                  <input
-                    id="cap-accdep-c2"
-                    type="number"
-                    min={0}
-                    className={INPUT_CLASS}
-                    value={form.accDepC2Opening}
-                    onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
-                  />
-                </Field>
+                {hasComponent2 && (
+                  <Field label="Component 2" htmlFor="cap-accdep-c2">
+                    <input
+                      id="cap-accdep-c2"
+                      type="number"
+                      min={0}
+                      className={INPUT_CLASS}
+                      value={form.accDepC2Opening}
+                      onChange={(e) => update({ accDepC2Opening: Number(e.target.value) })}
+                    />
+                  </Field>
+                )}
               </div>
             </div>
 

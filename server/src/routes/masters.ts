@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -130,13 +131,14 @@ export interface SubClassificationRow {
   name: string;
   defaultUsefulLifeC1Years: number | null;
   defaultUsefulLifeC2Years: number | null;
+  hasComponent2: boolean;
   active: boolean;
   usageCount: number;
 }
 
 export async function fetchSubClassificationsWithUsage(db: pg.Pool): Promise<SubClassificationRow[]> {
   const { rows } = await db.query(
-    `SELECT sc.id, sc.name, sc.default_useful_life_c1_years, sc.default_useful_life_c2_years, sc.active,
+    `SELECT sc.id, sc.name, sc.default_useful_life_c1_years, sc.default_useful_life_c2_years, sc.has_component2, sc.active,
             (SELECT COUNT(*) FROM assets a WHERE a.sub_classification = sc.name) AS usage_count
      FROM sub_classifications sc ORDER BY sc.name`
   );
@@ -145,6 +147,7 @@ export async function fetchSubClassificationsWithUsage(db: pg.Pool): Promise<Sub
     name: r.name,
     defaultUsefulLifeC1Years: r.default_useful_life_c1_years === null ? null : Number(r.default_useful_life_c1_years),
     defaultUsefulLifeC2Years: r.default_useful_life_c2_years === null ? null : Number(r.default_useful_life_c2_years),
+    hasComponent2: r.has_component2,
     active: r.active,
     usageCount: Number(r.usage_count)
   }));
@@ -152,13 +155,20 @@ export async function fetchSubClassificationsWithUsage(db: pg.Pool): Promise<Sub
 
 export async function createSubClassification(
   db: pg.Pool,
-  data: { name: string; defaultUsefulLifeC1Years?: number | null; defaultUsefulLifeC2Years?: number | null; active?: boolean }
+  data: {
+    name: string;
+    defaultUsefulLifeC1Years?: number | null;
+    defaultUsefulLifeC2Years?: number | null;
+    hasComponent2?: boolean;
+    active?: boolean;
+  }
 ) {
   try {
     const { rows } = await db.query(
-      `INSERT INTO sub_classifications (name, default_useful_life_c1_years, default_useful_life_c2_years, active)
-       VALUES ($1, $2, $3, $4) RETURNING id, name, default_useful_life_c1_years, default_useful_life_c2_years, active`,
-      [data.name, data.defaultUsefulLifeC1Years ?? null, data.defaultUsefulLifeC2Years ?? null, data.active ?? true]
+      `INSERT INTO sub_classifications (name, default_useful_life_c1_years, default_useful_life_c2_years, has_component2, active)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, default_useful_life_c1_years, default_useful_life_c2_years, has_component2, active`,
+      [data.name, data.defaultUsefulLifeC1Years ?? null, data.defaultUsefulLifeC2Years ?? null, data.hasComponent2 ?? true, data.active ?? true]
     );
     const r = rows[0];
     return {
@@ -166,6 +176,7 @@ export async function createSubClassification(
       name: r.name,
       defaultUsefulLifeC1Years: r.default_useful_life_c1_years === null ? null : Number(r.default_useful_life_c1_years),
       defaultUsefulLifeC2Years: r.default_useful_life_c2_years === null ? null : Number(r.default_useful_life_c2_years),
+      hasComponent2: r.has_component2,
       active: r.active
     };
   } catch (err) {
@@ -177,14 +188,35 @@ export async function createSubClassification(
 export async function updateSubClassificationById(
   db: pg.Pool,
   id: number,
-  patch: { name?: string; defaultUsefulLifeC1Years?: number | null; defaultUsefulLifeC2Years?: number | null; active?: boolean }
+  patch: {
+    name?: string;
+    defaultUsefulLifeC1Years?: number | null;
+    defaultUsefulLifeC2Years?: number | null;
+    hasComponent2?: boolean;
+    active?: boolean;
+  }
 ) {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const { rows: existingRows } = await client.query(`SELECT name FROM sub_classifications WHERE id = $1 FOR UPDATE`, [id]);
+    const { rows: existingRows } = await client.query(
+      `SELECT name, has_component2 FROM sub_classifications WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
     const existing = existingRows[0];
     if (!existing) throw new MasterError(404, "No sub classification found with that id.");
+
+    // Blocking rule: can't turn Component 2 off while any asset under this
+    // classification (by its CURRENT name — the rename above, if any, hasn't been
+    // applied yet at this point) still has real C2 data. Checked inside the same
+    // FOR UPDATE transaction as the read above, so a concurrent asset edit can't slip a
+    // new C2 figure in between this check and the write below.
+    if (patch.hasComponent2 === false && existing.has_component2 === true) {
+      const blocking = await findBlockingC2Assets(client, existing.name);
+      if (blocking.count > 0) {
+        throw new MasterError(409, blockingToggleMessage(existing.name, blocking.count, blocking.sampleFarIds));
+      }
+    }
 
     let assetsUpdated = 0;
     if (patch.name !== undefined && patch.name !== existing.name) {
@@ -209,6 +241,10 @@ export async function updateSubClassificationById(
       values.push(patch.defaultUsefulLifeC2Years);
       sets.push(`default_useful_life_c2_years = $${values.length}`);
     }
+    if (patch.hasComponent2 !== undefined) {
+      values.push(patch.hasComponent2);
+      sets.push(`has_component2 = $${values.length}`);
+    }
     if (patch.active !== undefined) {
       values.push(patch.active);
       sets.push(`active = $${values.length}`);
@@ -217,7 +253,7 @@ export async function updateSubClassificationById(
     values.push(id);
     const { rows } = await client.query(
       `UPDATE sub_classifications SET ${sets.join(", ")} WHERE id = $${values.length}
-       RETURNING id, name, default_useful_life_c1_years, default_useful_life_c2_years, active`,
+       RETURNING id, name, default_useful_life_c1_years, default_useful_life_c2_years, has_component2, active`,
       values
     );
     await client.query("COMMIT");
@@ -227,6 +263,7 @@ export async function updateSubClassificationById(
       name: r.name,
       defaultUsefulLifeC1Years: r.default_useful_life_c1_years === null ? null : Number(r.default_useful_life_c1_years),
       defaultUsefulLifeC2Years: r.default_useful_life_c2_years === null ? null : Number(r.default_useful_life_c2_years),
+      hasComponent2: r.has_component2,
       active: r.active,
       assetsUpdated
     };
@@ -328,12 +365,14 @@ const patchCenterSchema = z.object({ code: z.string().min(1).optional(), descrip
 const createSubClassSchema = z.object({
   name: z.string().min(1),
   defaultUsefulLifeC1Years: z.coerce.number().min(0).nullable().optional(),
-  defaultUsefulLifeC2Years: z.coerce.number().min(0).nullable().optional()
+  defaultUsefulLifeC2Years: z.coerce.number().min(0).nullable().optional(),
+  hasComponent2: z.boolean().optional()
 });
 const patchSubClassSchema = z.object({
   name: z.string().min(1).optional(),
   defaultUsefulLifeC1Years: z.coerce.number().min(0).nullable().optional(),
   defaultUsefulLifeC2Years: z.coerce.number().min(0).nullable().optional(),
+  hasComponent2: z.boolean().optional(),
   active: z.boolean().optional()
 });
 

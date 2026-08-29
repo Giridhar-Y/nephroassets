@@ -186,6 +186,26 @@ describe("Audit Reconciliation report", () => {
       sale_value: 1000
     });
 
+    // Has Component 2, decision 3: a C1-only Sub Classification shows a single row, not
+    // separate C2/Combined rows. A real sub_classifications row (not just a free-text
+    // match) is required — most other fixtures in this file never insert one, relying
+    // on the "unrecognized name defaults to showing all 3 rows" fallback instead.
+    await db.query(`DELETE FROM sub_classifications WHERE name = 'Test-C1-Only'`);
+    await db.query(`INSERT INTO sub_classifications (name, has_component2) VALUES ('Test-C1-Only', FALSE)`);
+    await insertAsset({
+      far_id: "RECON-C1-ONLY",
+      sub_classification: "Test-C1-Only",
+      asset_description: "C1-only classification fixture",
+      serial_no: "S8",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 100000,
+      additions_c1: 0,
+      date_of_disposal: null,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 20000
+    });
+
     app = Fastify();
     await app.register(reportsRoutes);
     await app.ready();
@@ -396,6 +416,19 @@ describe("Audit Reconciliation report", () => {
     // so the cost check failing doesn't stop the dep check from correctly passing.
     expect(combined.depCheckPass).toBe(true);
     expect(combined.cappedSum).toBeCloseTo(50000, 6);
+  });
+
+  it("Has Component 2, decision 3: a C1-only Sub Classification shows a single row — no separate C2 or Combined row", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const rowsForClass = body.items.filter(
+      (i: { subClassification: string }) => i.subClassification === "Test-C1-Only"
+    );
+    expect(rowsForClass).toHaveLength(1);
+    expect(rowsForClass[0].component).toBe("C1");
+    expect(rowsForClass[0].openingSum).toBeCloseTo(100000, 6);
+    expect(rowsForClass[0].costCheckPass).toBe(true);
+    expect(rowsForClass[0].depCheckPass).toBe(true);
   });
 
   it("exports an Excel workbook", async () => {

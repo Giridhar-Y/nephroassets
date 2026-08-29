@@ -165,6 +165,125 @@ describe("Masters", () => {
         { far_id: "SUB-3", sub_classification: "Vehicles" }
       ]);
     });
+
+    describe("Has Component 2", () => {
+      it("defaults to true for a newly created entry, and stays true when not specified", async () => {
+        const res = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "New Class" } });
+        expect(res.json().hasComponent2).toBe(true);
+      });
+
+      it("can be created as false explicitly, and round-trips through PATCH", async () => {
+        const created = await authedInject(app, {
+          method: "POST",
+          url: "/api/masters/sub-classifications",
+          payload: { name: "C1-Only Class", hasComponent2: false }
+        });
+        expect(created.json().hasComponent2).toBe(false);
+
+        const patch = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${created.json().id}`,
+          payload: { hasComponent2: true }
+        });
+        expect(patch.json().hasComponent2).toBe(true);
+      });
+
+      it("blocks turning Component 2 off while an asset still has non-zero C2 opening cost, naming the blocking asset", async () => {
+        const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Blocked Class" } });
+        const { id } = created.json();
+        await insertAsset("BLK-1", { sub_classification: "Blocked Class", c2_opening_cost: 50000 });
+
+        const patch = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${id}`,
+          payload: { hasComponent2: false }
+        });
+        expect(patch.statusCode).toBe(409);
+        expect(patch.json().error).toContain("BLK-1");
+        expect(patch.json().error).toContain("1 asset");
+
+        // Rejected — the toggle must not have actually flipped.
+        const list = await authedInject(app, { method: "GET", url: "/api/masters/sub-classifications" });
+        expect(list.json().find((r: { name: string }) => r.name === "Blocked Class").hasComponent2).toBe(true);
+      });
+
+      it("blocks on non-zero additions C2, deletions C2, or opening acc. dep. C2 individually, and names every blocking asset", async () => {
+        const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Multi-Blocked" } });
+        const { id } = created.json();
+        await insertAsset("BLK-ADD", { sub_classification: "Multi-Blocked", additions_c2: 1000, date_of_addition: "2026-05-01" });
+        await insertAsset("BLK-DEL", { sub_classification: "Multi-Blocked", deletions_c2: 1000, date_of_disposal: "2026-06-01", status: "Disposed" });
+        await insertAsset("BLK-DEP", { sub_classification: "Multi-Blocked", acc_dep_c2_opening: 500 });
+
+        const patch = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${id}`,
+          payload: { hasComponent2: false }
+        });
+        expect(patch.statusCode).toBe(409);
+        const error: string = patch.json().error;
+        expect(error).toContain("3 assets");
+        expect(error).toContain("BLK-ADD");
+        expect(error).toContain("BLK-DEL");
+        expect(error).toContain("BLK-DEP");
+      });
+
+      it("does NOT block on a leftover non-zero Useful Life C2 alone — only real cost/dep/deletions figures count", async () => {
+        const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Stale Life Only" } });
+        const { id } = created.json();
+        // useful_life_c2_years is 5 by default in insertAsset, but every actual C2 figure
+        // (cost, additions, deletions, opening acc. dep.) is 0 — the calc engine
+        // contributes nothing for a component like this (confirmed by tracing engine.ts),
+        // so it must not block cleanup.
+        await insertAsset("STALE-1", { sub_classification: "Stale Life Only" });
+
+        const patch = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${id}`,
+          payload: { hasComponent2: false }
+        });
+        expect(patch.statusCode).toBe(200);
+        expect(patch.json().hasComponent2).toBe(false);
+      });
+
+      it("allows turning Component 2 off once its blocking asset's C2 data is cleared", async () => {
+        const created = await authedInject(app, { method: "POST", url: "/api/masters/sub-classifications", payload: { name: "Cleared Class" } });
+        const { id } = created.json();
+        await insertAsset("CLR-1", { sub_classification: "Cleared Class", c2_opening_cost: 20000 });
+
+        const blocked = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${id}`,
+          payload: { hasComponent2: false }
+        });
+        expect(blocked.statusCode).toBe(409);
+
+        const db = await getPool();
+        await db.query(`UPDATE assets SET c2_opening_cost = 0 WHERE far_id = 'CLR-1'`);
+
+        const allowed = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${id}`,
+          payload: { hasComponent2: false }
+        });
+        expect(allowed.statusCode).toBe(200);
+        expect(allowed.json().hasComponent2).toBe(false);
+      });
+
+      it("does not block turning Component 2 back ON (only the off-switch is guarded)", async () => {
+        const created = await authedInject(app, {
+          method: "POST",
+          url: "/api/masters/sub-classifications",
+          payload: { name: "Toggle Back On", hasComponent2: false }
+        });
+        const patch = await authedInject(app, {
+          method: "PATCH",
+          url: `/api/masters/sub-classifications/${created.json().id}`,
+          payload: { hasComponent2: true }
+        });
+        expect(patch.statusCode).toBe(200);
+        expect(patch.json().hasComponent2).toBe(true);
+      });
+    });
   });
 
   describe("Statuses", () => {

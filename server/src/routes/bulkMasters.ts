@@ -26,6 +26,12 @@ const subClassRowSchema = z.object({
   name: z.string().min(1),
   defaultUsefulLifeC1Years: z.coerce.number().min(0).nullable().optional(),
   defaultUsefulLifeC2Years: z.coerce.number().min(0).nullable().optional(),
+  // Same true/false/yes/no parsing as `active` (bulkActive) — a blank cell means "leave
+  // unset" (create) / "don't touch" (update), same convention as every other optional
+  // column here. Turning this off for an existing row still goes through
+  // updateSubClassificationById's blocking check (masters.ts), same as the single-entry
+  // Masters screen.
+  hasComponent2: bulkActive,
   active: bulkActive
 });
 const statusRowSchema = z.object({ name: z.string().min(1), active: bulkActive });
@@ -161,18 +167,23 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       rowKey: (r) => r.name,
       fetchAll: fetchSubClassificationsWithUsage,
       hasPatch: (d) =>
-        d.active !== undefined || d.defaultUsefulLifeC1Years !== undefined || d.defaultUsefulLifeC2Years !== undefined,
+        d.active !== undefined ||
+        d.defaultUsefulLifeC1Years !== undefined ||
+        d.defaultUsefulLifeC2Years !== undefined ||
+        d.hasComponent2 !== undefined,
       create: (db, d) =>
         createSubClassification(db, {
           name: d.name,
           defaultUsefulLifeC1Years: d.defaultUsefulLifeC1Years,
           defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
+          hasComponent2: d.hasComponent2,
           active: d.active
         }),
       update: (db, id, d) =>
         updateSubClassificationById(db, id, {
           defaultUsefulLifeC1Years: d.defaultUsefulLifeC1Years,
           defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
+          hasComponent2: d.hasComponent2,
           active: d.active
         })
     })
