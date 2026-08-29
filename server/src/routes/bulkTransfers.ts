@@ -5,6 +5,7 @@ import { getPool } from "../db/pool.js";
 import { bulkDate, isoToDDMMYYYY, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requireEditor } from "../auth/middleware.js";
+import { logAssetActivity } from "./assetActivityLog.js";
 
 const transferRowSchema = z.object({
   farId: z.string().min(1),
@@ -27,6 +28,8 @@ async function transferWithChildren(
   farId: string,
   toLocation: string,
   transactionDate: string,
+  actorUserId: number,
+  sourceFilename: string | undefined,
   cascadedFromParentFarId: string | null = null
 ): Promise<string[]> {
   await client.query(
@@ -38,6 +41,12 @@ async function transferWithChildren(
      WHERE far_id = $3 AND (last_date_of_transaction IS NULL OR last_date_of_transaction <= $2)`,
     [toLocation, transactionDate, farId]
   );
+  await logAssetActivity(client, {
+    actorUserId,
+    action: "transfer_create",
+    farId,
+    details: { transactionDate, location: toLocation, cascadedFromParentFarId, source: "bulk", sourceFilename }
+  });
 
   if (cascadedFromParentFarId !== null) return []; // one level only — a child never has its own children to cascade to.
   const { rows: children } = await client.query<{ far_id: string }>(
@@ -46,7 +55,7 @@ async function transferWithChildren(
   );
   const childrenTransferred: string[] = [];
   for (const child of children) {
-    await transferWithChildren(client, child.far_id, toLocation, transactionDate, farId);
+    await transferWithChildren(client, child.far_id, toLocation, transactionDate, actorUserId, sourceFilename, farId);
     childrenTransferred.push(child.far_id);
   }
   return childrenTransferred;
@@ -192,7 +201,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
           }
           try {
             await client.query("BEGIN");
-            await transferWithChildren(client, data.farId, data.toLocation, data.transactionDate);
+            await transferWithChildren(client, data.farId, data.toLocation, data.transactionDate, req.user!.id, file.filename);
             await client.query("COMMIT");
             processed++;
           } catch (err) {
