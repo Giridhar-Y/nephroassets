@@ -424,6 +424,13 @@ export interface ReconciliationItem {
   periodDepSum: number;
   accDepRemovedSum: number;
   closingAccDepSum: number;
+  /** Amount the locked calc engine's Closing Acc Dep clamp capped down (>=0) / floored
+   *  up (>=0) this row's figures from the naive roll-forward — see reports.ts's
+   *  `adjusted` CTE. Both 0 for the overwhelming majority of rows. */
+  cappedSum: number;
+  flooredSum: number;
+  /** Null when cappedSum/flooredSum are both ~0 — nothing to explain. */
+  capAdjustmentMessage: string | null;
   depCheckPass: boolean;
   depCheckDelta: number;
   depCheckMessage: string;

@@ -69,9 +69,23 @@ type ReconciliationRow = {
   period_dep_sum: string;
   acc_dep_removed_sum: string;
   closing_acc_dep_sum: string;
+  capped_sum: string;
+  floored_sum: string;
   nbv_opening_sum: string;
   nbv_closing_sum: string;
 };
+
+// Null when the engine's Closing Acc Dep clamp never fired for any asset in this row
+// (the overwhelming majority of rows) — nothing extra to show. When it did fire,
+// names which clamp and by how much, so a reviewer sees why this row's figures don't
+// match the naive roll-forward instead of an unexplained gap — the dep check above
+// already accounts for it in the pass/fail itself, this is purely explanatory.
+function buildCapAdjustmentMessage(cappedSum: number, flooredSum: number): string | null {
+  const parts: string[] = [];
+  if (cappedSum > EPSILON) parts.push(`Capped at Gross Block: ₹${cappedSum.toFixed(2)}`);
+  if (flooredSum > EPSILON) parts.push(`Floored at Zero: ₹${flooredSum.toFixed(2)}`);
+  return parts.length > 0 ? parts.join("; ") : null;
+}
 
 // Audit Reconciliation: by Sub Classification, for C1, C2, and their Combined (C1+C2)
 // figures — matching the reference workbook's "Audit Reconciliation" sheet, which
@@ -117,6 +131,21 @@ async function computeReconciliationItems(
          ) AS c2,
          (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
        FROM assets
+     ),
+     -- Independently re-derives what Closing Acc Dep SHOULD be per the documented
+     -- cap-at-Gross-Block / floor-at-0 rule (engine.ts's closingAccDep, mirrored by
+     -- calcFunction.sql's far_calc_component) — from the SAME already-computed
+     -- period_depreciation/acc_dep_on_disposed/gross_block fields the engine itself
+     -- exposes, NOT by reading (c1).closing_acc_dep. This keeps the dep check below a
+     -- genuine, independent verification (an internal drift between calcFunction.sql's
+     -- own closing_acc_dep field and its own other fields would still be caught) while
+     -- also giving the report a legitimate "adjustment" figure to show explicitly
+     -- instead of an unexplained mismatch whenever the clamp actually fires.
+     adjusted AS (
+       SELECT *,
+         (acc_dep_c1_opening + (c1).period_depreciation - (c1).acc_dep_on_disposed) AS c1_naive,
+         (acc_dep_c2_opening + (c2).period_depreciation - (c2).acc_dep_on_disposed) AS c2_naive
+       FROM calc
      )
      -- Opening/Additions sums now come from the calc engine's own live-classified
      -- opening_gross_block/additions_gross_block (see far_calc_component in
@@ -131,8 +160,10 @@ async function computeReconciliationItems(
        SUM((c1).gross_block) AS closing_gross_block_sum,
        SUM(acc_dep_c1_opening) AS acc_dep_opening_sum, SUM((c1).period_depreciation) AS period_dep_sum,
        SUM((c1).acc_dep_on_disposed) AS acc_dep_removed_sum, SUM((c1).closing_acc_dep) AS closing_acc_dep_sum,
+       SUM(GREATEST(c1_naive - GREATEST(0, LEAST(c1_naive, (c1).gross_block)), 0)) AS capped_sum,
+       SUM(GREATEST(GREATEST(0, LEAST(c1_naive, (c1).gross_block)) - c1_naive, 0)) AS floored_sum,
        SUM((c1).opening_nbv) AS nbv_opening_sum, SUM((c1).nbv) AS nbv_closing_sum
-     FROM calc GROUP BY sub_classification
+     FROM adjusted GROUP BY sub_classification
      UNION ALL
      SELECT sub_classification, 'C2' AS component,
        SUM((c2).opening_gross_block), SUM((c2).additions_gross_block),
@@ -140,8 +171,10 @@ async function computeReconciliationItems(
        SUM((c2).gross_block),
        SUM(acc_dep_c2_opening), SUM((c2).period_depreciation),
        SUM((c2).acc_dep_on_disposed), SUM((c2).closing_acc_dep),
+       SUM(GREATEST(c2_naive - GREATEST(0, LEAST(c2_naive, (c2).gross_block)), 0)),
+       SUM(GREATEST(GREATEST(0, LEAST(c2_naive, (c2).gross_block)) - c2_naive, 0)),
        SUM((c2).opening_nbv), SUM((c2).nbv)
-     FROM calc GROUP BY sub_classification
+     FROM adjusted GROUP BY sub_classification
      UNION ALL
      SELECT sub_classification, 'Combined' AS component,
        SUM((c1).opening_gross_block + (c2).opening_gross_block),
@@ -150,8 +183,12 @@ async function computeReconciliationItems(
        SUM((c1).gross_block + (c2).gross_block),
        SUM(acc_dep_c1_opening + acc_dep_c2_opening), SUM((c1).period_depreciation + (c2).period_depreciation),
        SUM((c1).acc_dep_on_disposed + (c2).acc_dep_on_disposed), SUM((c1).closing_acc_dep + (c2).closing_acc_dep),
+       SUM(GREATEST((c1_naive + c2_naive)
+         - GREATEST(0, LEAST(c1_naive, (c1).gross_block)) - GREATEST(0, LEAST(c2_naive, (c2).gross_block)), 0)),
+       SUM(GREATEST(GREATEST(0, LEAST(c1_naive, (c1).gross_block)) + GREATEST(0, LEAST(c2_naive, (c2).gross_block))
+         - (c1_naive + c2_naive), 0)),
        SUM((c1).opening_nbv + (c2).opening_nbv), SUM((c1).nbv + (c2).nbv)
-     FROM calc GROUP BY sub_classification
+     FROM adjusted GROUP BY sub_classification
      ORDER BY sub_classification, component`,
     [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
   );
@@ -168,7 +205,14 @@ async function computeReconciliationItems(
     const periodDepSum = Number(r.period_dep_sum);
     const accDepRemovedSum = Number(r.acc_dep_removed_sum);
     const closingAccDepSum = Number(r.closing_acc_dep_sum);
-    const depCheckDelta = accDepOpeningSum + periodDepSum - accDepRemovedSum - closingAccDepSum;
+    // How much the locked engine's Closing Acc Dep clamp (cap at Gross Block, floor at
+    // 0) pulled this row's figures away from the naive roll-forward — see the
+    // `adjusted` CTE above. Included in the check itself so the identity ties out
+    // exactly even when the clamp fired, instead of reporting an unexplained gap.
+    const cappedSum = Number(r.capped_sum);
+    const flooredSum = Number(r.floored_sum);
+    const capFloorAdjustmentSum = cappedSum - flooredSum;
+    const depCheckDelta = accDepOpeningSum + periodDepSum - accDepRemovedSum - capFloorAdjustmentSum - closingAccDepSum;
     const depCheckPass = Math.abs(depCheckDelta) < EPSILON;
 
     const nbvOpeningSum = Number(r.nbv_opening_sum);
@@ -192,6 +236,9 @@ async function computeReconciliationItems(
       periodDepSum,
       accDepRemovedSum,
       closingAccDepSum,
+      cappedSum,
+      flooredSum,
+      capAdjustmentMessage: buildCapAdjustmentMessage(cappedSum, flooredSum),
       depCheckPass,
       depCheckDelta,
       depCheckMessage: depCheckPass
@@ -245,6 +292,7 @@ const BLOCK_COLUMNS = [
   { header: "Cost Check", width: 14 },
   { header: "Acc Dep Opening", width: 16 },
   { header: "Dep for Period", width: 16 },
+  { header: "Acc Dep Adjustment (Cap/Floor)", width: 22 },
   { header: "Acc Dep Closing", width: 16 },
   { header: "Dep Check", width: 14 },
   { header: "NBV Opening", width: 16 },
@@ -269,17 +317,17 @@ function writeReconciliationBlock(
   const titleRow = sheet.addRow([`GROSS BLOCK / ACC DEP / NET BLOCK (NBV) — ${style.label}`]);
   sheet.mergeCells(titleRow.number, 1, titleRow.number, 5);
   sheet.mergeCells(titleRow.number, 6, titleRow.number, 6);
-  sheet.mergeCells(titleRow.number, 7, titleRow.number, 10);
-  sheet.mergeCells(titleRow.number, 11, titleRow.number, 13);
-  for (let c = 1; c <= 13; c++) {
+  sheet.mergeCells(titleRow.number, 7, titleRow.number, 11);
+  sheet.mergeCells(titleRow.number, 12, titleRow.number, 14);
+  for (let c = 1; c <= 14; c++) {
     const cell = titleRow.getCell(c);
-    const fill = c <= 5 ? style.grossBlockFill : c <= 10 ? style.accDepFill : style.netBlockFill;
+    const fill = c <= 5 ? style.grossBlockFill : c <= 11 ? style.accDepFill : style.netBlockFill;
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
     cell.font = { color: { argb: "FFFFFFFF" }, bold: true };
   }
   titleRow.getCell(1).value = `GROSS BLOCK (COST) — ${style.label}`;
   titleRow.getCell(7).value = `ACCUMULATED DEPRECIATION — ${style.label}`;
-  titleRow.getCell(11).value = `NET BLOCK (NBV) — ${style.label}`;
+  titleRow.getCell(12).value = `NET BLOCK (NBV) — ${style.label}`;
   titleRow.commit();
 
   const headerRow = sheet.addRow(BLOCK_COLUMNS.map((c) => c.header));
@@ -288,7 +336,7 @@ function writeReconciliationBlock(
     cell.fill = {
       type: "pattern",
       pattern: "solid",
-      fgColor: { argb: colNumber === 6 || colNumber === 10 || colNumber === 13 ? CHECK_HEADER_FILL : style.headerFill }
+      fgColor: { argb: colNumber === 6 || colNumber === 11 || colNumber === 14 ? CHECK_HEADER_FILL : style.headerFill }
     };
   });
   headerRow.commit();
@@ -301,12 +349,14 @@ function writeReconciliationBlock(
     accDepOpeningSum: 0,
     periodDepSum: 0,
     accDepRemovedSum: 0,
+    capFloorAdjustmentSum: 0,
     closingAccDepSum: 0,
     nbvOpeningSum: 0,
     nbvClosingSum: 0
   };
 
   for (const item of rowsForBlock) {
+    const capFloorAdjustment = item.cappedSum - item.flooredSum;
     const row = sheet.addRow([
       item.subClassification,
       item.openingSum,
@@ -316,17 +366,18 @@ function writeReconciliationBlock(
       item.costCheckPass ? 0 : item.costCheckDelta,
       item.accDepOpeningSum,
       item.periodDepSum,
+      capFloorAdjustment,
       item.closingAccDepSum,
       item.depCheckPass ? 0 : item.depCheckDelta,
       item.nbvOpeningSum,
       item.nbvClosingSum,
       item.nbvCheckPass ? 0 : item.nbvCheckDelta
     ]);
-    for (let c = 1; c <= 13; c++) {
+    for (let c = 1; c <= 14; c++) {
       const cell = row.getCell(c);
       if (c === 6) styleCheckCell(cell, item.costCheckPass);
-      else if (c === 10) styleCheckCell(cell, item.depCheckPass);
-      else if (c === 13) styleCheckCell(cell, item.nbvCheckPass);
+      else if (c === 11) styleCheckCell(cell, item.depCheckPass);
+      else if (c === 14) styleCheckCell(cell, item.nbvCheckPass);
       else if (c > 1) cell.numFmt = MONEY_FMT;
     }
     row.commit();
@@ -335,6 +386,7 @@ function writeReconciliationBlock(
     totals.additionsSum += item.additionsSum;
     totals.deletionsSum += item.deletionsSum;
     totals.closingGrossBlockSum += item.closingGrossBlockSum;
+    totals.capFloorAdjustmentSum += capFloorAdjustment;
     totals.accDepOpeningSum += item.accDepOpeningSum;
     totals.periodDepSum += item.periodDepSum;
     totals.accDepRemovedSum += item.accDepRemovedSum;
@@ -345,7 +397,7 @@ function writeReconciliationBlock(
 
   const costCheckTotalDelta = totals.openingSum + totals.additionsSum - totals.deletionsSum - totals.closingGrossBlockSum;
   const depCheckTotalDelta =
-    totals.accDepOpeningSum + totals.periodDepSum - totals.accDepRemovedSum - totals.closingAccDepSum;
+    totals.accDepOpeningSum + totals.periodDepSum - totals.accDepRemovedSum - totals.capFloorAdjustmentSum - totals.closingAccDepSum;
   const nbvCheckTotalDelta = totals.closingGrossBlockSum - totals.closingAccDepSum - totals.nbvClosingSum;
   const totalRow = sheet.addRow([
     component === "Combined" ? "GRAND TOTAL" : "TOTAL",
@@ -356,6 +408,7 @@ function writeReconciliationBlock(
     Math.abs(costCheckTotalDelta) < EPSILON ? 0 : costCheckTotalDelta,
     totals.accDepOpeningSum,
     totals.periodDepSum,
+    totals.capFloorAdjustmentSum,
     totals.closingAccDepSum,
     Math.abs(depCheckTotalDelta) < EPSILON ? 0 : depCheckTotalDelta,
     totals.nbvOpeningSum,
@@ -363,11 +416,11 @@ function writeReconciliationBlock(
     Math.abs(nbvCheckTotalDelta) < EPSILON ? 0 : nbvCheckTotalDelta
   ]);
   totalRow.font = { bold: true };
-  for (let c = 1; c <= 13; c++) {
+  for (let c = 1; c <= 14; c++) {
     const cell = totalRow.getCell(c);
     if (c === 6) styleCheckCell(cell, Math.abs(costCheckTotalDelta) < EPSILON);
-    else if (c === 10) styleCheckCell(cell, Math.abs(depCheckTotalDelta) < EPSILON);
-    else if (c === 13) styleCheckCell(cell, Math.abs(nbvCheckTotalDelta) < EPSILON);
+    else if (c === 11) styleCheckCell(cell, Math.abs(depCheckTotalDelta) < EPSILON);
+    else if (c === 14) styleCheckCell(cell, Math.abs(nbvCheckTotalDelta) < EPSILON);
     else if (c > 1) cell.numFmt = MONEY_FMT;
   }
   totalRow.commit();
@@ -381,7 +434,7 @@ async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: st
   sheet.columns = BLOCK_COLUMNS.map((c) => ({ width: c.width }));
 
   const titleRow = sheet.addRow([`FIXED ASSET REGISTER — AUDIT RECONCILIATION (as at ${asAt})`]);
-  sheet.mergeCells(titleRow.number, 1, titleRow.number, 13);
+  sheet.mergeCells(titleRow.number, 1, titleRow.number, 14);
   titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
   titleRow.getCell(1).font = { color: { argb: "FFFFFFFF" }, bold: true, size: 12 };
   titleRow.commit();

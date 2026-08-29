@@ -14,7 +14,7 @@ import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon } from 
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
-function CheckBadge({ pass, message }: { pass: boolean; message: string }) {
+function CheckBadge({ pass, message, note }: { pass: boolean; message: string; note?: string | null }) {
   return (
     <div className="flex flex-col gap-0.5">
       <span
@@ -26,6 +26,11 @@ function CheckBadge({ pass, message }: { pass: boolean; message: string }) {
         {pass ? "Pass" : "Fail"}
       </span>
       {!pass && <span className="max-w-xs text-xs text-red-600">{message}</span>}
+      {/* Informational, not a failure — the locked calc engine's Closing Acc Dep clamp
+          (cap at Gross Block / floor at 0) already gets accounted for in the pass/fail
+          above; this just tells a reviewer why the row doesn't match the naive formula
+          instead of leaving it unexplained. */}
+      {note && <span className="max-w-xs text-xs text-amber-700">{note}</span>}
     </div>
   );
 }
@@ -216,7 +221,7 @@ export function AuditReconciliationPage() {
                     {formatCurrency(item.closingAccDepSum)}
                   </td>
                   <td className="border-b border-gray-100 py-2 pr-3">
-                    <CheckBadge pass={item.depCheckPass} message={item.depCheckMessage} />
+                    <CheckBadge pass={item.depCheckPass} message={item.depCheckMessage} note={item.capAdjustmentMessage} />
                   </td>
                   <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
                     {formatCurrency(item.nbvClosingSum)}

@@ -160,6 +160,32 @@ describe("Audit Reconciliation report", () => {
       sale_value: 5000
     });
 
+    // Regression fixture for the cap/floor adjustment feature: an old asset (acquired
+    // 2018-01-01) with a short useful life (3 years — already well expired by this FY)
+    // disposed mid-year, with a real partial disposal amount (40000 of 90000 cost).
+    // Matches the shape found via the 250k-asset load-test scale test's "Audit
+    // Reconciliation ties out at full scale" failure investigation: an old,
+    // short-useful-life, disposed-mid-year asset legitimately pushes the naive
+    // Opening Acc Dep + Period Dep − Acc Dep Removed figure above the remaining Gross
+    // Block, so the locked engine's Closing Acc Dep clamp (see engine.ts) caps it —
+    // confirmed via engine.computeComponent directly: naive 56624.048706240486, capped
+    // to grossBlock 50000, a 6624.048706240486 adjustment.
+    await insertAsset({
+      far_id: "RECON-CAP-SCENARIO",
+      sub_classification: "Test-Cap-Scenario",
+      asset_description: "Old, short-life asset disposed mid-year (hits the cap)",
+      serial_no: "S7",
+      qty: 1,
+      date_acquired: "2018-01-01",
+      useful_life_c1_years: 3,
+      c1_opening_cost: 90000,
+      additions_c1: 0,
+      date_of_disposal: "2026-06-01",
+      deletions_c1: 40000,
+      acc_dep_c1_opening: 70000,
+      sale_value: 1000
+    });
+
     app = Fastify();
     await app.register(reportsRoutes);
     await app.ready();
@@ -210,6 +236,12 @@ describe("Audit Reconciliation report", () => {
     expect(clean.costCheckDelta).toBeCloseTo(0, 6);
     expect(clean.depCheckPass).toBe(true);
     expect(clean.depCheckDelta).toBeCloseTo(0, 6);
+    // Neither fixture in this sub classification ever hits the Closing Acc Dep clamp —
+    // no spurious adjustment should be reported for an asset whose figures already tie
+    // out on their own.
+    expect(clean.cappedSum).toBeCloseTo(0, 6);
+    expect(clean.flooredSum).toBeCloseTo(0, 6);
+    expect(clean.capAdjustmentMessage).toBeNull();
   });
 
   it("fails both checks for a broken sub classification, with the correct mismatch amount", async () => {
@@ -226,11 +258,13 @@ describe("Audit Reconciliation report", () => {
     expect(Math.abs(broken.costCheckDelta)).toBeCloseTo(30000, 6);
     expect(broken.costCheckMessage).toContain("doesn't match Closing cost");
 
-    // RECON-BROKEN-2's Opening Acc Dep (150000) exceeds cost (100000); Closing Acc Dep
-    // gets capped at Gross Block, so the roll-forward is short by exactly 50000.
-    expect(broken.depCheckPass).toBe(false);
-    expect(Math.abs(broken.depCheckDelta)).toBeCloseTo(50000, 6);
-    expect(broken.depCheckMessage).toContain("doesn't match Closing Acc Dep");
+    // RECON-BROKEN-2's Opening Acc Dep (150000) exceeds cost (100000). This used to
+    // fail the dep check outright (Closing Acc Dep silently capped at Gross Block, no
+    // explanation); the cap/floor adjustment now accounts for it explicitly instead —
+    // see "shows the cap adjustment and still ties out" below for the full assertion.
+    expect(broken.depCheckPass).toBe(true);
+    expect(broken.cappedSum).toBeCloseTo(50000, 6);
+    expect(broken.capAdjustmentMessage).toContain("Capped at Gross Block");
   });
 
   it("keeps C1 and C2 independent: Test-Broken's C2 side is untouched and passes", async () => {
@@ -245,7 +279,7 @@ describe("Audit Reconciliation report", () => {
     expect(brokenC2.depCheckPass).toBe(true);
   });
 
-  it("flags a disposal after useful life had already expired — accepted, reopened by the 2026-08-27 Excel-alignment revert", async () => {
+  it("disposal after useful life had already expired — was an accepted, unexplained dep-check gap; now ties out via the cap adjustment", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const postExpiry = body.items.find(
@@ -253,14 +287,50 @@ describe("Audit Reconciliation report", () => {
         i.subClassification === "Test-Post-Expiry-Disposal" && i.component === "C1"
     );
     expect(postExpiry).toBeDefined();
-    // Cost side is unaffected by the revert — still reconciles.
+    // Cost side was never affected by this — still reconciles.
     expect(postExpiry.costCheckPass).toBe(true);
     expect(postExpiry.costCheckDelta).toBeCloseTo(0, 6);
-    // Dep side legitimately fails now: step 8 stays flat-rate independent of step 5's
-    // taper, so accDepOpening(10000) + periodDep(40000) - accDepOnDisposed(11698.630137)
-    // no longer equals closingAccDep(0).
-    expect(postExpiry.depCheckPass).toBe(false);
-    expect(postExpiry.depCheckDelta).toBeCloseTo(38301.369863013699, 4);
+    // Step 8 stays flat-rate independent of step 5's taper (confirmed by finance, see
+    // engine.ts), so accDepOpening(10000) + periodDep(40000) - accDepOnDisposed
+    // (11698.630137) doesn't match closingAccDep(0) directly — Closing Acc Dep gets
+    // capped at Gross Block (0, since this asset's fully disposed). The dep check now
+    // accounts for that ₹38,301.37 cap explicitly instead of reporting an unexplained
+    // gap, and ties out exactly.
+    expect(postExpiry.depCheckPass).toBe(true);
+    expect(postExpiry.depCheckDelta).toBeCloseTo(0, 6);
+    expect(postExpiry.cappedSum).toBeCloseTo(38301.369863013699, 4);
+    expect(postExpiry.flooredSum).toBeCloseTo(0, 6);
+    expect(postExpiry.capAdjustmentMessage).toContain("Capped at Gross Block: ₹38301.37");
+  });
+
+  it("an old, short-useful-life asset disposed mid-year (the exact scale-test cap scenario) ties out exactly and shows the adjustment line", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const capScenario = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Cap-Scenario" && i.component === "C1"
+    );
+    expect(capScenario).toBeDefined();
+
+    // Cost side is unaffected by the cap — still reconciles on its own.
+    expect(capScenario.costCheckPass).toBe(true);
+    expect(capScenario.costCheckDelta).toBeCloseTo(0, 6);
+
+    // Confirmed directly against engine.computeComponent: naive Opening Acc Dep(70000)
+    // + Period Dep(20000) - Acc Dep Removed(33375.951293759514) = 56624.048706240486,
+    // capped to Gross Block (50000) — a 6624.048706240486 adjustment.
+    expect(capScenario.accDepOpeningSum).toBeCloseTo(70000, 6);
+    expect(capScenario.periodDepSum).toBeCloseTo(20000, 6);
+    expect(capScenario.accDepRemovedSum).toBeCloseTo(33375.951293759514, 4);
+    expect(capScenario.closingAccDepSum).toBeCloseTo(50000, 6);
+    expect(capScenario.cappedSum).toBeCloseTo(6624.048706240486, 4);
+    expect(capScenario.flooredSum).toBeCloseTo(0, 6);
+
+    // The report ties out exactly once the adjustment is accounted for, and the
+    // adjustment itself is shown explicitly rather than left as an unexplained gap.
+    expect(capScenario.depCheckPass).toBe(true);
+    expect(capScenario.depCheckDelta).toBeCloseTo(0, 6);
+    expect(capScenario.capAdjustmentMessage).toBe("Capped at Gross Block: ₹6624.05");
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {
@@ -321,8 +391,11 @@ describe("Audit Reconciliation report", () => {
     expect(combined).toBeDefined();
     expect(combined.costCheckPass).toBe(false);
     expect(Math.abs(combined.costCheckDelta)).toBeCloseTo(30000, 6);
-    expect(combined.depCheckPass).toBe(false);
-    expect(Math.abs(combined.depCheckDelta)).toBeCloseTo(50000, 6);
+    // Dep side used to fail here too (RECON-BROKEN-2's cap); it now ties out via the
+    // cap adjustment, same as the C1 row above — cost and dep checks are independent,
+    // so the cost check failing doesn't stop the dep check from correctly passing.
+    expect(combined.depCheckPass).toBe(true);
+    expect(combined.cappedSum).toBeCloseTo(50000, 6);
   });
 
   it("exports an Excel workbook", async () => {
@@ -331,6 +404,43 @@ describe("Audit Reconciliation report", () => {
     expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(res.headers["content-disposition"]).toContain("audit-reconciliation-");
     expect(res.rawPayload.length).toBeGreaterThan(0);
+  });
+
+  it("Excel export includes the Acc Dep Adjustment column and shows the cap value for the cap-scenario fixture's C1 row", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+    expect(res.statusCode).toBe(200);
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
+
+    // Row 1 = title, row 2 = blank, row 3 = C1 block's section title, row 4 = C1
+    // block's own header row — same layout every other export test in this file
+    // assumes for the sheets it inspects.
+    const headerRow = sheet.getRow(4);
+    const headers = (headerRow.values as unknown[]).slice(1).map(String);
+    expect(headers).toContain("Acc Dep Adjustment (Cap/Floor)");
+    const adjustmentCol = headers.indexOf("Acc Dep Adjustment (Cap/Floor)") + 1;
+    const accDepCheckCol = headers.indexOf("Dep Check") + 1;
+    // Confirms the column-index shift (Dep Check moved from 10 to 11 to make room for
+    // the new column) actually landed where the header says it did, not just that a
+    // header with the right text exists somewhere in the row.
+    expect(accDepCheckCol).toBe(adjustmentCol + 2);
+
+    // Find the cap-scenario fixture's C1 row by scanning column 1 (Sub Classification)
+    // for its label, and confirm the adjustment cell holds the same capped amount the
+    // JSON API returns for it (6624.048706240486, see the dedicated JSON test above).
+    // The fixture appears in all three blocks (C1, C2, Combined) — the sheet writes C1
+    // first (see buildReconciliationWorkbook), so the first match is its C1 row.
+    let found = false;
+    sheet.eachRow((row, rowNumber) => {
+      if (found || rowNumber <= 4) return;
+      if (row.getCell(1).value === "Test-Cap-Scenario") {
+        found = true;
+        expect(Number(row.getCell(adjustmentCol).value)).toBeCloseTo(6624.048706240486, 4);
+      }
+    });
+    expect(found).toBe(true);
   });
 });
 
