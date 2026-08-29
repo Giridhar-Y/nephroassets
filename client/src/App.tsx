@@ -4,6 +4,7 @@ import { RegisterPage } from "./pages/RegisterPage.js";
 import { LocationSummaryPage } from "./pages/LocationSummaryPage.js";
 import { AuditReconciliationPage } from "./pages/AuditReconciliationPage.js";
 import { DepreciationPostingPage } from "./pages/DepreciationPostingPage.js";
+import { TransferDepreciationReportPage } from "./pages/TransferDepreciationReportPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { ChangePasswordPage } from "./pages/ChangePasswordPage.js";
@@ -81,6 +82,14 @@ export default function App() {
                   element={
                     <SettingsGate>
                       <ReportsPage />
+                    </SettingsGate>
+                  }
+                />
+                <Route
+                  path="/transfer-depreciation-report"
+                  element={
+                    <SettingsGate>
+                      <TransferDepreciationReportPage />
                     </SettingsGate>
                   }
                 />

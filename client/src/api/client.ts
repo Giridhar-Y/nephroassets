@@ -474,6 +474,46 @@ export function fetchDepreciationPosting(
   return request(`/api/reports/depreciation-posting?${new URLSearchParams({ asAt })}`);
 }
 
+export interface LocationSegment {
+  location: string;
+  fromDate: string;
+  toDate: string;
+  daysHeld: number;
+  depreciation: number;
+}
+
+export interface TransferDepreciationAssetRow {
+  farId: string;
+  subClassification: string;
+  assetDescription: string;
+  currentLocation: string;
+  totalDepreciation: number;
+  segments: LocationSegment[];
+}
+
+export interface TransferDepreciationLocationRow {
+  location: string;
+  assetCount: number;
+  totalDepreciation: number;
+}
+
+export interface TransferDepreciationReport {
+  asAt: string;
+  fyStart: string;
+  locationWise: TransferDepreciationLocationRow[];
+  assetWise: TransferDepreciationAssetRow[];
+}
+
+export function fetchTransferDepreciationReport(asAt: string): Promise<TransferDepreciationReport> {
+  return request(`/api/reports/transfer-depreciation?${new URLSearchParams({ asAt })}`);
+}
+
+// Same pattern as Audit Reconciliation's getAuditReconciliationExportUrl — the browser
+// downloads it directly via the Content-Disposition header, this just builds the URL.
+export function getTransferDepreciationExportUrl(asAt: string): string {
+  return `/api/reports/transfer-depreciation/export?${new URLSearchParams({ asAt })}`;
+}
+
 // Masters: managed lists for Center/Location, Sub Classification, and Status — replacing
 // the free-text (or datalist-suggested-but-unenforced) values those fields used to be.
 // Renaming cascades server-side to every asset (and, for centers, every transfer) that

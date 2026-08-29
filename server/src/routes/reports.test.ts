@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import ExcelJS from "exceljs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
@@ -330,5 +331,186 @@ describe("Audit Reconciliation report", () => {
     expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(res.headers["content-disposition"]).toContain("audit-reconciliation-");
     expect(res.rawPayload.length).toBeGreaterThan(0);
+  });
+});
+
+interface AssetWiseRow {
+  farId: string;
+  currentLocation: string;
+  totalDepreciation: number;
+  segments: Array<{ location: string; fromDate: string; toDate: string; daysHeld: number; depreciation: number }>;
+}
+interface LocationWiseRow {
+  location: string;
+  assetCount: number;
+  totalDepreciation: number;
+}
+
+function paise(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+// New reporting-layer work (this report never touches engine.ts/calcFunction.sql) —
+// exercised through the real API, not just the pure splitDepreciationByLocation unit
+// tests, so a mistake in *wiring* the split into computeAsset's trusted total (wrong
+// period bounds, wrong transfer set) would show up here even if the split function
+// itself were correct in isolation.
+describe("Transfer & Depreciation Report", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+
+    await insertAsset({
+      far_id: "XDEP-STILL",
+      sub_classification: "Test-XDep",
+      asset_description: "Never transferred",
+      serial_no: "XD1",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 200000,
+      additions_c1: 0,
+      date_of_disposal: null,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 40000,
+      location: "Center-Still"
+    });
+
+    await insertAsset({
+      far_id: "XDEP-MOVED",
+      sub_classification: "Test-XDep",
+      asset_description: "One mid-period transfer",
+      serial_no: "XD2",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 300000,
+      additions_c1: 0,
+      date_of_disposal: null,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 50000,
+      location: "Center-A"
+    });
+    await db.query(
+      `INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`,
+      ["XDEP-MOVED", "2026-06-15", "Center-B"]
+    );
+
+    // The scenario the report's spec calls out by name: an asset with many location
+    // changes (10+) within one period.
+    await insertAsset({
+      far_id: "XDEP-MANY",
+      sub_classification: "Test-XDep",
+      asset_description: "Many transfers within the period",
+      serial_no: "XD3",
+      qty: 1,
+      useful_life_c1_years: 8,
+      c1_opening_cost: 913457,
+      additions_c1: 0,
+      date_of_disposal: null,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 61111,
+      location: "Center-0"
+    });
+    const manyTransferDates = [
+      "2026-04-05", "2026-04-12", "2026-04-19", "2026-04-28",
+      "2026-05-06", "2026-05-15", "2026-05-27",
+      "2026-06-09", "2026-06-21",
+      "2026-07-03", "2026-07-18",
+      "2026-08-02"
+    ];
+    for (let i = 0; i < manyTransferDates.length; i++) {
+      await db.query(`INSERT INTO transfers (far_id, transaction_date, location) VALUES ($1, $2, $3)`, [
+        "XDEP-MANY",
+        manyTransferDates[i],
+        `Center-${(i % 5) + 1}`
+      ]);
+    }
+
+    app = Fastify();
+    await app.register(reportsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("gives an asset that never transferred a single full-period segment", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
+    const body = res.json();
+    const row = body.assetWise.find((a: AssetWiseRow) => a.farId === "XDEP-STILL");
+    expect(row).toBeDefined();
+    expect(row.segments).toHaveLength(1);
+    expect(row.segments[0].location).toBe("Center-Still");
+    expect(paise(row.segments[0].depreciation)).toBe(paise(row.totalDepreciation));
+  });
+
+  it("splits a single mid-period transfer into two segments that reconcile exactly", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
+    const body = res.json();
+    const row: AssetWiseRow = body.assetWise.find((a: AssetWiseRow) => a.farId === "XDEP-MOVED");
+    expect(row).toBeDefined();
+    expect(row.segments).toHaveLength(2);
+    expect(row.segments[0]!.location).toBe("Center-A");
+    expect(row.segments[1]!.location).toBe("Center-B");
+    expect(row.currentLocation).toBe("Center-B");
+    const segmentSumPaise = row.segments.reduce((s, seg) => s + paise(seg.depreciation), 0);
+    expect(segmentSumPaise).toBe(paise(row.totalDepreciation));
+  });
+
+  it("reconciles exactly (to the paisa) for an asset with many transfers, through the real API", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
+    const body = res.json();
+    const row: AssetWiseRow = body.assetWise.find((a: AssetWiseRow) => a.farId === "XDEP-MANY");
+    expect(row).toBeDefined();
+    // 12 transfer dates all within the period → up to 13 segments (one before the
+    // first transfer, one per transfer after).
+    expect(row.segments.length).toBeGreaterThanOrEqual(10);
+    const segmentSumPaise = row.segments.reduce((s, seg) => s + paise(seg.depreciation), 0);
+    expect(segmentSumPaise).toBe(paise(row.totalDepreciation));
+    // Every segment's days-held is strictly positive — a zero-or-negative segment
+    // slipping through would silently break the days-weighted split.
+    expect(row.segments.every((s) => s.daysHeld > 0)).toBe(true);
+  });
+
+  it("location-wise totals sum to the same grand total as asset-wise totals (nothing gained or lost in aggregation)", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
+    const body = res.json();
+    const assetGrandTotalPaise = body.assetWise.reduce((s: number, a: AssetWiseRow) => s + paise(a.totalDepreciation), 0);
+    const locationGrandTotalPaise = body.locationWise.reduce((s: number, l: LocationWiseRow) => s + paise(l.totalDepreciation), 0);
+    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
+  });
+
+  it("exports an Excel workbook with the three documented sheets, including full Movement Detail for the many-transfer asset", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/export" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(res.headers["content-disposition"]).toContain("transfer-depreciation-");
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheetNames = workbook.worksheets.map((s) => s.name);
+    expect(sheetNames).toEqual(["Location-wise Summary", "Asset-wise Summary", "Movement Detail"]);
+
+    const detailSheet = workbook.getWorksheet("Movement Detail")!;
+    const manyRows: string[] = [];
+    detailSheet.eachRow((row) => {
+      if (row.getCell(1).value === "XDEP-MANY") manyRows.push(String(row.getCell(3).value));
+    });
+    // Every segment for XDEP-MANY made it into the flat detail sheet, not just a sample.
+    expect(manyRows.length).toBeGreaterThanOrEqual(10);
+
+    // XDEP-STILL never transferred (one segment) — it must be excluded from the detail
+    // sheet entirely, per spec ("every asset that moved").
+    let stillAppears = false;
+    detailSheet.eachRow((row) => {
+      if (row.getCell(1).value === "XDEP-STILL") stillAppears = true;
+    });
+    expect(stillAppears).toBe(false);
   });
 });

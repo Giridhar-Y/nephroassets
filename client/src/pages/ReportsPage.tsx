@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { DepreciationIcon, LocationIcon, ReconciliationIcon, ReportsIcon } from "../lib/icons.js";
+import { DepreciationIcon, LocationIcon, ReconciliationIcon, ReportsIcon, TransferIcon } from "../lib/icons.js";
 import type { ComponentType } from "react";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
@@ -21,6 +21,12 @@ const REPORTS: Array<{ to: string; label: string; description: string; icon: Com
     label: "Depreciation Posting",
     description: "The period's total depreciation journal amount, with a per-Sub-Classification breakdown.",
     icon: DepreciationIcon
+  },
+  {
+    to: "/transfer-depreciation-report",
+    label: "Transfer & Depreciation Report",
+    description: "Period depreciation split across every location an asset sat in — location-wise or asset-wise, with each move's own days held.",
+    icon: TransferIcon
   }
 ];
 

@@ -2,8 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
-import type { SettingsRow } from "../db/mappers.js";
-import { daysHeldInclusive } from "../calc/dates.js";
+import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
+import type { AssetRow, SettingsRow, TransferRow } from "../db/mappers.js";
+import { computeAsset } from "../calc/engine.js";
+import type { TransferRecord } from "../calc/types.js";
+import { daysHeldInclusive, maxIsoDate } from "../calc/dates.js";
+import { splitDepreciationByLocation, type LocationSegment } from "../reports/transferDepreciationSplit.js";
 
 const EPSILON = 0.01; // one paisa — guards against currency-display rounding only
 
@@ -384,6 +388,192 @@ async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: st
   return workbook.xlsx.writeBuffer();
 }
 
+// Transfer & Depreciation Report — new reporting-layer work, read-only against the
+// locked calc engine (engine.ts): it calls `computeAsset` exactly as GET /api/assets
+// already does to get each asset's trusted total period depreciation (C1 + C2
+// combined), then hands that single number to `splitDepreciationByLocation` (pure,
+// tested separately) to allocate it across the locations the asset physically sat in
+// during the period. Nothing here recomputes depreciation itself.
+interface TransferDepreciationAssetRow {
+  farId: string;
+  subClassification: string;
+  assetDescription: string;
+  currentLocation: string;
+  totalDepreciation: number;
+  segments: LocationSegment[];
+}
+
+interface TransferDepreciationReport {
+  asAt: string;
+  fyStart: string;
+  locationWise: Array<{ location: string; assetCount: number; totalDepreciation: number }>;
+  assetWise: TransferDepreciationAssetRow[];
+}
+
+async function computeTransferDepreciationReport(
+  db: Awaited<ReturnType<typeof getPool>>,
+  fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number }
+): Promise<TransferDepreciationReport> {
+  // Same "can't have existed before it was capitalized" filter every other report/list
+  // route applies for a given AS_AT — see GET /api/assets's identical condition.
+  const { rows: assetRows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE date_acquired <= $1 ORDER BY far_id`, [
+    fy.asAt
+  ]);
+
+  const farIds = assetRows.map((r) => r.far_id);
+  let transferRows: TransferRow[] = [];
+  if (farIds.length > 0) {
+    const { rows } = await db.query<TransferRow>(
+      `SELECT far_id, transaction_date, location FROM transfers
+       WHERE far_id = ANY($1) AND transaction_date <= $2
+       ORDER BY far_id, transaction_date, id`,
+      [farIds, fy.asAt]
+    );
+    transferRows = rows;
+  }
+  const transfersByFarId = new Map<string, TransferRecord[]>();
+  for (const row of transferRows) {
+    const rec = mapTransferRow(row);
+    const list = transfersByFarId.get(rec.farId);
+    if (list) list.push(rec);
+    else transfersByFarId.set(rec.farId, [rec]);
+  }
+
+  const assetWise: TransferDepreciationAssetRow[] = assetRows.map((row) => {
+    const asset = mapAssetRow(row);
+    const transfers = transfersByFarId.get(asset.farId) ?? [];
+    const result = computeAsset(asset, fy, transfers);
+    const totalDepreciation = result.c1.periodDepreciation + result.c2.periodDepreciation;
+    // The window this asset could have earned depreciation in during the period: from
+    // whichever is later of FY Start or its own capitalization date (a mid-FY
+    // capitalization can't have depreciated before it existed), through the same
+    // effective end date the engine itself used (an earlier Disposal Date, or AS_AT) —
+    // c1/c2 always share the same effectiveEndDate, since disposal is asset-level, not
+    // per-component.
+    const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
+    const periodEnd = result.c1.effectiveEndDate;
+    const segments = splitDepreciationByLocation(asset.location, transfers, periodStart, periodEnd, totalDepreciation);
+    return {
+      farId: asset.farId,
+      subClassification: asset.subClassification,
+      assetDescription: asset.assetDescription,
+      currentLocation: result.effectiveLocation,
+      totalDepreciation,
+      segments
+    };
+  });
+
+  const locationTotals = new Map<string, { assetFarIds: Set<string>; totalDepreciation: number }>();
+  for (const item of assetWise) {
+    for (const segment of item.segments) {
+      const entry = locationTotals.get(segment.location) ?? { assetFarIds: new Set(), totalDepreciation: 0 };
+      entry.assetFarIds.add(item.farId);
+      entry.totalDepreciation += segment.depreciation;
+      locationTotals.set(segment.location, entry);
+    }
+  }
+  const locationWise = [...locationTotals.entries()]
+    .map(([location, entry]) => ({
+      location,
+      assetCount: entry.assetFarIds.size,
+      totalDepreciation: Math.round(entry.totalDepreciation * 100) / 100
+    }))
+    .sort((a, b) => a.location.localeCompare(b.location));
+
+  return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise, assetWise };
+}
+
+const MONEY_FMT_2DP = "#,##0.00;(#,##0.00);-";
+
+function transferDepreciationExportNote(report: TransferDepreciationReport): string {
+  const exportedAtParts = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata"
+  }).formatToParts(new Date());
+  const part = (type: string) => exportedAtParts.find((p) => p.type === type)?.value ?? "";
+  const exportedAtText = `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}`;
+  return `Period: ${report.fyStart} to ${report.asAt}  —  Exported: ${exportedAtText} IST`;
+}
+
+function addNoteRow(sheet: ExcelJS.Worksheet, note: string, columnCount: number) {
+  const noteRow = sheet.addRow([note]);
+  noteRow.font = { italic: true, color: { argb: "FF52525B" } };
+  sheet.mergeCells(noteRow.number, 1, noteRow.number, columnCount);
+  noteRow.commit();
+}
+
+async function buildTransferDepreciationWorkbook(report: TransferDepreciationReport): Promise<ExcelJS.Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const note = transferDepreciationExportNote(report);
+
+  const locationSheet = workbook.addWorksheet("Location-wise Summary");
+  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 20 }];
+  addNoteRow(locationSheet, note, 3);
+  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "Total Depreciation"]);
+  locationHeader.font = { bold: true };
+  locationHeader.commit();
+  for (const row of report.locationWise) {
+    const r = locationSheet.addRow([row.location, row.assetCount, row.totalDepreciation]);
+    r.getCell(3).numFmt = MONEY_FMT_2DP;
+    r.commit();
+  }
+
+  const assetSheet = workbook.addWorksheet("Asset-wise Summary");
+  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 20 }];
+  addNoteRow(assetSheet, note, 4);
+  const assetHeader = assetSheet.addRow(["FAR ID", "Sub Classification", "Current Location", "Total Period Depreciation"]);
+  assetHeader.font = { bold: true };
+  assetHeader.commit();
+  for (const item of report.assetWise) {
+    const r = assetSheet.addRow([item.farId, item.subClassification, item.currentLocation, item.totalDepreciation]);
+    r.getCell(4).numFmt = MONEY_FMT_2DP;
+    r.commit();
+  }
+
+  // Every location-stay segment, for every asset that actually moved during the period
+  // (more than one segment) — a single asset with no transfers has nothing to detail
+  // beyond what the Asset-wise Summary sheet already shows. Excel can't do the app's
+  // expand/collapse interaction, so this flat sheet is the equivalent: grouped by FAR
+  // ID, each asset's own segments in chronological order, filterable/pivotable as-is.
+  const detailSheet = workbook.addWorksheet("Movement Detail");
+  detailSheet.columns = [{ width: 18 }, { width: 22 }, { width: 22 }, { width: 14 }, { width: 14 }, { width: 12 }, { width: 16 }];
+  addNoteRow(detailSheet, note, 7);
+  const detailHeader = detailSheet.addRow([
+    "FAR ID",
+    "Sub Classification",
+    "Location",
+    "From Date",
+    "To Date",
+    "Days Held",
+    "Depreciation"
+  ]);
+  detailHeader.font = { bold: true };
+  detailHeader.commit();
+  for (const item of report.assetWise) {
+    if (item.segments.length < 2) continue;
+    for (const segment of item.segments) {
+      const r = detailSheet.addRow([
+        item.farId,
+        item.subClassification,
+        segment.location,
+        segment.fromDate,
+        segment.toDate,
+        segment.daysHeld,
+        segment.depreciation
+      ]);
+      r.getCell(7).numFmt = MONEY_FMT_2DP;
+      r.commit();
+    }
+  }
+
+  return workbook.xlsx.writeBuffer();
+}
+
 export default async function reportsRoutes(app: FastifyInstance) {
   // Location Summary: count and total C1 Gross Block for assets whose Effective
   // Location matches the chosen center, computed with a single DB-level aggregate
@@ -516,5 +706,42 @@ export default async function reportsRoutes(app: FastifyInstance) {
     const totalPeriodDepreciation = breakdown.reduce((sum, b) => sum + b.total, 0);
 
     return { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
+  });
+
+  app.get("/api/reports/transfer-depreciation", async (req, reply) => {
+    const parsed = asAtQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+
+    return computeTransferDepreciationReport(db, fy);
+  });
+
+  app.get("/api/reports/transfer-depreciation/export", async (req, reply) => {
+    const parsed = asAtQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+
+    const report = await computeTransferDepreciationReport(db, fy);
+    const buffer = await buildTransferDepreciationWorkbook(report);
+
+    reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    reply.header("Content-Disposition", `attachment; filename="transfer-depreciation-${fy.asAt}.xlsx"`);
+    return reply.send(buffer);
   });
 }
