@@ -42,5 +42,6 @@ export {
   PeopleRegular as AdminIcon,
   KeyRegular as KeyIcon,
   LinkRegular as LinkIcon,
-  MergeRegular as MergeIcon
+  MergeRegular as MergeIcon,
+  DocumentBulletListClockRegular as AuditLogIcon
 } from "@fluentui/react-icons";

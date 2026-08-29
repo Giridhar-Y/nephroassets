@@ -9,6 +9,7 @@ import bulkTransfersRoutes from "./bulkTransfers.js";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
 import bulkMergeRoutes from "./bulkMerge.js";
 import adminUsersRoutes from "./adminUsers.js";
+import deleteAuditLogRoutes from "./deleteAuditLog.js";
 import { emptyMultipartPayload } from "./bulkTestHelpers.js";
 import { getPool } from "../db/pool.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -38,6 +39,7 @@ describe("Role-based authorization", () => {
     await app.register(bulkDisposalsRoutes);
     await app.register(bulkMergeRoutes);
     await app.register(adminUsersRoutes);
+    await app.register(deleteAuditLogRoutes);
     await app.ready();
   });
 
@@ -113,7 +115,8 @@ describe("Role-based authorization", () => {
       ["DELETE", "/api/assets/ROLE-TEST-1"],
       ["POST", "/api/assets/ROLE-TEST-1/addition/undo"],
       ["POST", "/api/assets/ROLE-TEST-1/disposal/undo"],
-      ["DELETE", "/api/transfers/1"]
+      ["DELETE", "/api/transfers/1"],
+      ["GET", "/api/audit-log/deletes"]
     ] as const)("is blocked (403) from the Global-Admin-only %s %s", async (method, url) => {
       const res = await app.inject({ method, url, headers: { cookie: viewerCookie }, payload: { reason: "test" } });
       expect(res.statusCode).toBe(403);
@@ -225,7 +228,8 @@ describe("Role-based authorization", () => {
       ["DELETE", "/api/assets/ROLE-TEST-1"],
       ["POST", "/api/assets/ROLE-TEST-1/addition/undo"],
       ["POST", "/api/assets/ROLE-TEST-1/disposal/undo"],
-      ["DELETE", "/api/transfers/1"]
+      ["DELETE", "/api/transfers/1"],
+      ["GET", "/api/audit-log/deletes"]
     ] as const)("is blocked (403) from the Global-Admin-only %s %s", async (method, url) => {
       await app.inject({ method: "POST", url: "/api/assets", headers: { cookie: editorCookie }, payload: NEW_ASSET });
       const res = await app.inject({ method, url, headers: { cookie: editorCookie }, payload: { reason: "test" } });
@@ -315,6 +319,12 @@ describe("Role-based authorization", () => {
         payload: { reason: "role test" }
       });
       expect(transferDelete.statusCode).toBe(404);
+    });
+
+    it("can read the delete audit log", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/audit-log/deletes", headers: { cookie: adminCookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toHaveProperty("items");
     });
   });
 });

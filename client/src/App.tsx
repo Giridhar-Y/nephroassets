@@ -9,6 +9,7 @@ import { SettingsPage } from "./pages/SettingsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { ChangePasswordPage } from "./pages/ChangePasswordPage.js";
 import { AdminPage } from "./pages/AdminPage.js";
+import { DeleteAuditLogPage } from "./pages/DeleteAuditLogPage.js";
 import { TransfersPage } from "./pages/TransfersPage.js";
 import { CapitalizationPage } from "./pages/CapitalizationPage.js";
 import { AdditionsPage } from "./pages/AdditionsPage.js";
@@ -168,6 +169,14 @@ export default function App() {
                   element={
                     <RequireAdmin>
                       <AdminPage />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/delete-log"
+                  element={
+                    <RequireAdmin>
+                      <DeleteAuditLogPage />
                     </RequireAdmin>
                   }
                 />

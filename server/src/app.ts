@@ -20,6 +20,7 @@ import assetsExportRoutes from "./routes/assetsExport.js";
 import mastersRoutes from "./routes/masters.js";
 import bulkMastersRoutes from "./routes/bulkMasters.js";
 import bulkMergeRoutes from "./routes/bulkMerge.js";
+import deleteAuditLogRoutes from "./routes/deleteAuditLog.js";
 
 // Builds and registers the Fastify app but never calls `.listen(...)` — shared by the
 // local/Render entry (index.ts, which also seeds the DB and listens on a port) and the
@@ -62,6 +63,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(mastersRoutes);
   await app.register(bulkMastersRoutes);
   await app.register(bulkMergeRoutes);
+  await app.register(deleteAuditLogRoutes);
 
   // Fastify's default error handler already logs, but doesn't guarantee a JSON body —
   // an error thrown before the response starts can still leave the platform (Vercel) to

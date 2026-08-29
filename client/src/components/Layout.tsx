@@ -18,7 +18,8 @@ import {
   PanelCollapseIcon,
   PanelExpandIcon,
   BookDatabaseIcon,
-  AdminIcon
+  AdminIcon,
+  AuditLogIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
@@ -38,6 +39,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIc
 ];
 
 const ADMIN_NAV_ITEM = { to: "/admin", label: "Admin", icon: AdminIcon };
+const DELETE_LOG_NAV_ITEM = { to: "/delete-log", label: "Delete Log", icon: AuditLogIcon };
 
 // Editor-only screens — a viewer has no access to these at all (server-enforced by
 // requireEditor on their API routes; this is just the client-side nav/UX mirror).
@@ -99,7 +101,7 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
   const visibleItems =
     user?.role === "viewer" ? NAV_ITEMS.filter((item) => !EDITOR_ONLY_PATHS.has(item.to)) : NAV_ITEMS;
-  const navItems = user?.role === "admin" ? [...visibleItems, ADMIN_NAV_ITEM] : visibleItems;
+  const navItems = user?.role === "admin" ? [...visibleItems, DELETE_LOG_NAV_ITEM, ADMIN_NAV_ITEM] : visibleItems;
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
