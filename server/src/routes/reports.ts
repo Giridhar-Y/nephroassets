@@ -7,7 +7,7 @@ import type { AssetRow, SettingsRow, TransferRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
 import type { TransferRecord } from "../calc/types.js";
 import { daysHeldInclusive, maxIsoDate } from "../calc/dates.js";
-import { splitDepreciationByLocation, type LocationSegment } from "../reports/transferDepreciationSplit.js";
+import { round2, splitDepreciationByLocation, type LocationSegment } from "../reports/transferDepreciationSplit.js";
 
 const EPSILON = 0.01; // one paisa — guards against currency-display rounding only
 
@@ -390,23 +390,36 @@ async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: st
 
 // Transfer & Depreciation Report — new reporting-layer work, read-only against the
 // locked calc engine (engine.ts): it calls `computeAsset` exactly as GET /api/assets
-// already does to get each asset's trusted total period depreciation (C1 + C2
-// combined), then hands that single number to `splitDepreciationByLocation` (pure,
-// tested separately) to allocate it across the locations the asset physically sat in
-// during the period. Nothing here recomputes depreciation itself.
+// already does to get each asset's trusted C1 and C2 period depreciation, then hands
+// those two numbers to `splitDepreciationByLocation` (pure, tested separately) to
+// allocate each — independently, so each reconciles exactly on its own — across the
+// locations the asset physically sat in during the period. Nothing here recomputes
+// depreciation itself. C1/C2 are carried through everywhere this report shows a money
+// figure, matching Register's own component breakdown, with a combined total
+// alongside for convenience (always exactly c1 + c2, never independently rounded).
 interface TransferDepreciationAssetRow {
   farId: string;
   subClassification: string;
   assetDescription: string;
   currentLocation: string;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
   totalDepreciation: number;
   segments: LocationSegment[];
+}
+
+interface TransferDepreciationLocationRow {
+  location: string;
+  assetCount: number;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
+  totalDepreciation: number;
 }
 
 interface TransferDepreciationReport {
   asAt: string;
   fyStart: string;
-  locationWise: Array<{ location: string; assetCount: number; totalDepreciation: number }>;
+  locationWise: TransferDepreciationLocationRow[];
   assetWise: TransferDepreciationAssetRow[];
 }
 
@@ -443,7 +456,16 @@ async function computeTransferDepreciationReport(
     const asset = mapAssetRow(row);
     const transfers = transfersByFarId.get(asset.farId) ?? [];
     const result = computeAsset(asset, fy, transfers);
-    const totalDepreciation = result.c1.periodDepreciation + result.c2.periodDepreciation;
+    // Rounded here, once, at the paisa — and used as-is everywhere downstream (as the
+    // split target, in this row, and in the location-wise aggregation of its
+    // segments). Splitting a RAW float total across locations but exposing a
+    // differently-rounded "total" here would make each asset's own segments reconcile
+    // internally while still drifting the report's grand total by a few paise overall
+    // (raw-sum-then-round vs round-then-sum disagree by up to 1 paisa per asset, and
+    // that compounds across thousands of assets) — found via the location-wise vs.
+    // asset-wise grand-total test.
+    const c1TotalDepreciation = round2(result.c1.periodDepreciation);
+    const c2TotalDepreciation = round2(result.c2.periodDepreciation);
     // The window this asset could have earned depreciation in during the period: from
     // whichever is later of FY Start or its own capitalization date (a mid-FY
     // capitalization can't have depreciated before it existed), through the same
@@ -452,32 +474,48 @@ async function computeTransferDepreciationReport(
     // per-component.
     const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
     const periodEnd = result.c1.effectiveEndDate;
-    const segments = splitDepreciationByLocation(asset.location, transfers, periodStart, periodEnd, totalDepreciation);
+    const segments = splitDepreciationByLocation(
+      asset.location,
+      transfers,
+      periodStart,
+      periodEnd,
+      c1TotalDepreciation,
+      c2TotalDepreciation
+    );
     return {
       farId: asset.farId,
       subClassification: asset.subClassification,
       assetDescription: asset.assetDescription,
       currentLocation: result.effectiveLocation,
-      totalDepreciation,
+      c1TotalDepreciation,
+      c2TotalDepreciation,
+      totalDepreciation: round2(c1TotalDepreciation + c2TotalDepreciation),
       segments
     };
   });
 
-  const locationTotals = new Map<string, { assetFarIds: Set<string>; totalDepreciation: number }>();
+  const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
   for (const item of assetWise) {
     for (const segment of item.segments) {
-      const entry = locationTotals.get(segment.location) ?? { assetFarIds: new Set(), totalDepreciation: 0 };
+      const entry = locationTotals.get(segment.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
       entry.assetFarIds.add(item.farId);
-      entry.totalDepreciation += segment.depreciation;
+      entry.c1 += segment.c1Depreciation;
+      entry.c2 += segment.c2Depreciation;
       locationTotals.set(segment.location, entry);
     }
   }
   const locationWise = [...locationTotals.entries()]
-    .map(([location, entry]) => ({
-      location,
-      assetCount: entry.assetFarIds.size,
-      totalDepreciation: Math.round(entry.totalDepreciation * 100) / 100
-    }))
+    .map(([location, entry]) => {
+      const c1TotalDepreciation = round2(entry.c1);
+      const c2TotalDepreciation = round2(entry.c2);
+      return {
+        location,
+        assetCount: entry.assetFarIds.size,
+        c1TotalDepreciation,
+        c2TotalDepreciation,
+        totalDepreciation: round2(c1TotalDepreciation + c2TotalDepreciation)
+      };
+    })
     .sort((a, b) => a.location.localeCompare(b.location));
 
   return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise, assetWise };
@@ -512,26 +550,44 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
   const note = transferDepreciationExportNote(report);
 
   const locationSheet = workbook.addWorksheet("Location-wise Summary");
-  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 20 }];
-  addNoteRow(locationSheet, note, 3);
-  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "Total Depreciation"]);
+  locationSheet.columns = [{ width: 26 }, { width: 14 }, { width: 18 }, { width: 18 }, { width: 18 }];
+  addNoteRow(locationSheet, note, 5);
+  const locationHeader = locationSheet.addRow(["Location", "Asset Count", "C1 Depreciation", "C2 Depreciation", "Total Depreciation"]);
   locationHeader.font = { bold: true };
   locationHeader.commit();
   for (const row of report.locationWise) {
-    const r = locationSheet.addRow([row.location, row.assetCount, row.totalDepreciation]);
+    const r = locationSheet.addRow([row.location, row.assetCount, row.c1TotalDepreciation, row.c2TotalDepreciation, row.totalDepreciation]);
     r.getCell(3).numFmt = MONEY_FMT_2DP;
+    r.getCell(4).numFmt = MONEY_FMT_2DP;
+    r.getCell(5).numFmt = MONEY_FMT_2DP;
     r.commit();
   }
 
   const assetSheet = workbook.addWorksheet("Asset-wise Summary");
-  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 20 }];
-  addNoteRow(assetSheet, note, 4);
-  const assetHeader = assetSheet.addRow(["FAR ID", "Sub Classification", "Current Location", "Total Period Depreciation"]);
+  assetSheet.columns = [{ width: 18 }, { width: 22 }, { width: 20 }, { width: 18 }, { width: 18 }, { width: 20 }];
+  addNoteRow(assetSheet, note, 6);
+  const assetHeader = assetSheet.addRow([
+    "FAR ID",
+    "Sub Classification",
+    "Current Location",
+    "C1 Period Depreciation",
+    "C2 Period Depreciation",
+    "Total Period Depreciation"
+  ]);
   assetHeader.font = { bold: true };
   assetHeader.commit();
   for (const item of report.assetWise) {
-    const r = assetSheet.addRow([item.farId, item.subClassification, item.currentLocation, item.totalDepreciation]);
+    const r = assetSheet.addRow([
+      item.farId,
+      item.subClassification,
+      item.currentLocation,
+      item.c1TotalDepreciation,
+      item.c2TotalDepreciation,
+      item.totalDepreciation
+    ]);
     r.getCell(4).numFmt = MONEY_FMT_2DP;
+    r.getCell(5).numFmt = MONEY_FMT_2DP;
+    r.getCell(6).numFmt = MONEY_FMT_2DP;
     r.commit();
   }
 
@@ -541,8 +597,18 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
   // expand/collapse interaction, so this flat sheet is the equivalent: grouped by FAR
   // ID, each asset's own segments in chronological order, filterable/pivotable as-is.
   const detailSheet = workbook.addWorksheet("Movement Detail");
-  detailSheet.columns = [{ width: 18 }, { width: 22 }, { width: 22 }, { width: 14 }, { width: 14 }, { width: 12 }, { width: 16 }];
-  addNoteRow(detailSheet, note, 7);
+  detailSheet.columns = [
+    { width: 18 },
+    { width: 22 },
+    { width: 22 },
+    { width: 14 },
+    { width: 14 },
+    { width: 12 },
+    { width: 14 },
+    { width: 14 },
+    { width: 16 }
+  ];
+  addNoteRow(detailSheet, note, 9);
   const detailHeader = detailSheet.addRow([
     "FAR ID",
     "Sub Classification",
@@ -550,6 +616,8 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
     "From Date",
     "To Date",
     "Days Held",
+    "C1 Depreciation",
+    "C2 Depreciation",
     "Depreciation"
   ]);
   detailHeader.font = { bold: true };
@@ -564,9 +632,13 @@ async function buildTransferDepreciationWorkbook(report: TransferDepreciationRep
         segment.fromDate,
         segment.toDate,
         segment.daysHeld,
+        segment.c1Depreciation,
+        segment.c2Depreciation,
         segment.depreciation
       ]);
       r.getCell(7).numFmt = MONEY_FMT_2DP;
+      r.getCell(8).numFmt = MONEY_FMT_2DP;
+      r.getCell(9).numFmt = MONEY_FMT_2DP;
       r.commit();
     }
   }

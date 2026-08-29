@@ -337,12 +337,24 @@ describe("Audit Reconciliation report", () => {
 interface AssetWiseRow {
   farId: string;
   currentLocation: string;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
   totalDepreciation: number;
-  segments: Array<{ location: string; fromDate: string; toDate: string; daysHeld: number; depreciation: number }>;
+  segments: Array<{
+    location: string;
+    fromDate: string;
+    toDate: string;
+    daysHeld: number;
+    c1Depreciation: number;
+    c2Depreciation: number;
+    depreciation: number;
+  }>;
 }
 interface LocationWiseRow {
   location: string;
   assetCount: number;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
   totalDepreciation: number;
 }
 
@@ -414,6 +426,14 @@ describe("Transfer & Depreciation Report", () => {
       date_of_disposal: null,
       deletions_c1: 0,
       acc_dep_c1_opening: 61111,
+      // A real, distinct C2 component too — different useful life and cost from C1 —
+      // so a bug that only reconciles the combined figure (e.g. splitting c1+c2 as one
+      // lump sum) can't hide behind a zero C2.
+      useful_life_c2_years: 4,
+      c2_opening_cost: 214009,
+      additions_c2: 0,
+      deletions_c2: 0,
+      acc_dep_c2_opening: 33250,
       location: "Center-0"
     });
     const manyTransferDates = [
@@ -478,12 +498,42 @@ describe("Transfer & Depreciation Report", () => {
     expect(row.segments.every((s) => s.daysHeld > 0)).toBe(true);
   });
 
-  it("location-wise totals sum to the same grand total as asset-wise totals (nothing gained or lost in aggregation)", async () => {
+  // C1 and C2 have genuinely different useful lives and costs for XDEP-MANY (see the
+  // fixture above), so this can't pass by C2 happening to be zero — each component's
+  // own segments must independently sum to that component's own real total.
+  it("reconciles C1 and C2 independently (not just their combined total) for the many-transfer asset", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
     const body = res.json();
-    const assetGrandTotalPaise = body.assetWise.reduce((s: number, a: AssetWiseRow) => s + paise(a.totalDepreciation), 0);
-    const locationGrandTotalPaise = body.locationWise.reduce((s: number, l: LocationWiseRow) => s + paise(l.totalDepreciation), 0);
-    expect(locationGrandTotalPaise).toBe(assetGrandTotalPaise);
+    const row: AssetWiseRow = body.assetWise.find((a: AssetWiseRow) => a.farId === "XDEP-MANY");
+    expect(row).toBeDefined();
+    expect(row.c1TotalDepreciation).toBeGreaterThan(0);
+    expect(row.c2TotalDepreciation).toBeGreaterThan(0);
+    // The two components must be genuinely different, or this test can't tell a
+    // combined-only split from a real per-component one.
+    expect(paise(row.c1TotalDepreciation)).not.toBe(paise(row.c2TotalDepreciation));
+
+    const c1SumPaise = row.segments.reduce((s, seg) => s + paise(seg.c1Depreciation), 0);
+    const c2SumPaise = row.segments.reduce((s, seg) => s + paise(seg.c2Depreciation), 0);
+    expect(c1SumPaise).toBe(paise(row.c1TotalDepreciation));
+    expect(c2SumPaise).toBe(paise(row.c2TotalDepreciation));
+    // Every segment's own combined figure is exactly its two component figures added.
+    for (const seg of row.segments) {
+      expect(paise(seg.depreciation)).toBe(paise(seg.c1Depreciation) + paise(seg.c2Depreciation));
+    }
+  });
+
+  it("location-wise totals sum to the same grand total as asset-wise totals, per component and combined", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation" });
+    const body = res.json();
+    const assetC1Paise = body.assetWise.reduce((s: number, a: AssetWiseRow) => s + paise(a.c1TotalDepreciation), 0);
+    const assetC2Paise = body.assetWise.reduce((s: number, a: AssetWiseRow) => s + paise(a.c2TotalDepreciation), 0);
+    const assetTotalPaise = body.assetWise.reduce((s: number, a: AssetWiseRow) => s + paise(a.totalDepreciation), 0);
+    const locC1Paise = body.locationWise.reduce((s: number, l: LocationWiseRow) => s + paise(l.c1TotalDepreciation), 0);
+    const locC2Paise = body.locationWise.reduce((s: number, l: LocationWiseRow) => s + paise(l.c2TotalDepreciation), 0);
+    const locTotalPaise = body.locationWise.reduce((s: number, l: LocationWiseRow) => s + paise(l.totalDepreciation), 0);
+    expect(locC1Paise).toBe(assetC1Paise);
+    expect(locC2Paise).toBe(assetC2Paise);
+    expect(locTotalPaise).toBe(assetTotalPaise);
   });
 
   it("exports an Excel workbook with the three documented sheets, including full Movement Detail for the many-transfer asset", async () => {
@@ -497,13 +547,59 @@ describe("Transfer & Depreciation Report", () => {
     const sheetNames = workbook.worksheets.map((s) => s.name);
     expect(sheetNames).toEqual(["Location-wise Summary", "Asset-wise Summary", "Movement Detail"]);
 
+    // Every sheet carries the C1/C2 breakdown, not just a combined figure.
+    const locationHeaderRow = workbook.getWorksheet("Location-wise Summary")!.getRow(2).values as unknown[];
+    expect(locationHeaderRow).toEqual([
+      undefined,
+      "Location",
+      "Asset Count",
+      "C1 Depreciation",
+      "C2 Depreciation",
+      "Total Depreciation"
+    ]);
+    const assetHeaderRow = workbook.getWorksheet("Asset-wise Summary")!.getRow(2).values as unknown[];
+    expect(assetHeaderRow).toEqual([
+      undefined,
+      "FAR ID",
+      "Sub Classification",
+      "Current Location",
+      "C1 Period Depreciation",
+      "C2 Period Depreciation",
+      "Total Period Depreciation"
+    ]);
+    const detailHeaderRow = workbook.getWorksheet("Movement Detail")!.getRow(2).values as unknown[];
+    expect(detailHeaderRow).toEqual([
+      undefined,
+      "FAR ID",
+      "Sub Classification",
+      "Location",
+      "From Date",
+      "To Date",
+      "Days Held",
+      "C1 Depreciation",
+      "C2 Depreciation",
+      "Depreciation"
+    ]);
+
     const detailSheet = workbook.getWorksheet("Movement Detail")!;
-    const manyRows: string[] = [];
+    const manyRows: Array<{ location: string; c1: number; c2: number; total: number }> = [];
     detailSheet.eachRow((row) => {
-      if (row.getCell(1).value === "XDEP-MANY") manyRows.push(String(row.getCell(3).value));
+      if (row.getCell(1).value === "XDEP-MANY") {
+        manyRows.push({
+          location: String(row.getCell(3).value),
+          c1: Number(row.getCell(7).value),
+          c2: Number(row.getCell(8).value),
+          total: Number(row.getCell(9).value)
+        });
+      }
     });
     // Every segment for XDEP-MANY made it into the flat detail sheet, not just a sample.
     expect(manyRows.length).toBeGreaterThanOrEqual(10);
+    // C2 is genuinely present in the export (not silently dropped/zeroed).
+    expect(manyRows.some((r) => r.c2 > 0)).toBe(true);
+    for (const r of manyRows) {
+      expect(paise(r.total)).toBe(paise(r.c1) + paise(r.c2));
+    }
 
     // XDEP-STILL never transferred (one segment) — it must be excluded from the detail
     // sheet entirely, per spec ("every asset that moved").

@@ -14,7 +14,7 @@ import { ChevronDownIcon, EmptyIcon, ErrorIcon, ExportIcon, LocationIcon, RetryI
 
 type View = "location" | "asset";
 
-const ASSET_GRID_COLS = "grid-cols-[28px_140px_1fr_160px_160px]";
+const ASSET_GRID_COLS = "grid-cols-[28px_120px_1fr_130px_110px_110px_120px]";
 const ROW_HEIGHT = 40;
 
 function LocationWiseTable({ report }: { report: TransferDepreciationReport }) {
@@ -26,13 +26,17 @@ function LocationWiseTable({ report }: { report: TransferDepreciationReport }) {
       </div>
     );
   }
+  const grandC1 = report.locationWise.reduce((sum, r) => sum + r.c1TotalDepreciation, 0);
+  const grandC2 = report.locationWise.reduce((sum, r) => sum + r.c2TotalDepreciation, 0);
   const grandTotal = report.locationWise.reduce((sum, r) => sum + r.totalDepreciation, 0);
   return (
-    <table className="w-full max-w-3xl border-separate border-spacing-0 text-sm">
+    <table className="w-full max-w-4xl border-separate border-spacing-0 text-sm">
       <thead>
         <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
           <th className="border-b-2 border-gray-300 py-2 pr-3">Location</th>
           <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Asset Count</th>
+          <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">C1</th>
+          <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">C2</th>
           <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Total Depreciation</th>
         </tr>
       </thead>
@@ -41,6 +45,12 @@ function LocationWiseTable({ report }: { report: TransferDepreciationReport }) {
           <tr key={row.location}>
             <td className="border-b border-gray-100 py-2 pr-3 font-medium text-ink">{row.location}</td>
             <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">{row.assetCount}</td>
+            <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+              {formatCurrency(row.c1TotalDepreciation)}
+            </td>
+            <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+              {formatCurrency(row.c2TotalDepreciation)}
+            </td>
             <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
               {formatCurrency(row.totalDepreciation)}
             </td>
@@ -54,6 +64,12 @@ function LocationWiseTable({ report }: { report: TransferDepreciationReport }) {
             {report.locationWise.reduce((sum, r) => sum + r.assetCount, 0)}
           </td>
           <td className="border-t-2 border-gray-300 py-2 pr-3 text-right font-semibold tabular-nums">
+            {formatCurrency(grandC1)}
+          </td>
+          <td className="border-t-2 border-gray-300 py-2 pr-3 text-right font-semibold tabular-nums">
+            {formatCurrency(grandC2)}
+          </td>
+          <td className="border-t-2 border-gray-300 py-2 pr-3 text-right font-semibold tabular-nums">
             {formatCurrency(grandTotal)}
           </td>
         </tr>
@@ -65,16 +81,14 @@ function LocationWiseTable({ report }: { report: TransferDepreciationReport }) {
 function AssetRow({
   item,
   expanded,
-  onToggle,
-  measureRef
+  onToggle
 }: {
   item: TransferDepreciationAssetRow;
   expanded: boolean;
   onToggle: () => void;
-  measureRef: (el: HTMLDivElement | null) => void;
 }) {
   return (
-    <div ref={measureRef} className="border-b border-gray-100">
+    <div className="border-b border-gray-100">
       <button
         type="button"
         onClick={onToggle}
@@ -89,6 +103,8 @@ function AssetRow({
         <span className="truncate font-medium text-ink">{item.farId}</span>
         <span className="truncate text-gray-600">{item.assetDescription}</span>
         <span className="truncate text-gray-600">{item.currentLocation}</span>
+        <span className="text-right tabular-nums text-gray-600">{formatCurrency(item.c1TotalDepreciation)}</span>
+        <span className="text-right tabular-nums text-gray-600">{formatCurrency(item.c2TotalDepreciation)}</span>
         <span className="text-right tabular-nums text-ink">{formatCurrency(item.totalDepreciation)}</span>
       </button>
 
@@ -104,6 +120,8 @@ function AssetRow({
                   <th className="py-1 pr-3">From</th>
                   <th className="py-1 pr-3">To</th>
                   <th className="py-1 pr-3 text-right">Days Held</th>
+                  <th className="py-1 pr-3 text-right">C1</th>
+                  <th className="py-1 pr-3 text-right">C2</th>
                   <th className="py-1 pr-3 text-right">Depreciation</th>
                 </tr>
               </thead>
@@ -114,6 +132,8 @@ function AssetRow({
                     <td className="py-1 pr-3 text-gray-600">{formatDate(seg.fromDate)}</td>
                     <td className="py-1 pr-3 text-gray-600">{formatDate(seg.toDate)}</td>
                     <td className="py-1 pr-3 text-right tabular-nums text-gray-600">{seg.daysHeld}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums text-gray-600">{formatCurrency(seg.c1Depreciation)}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums text-gray-600">{formatCurrency(seg.c2Depreciation)}</td>
                     <td className="py-1 pr-3 text-right tabular-nums text-gray-600">{formatCurrency(seg.depreciation)}</td>
                   </tr>
                 ))}
@@ -128,7 +148,9 @@ function AssetRow({
 
 function AssetWiseTable({ report }: { report: TransferDepreciationReport }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [expandedFarId, setExpandedFarId] = useState<string | null>(null);
+  // Any number of rows can be expanded at once — each one's movement timeline is
+  // independent, and comparing two assets side by side is a real use case.
+  const [expandedFarIds, setExpandedFarIds] = useState<Set<string>>(new Set());
 
   const virtualizer = useVirtualizer({
     count: report.assetWise.length,
@@ -147,12 +169,16 @@ function AssetWiseTable({ report }: { report: TransferDepreciationReport }) {
   }
 
   return (
-    <div className="max-w-4xl rounded-md border border-gray-200">
-      <div className={`sticky top-0 z-10 grid ${ASSET_GRID_COLS} border-b-2 border-gray-300 bg-gray-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500`}>
+    <div className="max-w-5xl rounded-md border border-gray-200">
+      <div
+        className={`sticky top-0 z-10 grid ${ASSET_GRID_COLS} border-b-2 border-gray-300 bg-gray-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-gray-500`}
+      >
         <span />
         <span>FAR ID</span>
         <span>Description</span>
         <span>Current Location</span>
+        <span className="text-right">C1</span>
+        <span className="text-right">C2</span>
         <span className="text-right">Total Depreciation</span>
       </div>
       <div ref={scrollRef} className="max-h-[60vh] overflow-auto">
@@ -160,19 +186,33 @@ function AssetWiseTable({ report }: { report: TransferDepreciationReport }) {
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const item = report.assetWise[virtualRow.index]!;
             return (
+              // The measured element MUST be the one carrying both `data-index` (so the
+              // virtualizer's ResizeObserver can attribute a size change to the right
+              // item) and the absolute positioning it then updates via `translateY` —
+              // splitting those across a wrapper + a nested ref (the bug this replaced)
+              // let the virtualizer measure a size it could never actually attribute to
+              // an index, so later rows' offsets never shifted and an expanded row's
+              // detail table rendered on top of whatever came after it instead of
+              // pushing it down.
               <div
                 key={item.farId}
+                data-index={virtualRow.index}
+                ref={virtualizer.measureElement}
                 data-testid="asset-wise-row"
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 <AssetRow
                   item={item}
-                  expanded={expandedFarId === item.farId}
-                  onToggle={() => setExpandedFarId((prev) => (prev === item.farId ? null : item.farId))}
-                  measureRef={(el) => {
-                    virtualizer.measureElement(el);
-                  }}
+                  expanded={expandedFarIds.has(item.farId)}
+                  onToggle={() =>
+                    setExpandedFarIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.farId)) next.delete(item.farId);
+                      else next.add(item.farId);
+                      return next;
+                    })
+                  }
                 />
               </div>
             );

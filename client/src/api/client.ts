@@ -479,6 +479,8 @@ export interface LocationSegment {
   fromDate: string;
   toDate: string;
   daysHeld: number;
+  c1Depreciation: number;
+  c2Depreciation: number;
   depreciation: number;
 }
 
@@ -487,6 +489,8 @@ export interface TransferDepreciationAssetRow {
   subClassification: string;
   assetDescription: string;
   currentLocation: string;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
   totalDepreciation: number;
   segments: LocationSegment[];
 }
@@ -494,6 +498,8 @@ export interface TransferDepreciationAssetRow {
 export interface TransferDepreciationLocationRow {
   location: string;
   assetCount: number;
+  c1TotalDepreciation: number;
+  c2TotalDepreciation: number;
   totalDepreciation: number;
 }
 
