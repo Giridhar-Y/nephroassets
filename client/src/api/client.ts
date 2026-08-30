@@ -788,6 +788,14 @@ export interface AuthUser {
    *  The single source of truth for what this user can actually do; `role` above is a
    *  creation-time label only. Use lib/permissions.ts's `hasPermission` to check it. */
   permissions: string[];
+  /** A second, independent dimension on top of `permissions` above — which centers
+   *  this user can see/act on, narrowing rows within whatever `permissions` already
+   *  allows, never replacing that check. `null` means unscoped (sees every center,
+   *  every pre-existing user's behavior); a non-null array (even empty) means scoped
+   *  to exactly these center codes. Purely informational client-side today (e.g. for
+   *  a future picker-narrowing convenience) — every real boundary is enforced
+   *  server-side regardless of what this says. */
+  centerAccess: string[] | null;
 }
 
 export function login(username: string, password: string): Promise<{ user: AuthUser }> {
@@ -861,13 +869,26 @@ export interface PermissionGrant {
 
 // registry: the full, static list of every grantable (module, action) pair, independent
 // of this one user's current grants — what the Permissions panel renders as its
-// checkbox grid. grants: this user's actual current permissions.
-export function fetchUserPermissions(id: number): Promise<{ grants: PermissionGrant[]; registry: PermissionGrant[] }> {
+// checkbox grid. grants: this user's actual current permissions. centerAccess: this
+// user's current center scope — empty array means unscoped (see the Center Access
+// section of the Permissions panel).
+export function fetchUserPermissions(
+  id: number
+): Promise<{ grants: PermissionGrant[]; registry: PermissionGrant[]; centerAccess: string[] }> {
   return request(`/api/admin/users/${id}/permissions`);
 }
 
-// Replaces the user's entire permission set in one call — matches the Permissions
-// panel's "one Save, full desired state" contract, not incremental grant/revoke calls.
-export function saveUserPermissions(id: number, grants: PermissionGrant[]): Promise<{ grants: PermissionGrant[] }> {
-  return request(`/api/admin/users/${id}/permissions`, { method: "PUT", body: JSON.stringify({ grants }) });
+// Replaces the user's entire permission set AND center access in one call — matches
+// the Permissions panel's "one Save, full desired state" contract, not incremental
+// grant/revoke calls. An empty centerAccess means unscoped, same convention as the
+// fetch above.
+export function saveUserPermissions(
+  id: number,
+  grants: PermissionGrant[],
+  centerAccess: string[]
+): Promise<{ grants: PermissionGrant[]; centerAccess: string[] }> {
+  return request(`/api/admin/users/${id}/permissions`, {
+    method: "PUT",
+    body: JSON.stringify({ grants, centerAccess })
+  });
 }

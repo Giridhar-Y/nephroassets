@@ -3,17 +3,17 @@ import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import transfersRoutes from "./transfers.js";
 import { getPool } from "../db/pool.js";
-import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 
-async function insertAsset(farId: string, description = "Transfer History Asset", dateAcquired = "2020-01-01") {
+async function insertAsset(farId: string, description = "Transfer History Asset", dateAcquired = "2020-01-01", location = "Center-A") {
   const db = await getPool();
   await db.query(
     `INSERT INTO assets (
        far_id, sub_classification, asset_description, status, date_acquired, location,
        useful_life_c1_years, useful_life_c2_years
-     ) VALUES ($1, 'Test-Sub', $2, 'Active', $3, 'Center-A', 5, 5)`,
-    [farId, description, dateAcquired]
+     ) VALUES ($1, 'Test-Sub', $2, 'Active', $3, $4, 5, 5)`,
+    [farId, description, dateAcquired, location]
   );
 }
 
@@ -481,6 +481,179 @@ describe("Transfers", () => {
       expect(Number(rows[0].useful_life_c2_years)).toBe(3);
       expect(Number(rows[0].c1_opening_cost)).toBe(12345);
       expect(Number(rows[0].c2_opening_cost)).toBe(6789);
+    });
+  });
+
+  // Center-scoped access (auth/centerScope.ts) — a second, independent dimension on
+  // top of transfers:create, which every user here already holds (role: "editor").
+  // Each test creates its own scoped user, since beforeEach wipes centers (and its
+  // cascading user_center_access rows) before every test.
+  describe("Center-scoped access", () => {
+    async function cookieFor(user: { id: number; username: string }) {
+      return authHeaderFor(user.id, user.username);
+    }
+
+    it("a scoped user can transfer an asset between two centers they both manage", async () => {
+      const user = await createTestUser({
+        username: "center-scope-inscope",
+        role: "editor",
+        centerAccess: ["Center-A", "Center-B"]
+      });
+      await insertAsset("SCOPE-IN-1", "In-scope transfer", "2020-01-01", "Center-A");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-IN-1"], toLocation: "Center-B", transactionDate: "2026-05-01" },
+        headers: { cookie: await cookieFor(user) }
+      });
+      expect(res.statusCode).toBe(200);
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'SCOPE-IN-1'`);
+      expect(rows[0].revised_location).toBe("Center-B");
+    });
+
+    it("blocks moving an asset OUT to a center the user doesn't manage (destination out of scope)", async () => {
+      const user = await createTestUser({
+        username: "center-scope-dest",
+        role: "editor",
+        centerAccess: ["Center-A"]
+      });
+      await insertAsset("SCOPE-DEST-1", "Destination out of scope", "2020-01-01", "Center-A");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-DEST-1"], toLocation: "Center-B", transactionDate: "2026-05-01" },
+        headers: { cookie: await cookieFor(user) }
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toContain("Center-B");
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'SCOPE-DEST-1'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+
+    it("blocks pulling an asset IN from a center the user doesn't manage (source out of scope)", async () => {
+      const user = await createTestUser({
+        username: "center-scope-source",
+        role: "editor",
+        centerAccess: ["Center-B"]
+      });
+      // Capitalized at Center-A, which this user does NOT manage — they're trying to
+      // "pull it in" to Center-B, a center they DO manage, but the source side blocks it.
+      await insertAsset("SCOPE-SRC-1", "Source out of scope", "2020-01-01", "Center-A");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-SRC-1"], toLocation: "Center-B", transactionDate: "2026-05-01" },
+        headers: { cookie: await cookieFor(user) }
+      });
+      expect(res.statusCode).toBe(404);
+      // Hides existence — must not reveal the asset's actual center the way the
+      // destination-side rejection above does.
+      expect(res.json().error).not.toContain("Center-A");
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'SCOPE-SRC-1'`);
+      expect(rows[0].revised_location).toBeNull();
+    });
+
+    it("a Cluster Manager (multiple centers) can freely move assets among all of their own centers", async () => {
+      const user = await createTestUser({
+        username: "center-scope-cluster",
+        role: "editor",
+        centerAccess: ["Center-A", "Center-B", "Center-C"]
+      });
+      await insertAsset("SCOPE-CLUSTER-1", "Cluster manager asset", "2020-01-01", "Center-A");
+      const cookie = await cookieFor(user);
+
+      const first = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-CLUSTER-1"], toLocation: "Center-B", transactionDate: "2026-05-01" },
+        headers: { cookie }
+      });
+      expect(first.statusCode).toBe(200);
+
+      const second = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-CLUSTER-1"], toLocation: "Center-C", transactionDate: "2026-06-01" },
+        headers: { cookie }
+      });
+      expect(second.statusCode).toBe(200);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'SCOPE-CLUSTER-1'`);
+      expect(rows[0].revised_location).toBe("Center-C");
+    });
+
+    it("still blocks a Cluster Manager from a center outside their whole cluster", async () => {
+      const user = await createTestUser({
+        username: "center-scope-cluster-block",
+        role: "editor",
+        centerAccess: ["Center-A", "Center-B", "Center-C"]
+      });
+      await insertAsset("SCOPE-CLUSTER-2", "Cluster manager asset", "2020-01-01", "Center-A");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-CLUSTER-2"], toLocation: "Center-D", transactionDate: "2026-05-01" },
+        headers: { cookie: await cookieFor(user) }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("an unscoped user (every pre-existing Admin/Editor/Viewer) is completely unaffected", async () => {
+      // The shared test-harness admin (authedInject's default) has zero
+      // user_center_access rows — exactly the "no rows = unscoped" backward-
+      // compatibility guarantee this whole feature is built around.
+      await insertAsset("SCOPE-UNSCOPED-1", "Unscoped admin", "2020-01-01", "Center-A");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-UNSCOPED-1"], toLocation: "Center-D", transactionDate: "2026-05-01" }
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("GET /api/transfers only shows history for assets currently in the user's scope", async () => {
+      const user = await createTestUser({
+        username: "center-scope-history",
+        role: "editor",
+        centerAccess: ["Center-B"]
+      });
+      await insertAsset("SCOPE-HIST-IN", "Currently at Center-B", "2020-01-01", "Center-B");
+      await insertAsset("SCOPE-HIST-OUT", "Currently at Center-A", "2020-01-01", "Center-A");
+      // Both get a transfer row so both would appear in an unscoped view.
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-HIST-IN"], toLocation: "Center-C", transactionDate: "2026-04-01" }
+      });
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-HIST-IN"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+      });
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-HIST-OUT"], toLocation: "Center-C", transactionDate: "2026-04-01" }
+      });
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers",
+        payload: { farIds: ["SCOPE-HIST-OUT"], toLocation: "Center-A", transactionDate: "2026-05-01" }
+      });
+
+      const res = await authedInject(app, {
+        method: "GET",
+        url: "/api/transfers?limit=50",
+        headers: { cookie: await cookieFor(user) }
+      });
+      expect(res.statusCode).toBe(200);
+      const farIdsSeen = new Set(res.json().items.map((i: { farId: string }) => i.farId));
+      expect(farIdsSeen.has("SCOPE-HIST-IN")).toBe(true);
+      expect(farIdsSeen.has("SCOPE-HIST-OUT")).toBe(false);
     });
   });
 });

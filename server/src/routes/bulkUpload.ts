@@ -2,9 +2,51 @@ import type { FastifyInstance } from "fastify";
 import { getPool } from "../db/pool.js";
 import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
 import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
-import { requirePermission } from "../auth/middleware.js";
+import { requirePermission, type AuthedUser } from "../auth/middleware.js";
+import { isCenterInScope } from "../auth/centerScope.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { logAssetActivity } from "./assetActivityLog.js";
+
+// Center-scoped access: an upsert row can either create a brand-new asset (only its
+// target `location` matters) or correct an existing one (whose `location` column CAN
+// be changed this way, unlike the single Edit endpoint — see assetSchema.ts's own
+// comment on why Bulk Upload is the one place a capitalization location gets
+// corrected) — mechanically the same real-world effect as a Transfer, so it gets the
+// same dual check: the existing row's CURRENT location (hidden as "not found" if out
+// of scope, like every other write-on-an-existing-asset check) and the row's own
+// `location` value (named directly, like Transfer's destination check — it's a center
+// the row is actively assigning, known and visible in Masters either way). A no-op
+// query for an unscoped user, same as every other scoped listing/check in this app.
+async function rejectOutOfScopeRows(
+  validRows: Array<{ row: number; data: BulkAssetRowInput }>,
+  errors: RowError[],
+  user: Pick<AuthedUser, "centerScope">
+): Promise<{ validRows: Array<{ row: number; data: BulkAssetRowInput }>; errors: RowError[] }> {
+  if (validRows.length === 0 || user.centerScope === null) return { validRows, errors };
+  const db = await getPool();
+  const farIds = validRows.map(({ data }) => data.farId);
+  const { rows: existingRows } = await db.query<{ far_id: string; location: string; revised_location: string | null }>(
+    `SELECT far_id, location, revised_location FROM assets WHERE far_id = ANY($1)`,
+    [farIds]
+  );
+  const currentLocationByFarId = new Map(existingRows.map((r) => [r.far_id, r.revised_location ?? r.location]));
+
+  const stillValid: Array<{ row: number; data: BulkAssetRowInput }> = [];
+  const allErrors = [...errors];
+  for (const { row, data } of validRows) {
+    const currentLocation = currentLocationByFarId.get(data.farId);
+    if (currentLocation !== undefined && !isCenterInScope(user, currentLocation)) {
+      allErrors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+      continue;
+    }
+    if (!isCenterInScope(user, data.location)) {
+      allErrors.push({ row, farId: data.farId, message: `"${data.location}" is outside your assigned center access.` });
+      continue;
+    }
+    stillValid.push({ row, data });
+  }
+  return { validRows: stillValid, errors: allErrors };
+}
 
 // Rejects (rather than silently accepting) a status/subClassification/location that
 // doesn't match an active Masters entry (routes/masters.ts) — case-insensitively, but the
@@ -133,6 +175,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     ({ validRows, errors } = rejectDuplicateFarIds(validRows, errors));
     ({ validRows, errors } = await rejectDeletedFarIds(validRows, errors));
     ({ validRows, errors } = await validateAgainstMasters(validRows, errors));
+    ({ validRows, errors } = await rejectOutOfScopeRows(validRows, errors, req.user!));
 
     // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID
     // already exists), without writing anything — Confirm Upload re-submits the same file

@@ -3,7 +3,8 @@ import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
-import { requirePermission } from "../auth/middleware.js";
+import { requirePermission, type AuthedUser } from "../auth/middleware.js";
+import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
 import type { AssetRow, SettingsRow, TransferRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
@@ -114,7 +115,8 @@ function buildCapAdjustmentMessage(cappedSum: number, flooredSum: number): strin
 // from the same per-asset figures as C1/C2, so an equivalent check would be tautological.
 async function computeReconciliationItems(
   db: Awaited<ReturnType<typeof getPool>>,
-  fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number }
+  fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number },
+  user: Pick<AuthedUser, "centerScope">
 ) {
   // Unfiltered (not WHERE active = TRUE, unlike loadActiveMasterMaps) — a deactivated
   // Sub Classification's already-on-the-books assets still need to reconcile here, so
@@ -123,6 +125,11 @@ async function computeReconciliationItems(
     `SELECT name, has_component2 FROM sub_classifications`
   );
   const hasComponent2ByName = new Map(subClassRows.map((r) => [r.name, r.has_component2]));
+
+  const params: unknown[] = [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
+  const calcWhere = ["deleted_at IS NULL"];
+  const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
+  if (scopeSql) calcWhere.push(scopeSql);
 
   const { rows } = await db.query<ReconciliationRow>(
     `WITH calc AS (
@@ -140,7 +147,7 @@ async function computeReconciliationItems(
          ) AS c2,
          (date_of_disposal IS NULL OR date_of_disposal <= $1) AS deletions_countable
        FROM assets
-       WHERE deleted_at IS NULL
+       WHERE ${calcWhere.join(" AND ")}
      ),
      -- Independently re-derives what Closing Acc Dep SHOULD be per the documented
      -- cap-at-Gross-Block / floor-at-0 rule (engine.ts's closingAccDep, mirrored by
@@ -200,7 +207,7 @@ async function computeReconciliationItems(
        SUM((c1).opening_nbv + (c2).opening_nbv), SUM((c1).nbv + (c2).nbv)
      FROM adjusted GROUP BY sub_classification
      ORDER BY sub_classification, component`,
-    [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
+    params
   );
 
   // Has Component 2, decision 3: a C1-only Sub Classification shows a single row (C1),
@@ -543,7 +550,8 @@ async function computeMovementSchedulePage(
   fy: Fy,
   conditions: RawCondition[],
   cursor: string | null,
-  limit: number
+  limit: number,
+  user: Pick<AuthedUser, "centerScope">
 ): Promise<{ items: MovementScheduleRow[]; nextCursor: string | null }> {
   const params: unknown[] = [fy.asAt];
   const baseConditions = ["date_acquired <= $1", "deleted_at IS NULL"];
@@ -551,6 +559,11 @@ async function computeMovementSchedulePage(
     params.push(cursor);
     baseConditions.push(`far_id > $${params.length}`);
   }
+  // Center-scoped access: which ASSETS are included at all — every location-stay row
+  // for an included asset still shows, even one at a center the user doesn't manage
+  // (their own asset's full history), same as GET /api/transfers' own scoping.
+  const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
+  if (scopeSql) baseConditions.push(scopeSql);
   const calcExtras = buildCalcCteExtras(params, fy.asAt, fy);
   const computedConditions = conditions.map((cond) => {
     const built = buildTransferDepreciationConditionSql(cond, params, fy);
@@ -646,7 +659,8 @@ interface AssetDepreciationBatchItem {
 async function* streamAssetDepreciationBatches(
   db: Db,
   fy: Fy,
-  conditions: RawCondition[]
+  conditions: RawCondition[],
+  user: Pick<AuthedUser, "centerScope">
 ): AsyncGenerator<AssetDepreciationBatchItem[]> {
   let lastFarId: string | null = null;
   for (;;) {
@@ -656,6 +670,9 @@ async function* streamAssetDepreciationBatches(
       params.push(lastFarId);
       baseConditions.push(`far_id > $${params.length}`);
     }
+    // Center-scoped access — same reasoning as computeMovementSchedulePage above.
+    const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
+    if (scopeSql) baseConditions.push(scopeSql);
     const calcExtras = buildCalcCteExtras(params, fy.asAt, fy);
     const computedConditions = conditions.map((cond) => {
       const built = buildTransferDepreciationConditionSql(cond, params, fy);
@@ -732,10 +749,11 @@ async function* streamAssetDepreciationBatches(
 async function computeLocationWiseSummary(
   db: Db,
   fy: Fy,
-  conditions: RawCondition[]
+  conditions: RawCondition[],
+  user: Pick<AuthedUser, "centerScope">
 ): Promise<TransferDepreciationLocationRow[]> {
   const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
-  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
+  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions, user)) {
     for (const item of batch) {
       for (const seg of item.segments) {
         const entry = locationTotals.get(seg.location) ?? { assetFarIds: new Set(), c1: 0, c2: 0 };
@@ -809,7 +827,8 @@ async function streamTransferDepreciationWorkbook(
   db: Db,
   fy: Fy,
   conditions: RawCondition[],
-  stream: PassThrough
+  stream: PassThrough,
+  user: Pick<AuthedUser, "centerScope">
 ): Promise<void> {
   const note = transferDepreciationExportNote(fy);
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
@@ -845,7 +864,7 @@ async function streamTransferDepreciationWorkbook(
   header.commit();
 
   const locationTotals = new Map<string, { assetFarIds: Set<string>; c1: number; c2: number }>();
-  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions)) {
+  for await (const batch of streamAssetDepreciationBatches(db, fy, conditions, user)) {
     for (const item of batch) {
       for (const seg of item.segments) {
         const row = sheet.addRow([
@@ -923,6 +942,13 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "A location is required.", details: parsed.error.flatten() };
     }
+    // Center-scoped access: the requested location is a specific center — a known,
+    // visible Masters value the user chose (via LocationSummaryPage's own picker), so
+    // this names it directly, same as every other "you're choosing a center" check.
+    if (!isCenterInScope(req.user!, parsed.data.location)) {
+      reply.code(403);
+      return { error: `"${parsed.data.location}" is outside your assigned center access.` };
+    }
     const db = await getPool();
     const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
     if (!fy) {
@@ -964,7 +990,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
-    const items = await computeReconciliationItems(db, fy);
+    const items = await computeReconciliationItems(db, fy, req.user!);
     return { asAt: fy.asAt, fyStart: fy.fyStart, items };
   });
 
@@ -989,7 +1015,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
-    const items = await computeReconciliationItems(db, fy);
+    const items = await computeReconciliationItems(db, fy, req.user!);
     const buffer = await buildReconciliationWorkbook(items, fy.asAt);
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1012,6 +1038,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
+    const depPostingParams: unknown[] = [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
+    const depPostingWhere = ["deleted_at IS NULL"];
+    const depPostingScopeSql = centerScopeSql(req.user!, "COALESCE(revised_location, location)", depPostingParams);
+    if (depPostingScopeSql) depPostingWhere.push(depPostingScopeSql);
+
     const { rows } = await db.query(
       `SELECT
          sub_classification,
@@ -1024,10 +1055,10 @@ export default async function reportsRoutes(app: FastifyInstance) {
            date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, $1::date, $2::date, $4::date, $3::integer, date_acquired
          )).period_depreciation) AS c2_period_dep
        FROM assets
-       WHERE deleted_at IS NULL
+       WHERE ${depPostingWhere.join(" AND ")}
        GROUP BY sub_classification
        ORDER BY sub_classification`,
-      [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
+      depPostingParams
     );
 
     const breakdown = rows.map((r) => {
@@ -1078,7 +1109,8 @@ export default async function reportsRoutes(app: FastifyInstance) {
       fy,
       parsed.data.conditions,
       parsed.data.cursor ?? null,
-      parsed.data.limit
+      parsed.data.limit,
+      req.user!
     );
     return { items, nextCursor, asAt: fy.asAt };
   });
@@ -1110,7 +1142,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: conditionError };
     }
 
-    const locationWise = await computeLocationWiseSummary(db, fy, parsed.data.conditions);
+    const locationWise = await computeLocationWiseSummary(db, fy, parsed.data.conditions, req.user!);
     return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise };
   });
 
@@ -1144,6 +1176,6 @@ export default async function reportsRoutes(app: FastifyInstance) {
     );
     const stream = new PassThrough();
     reply.send(stream);
-    await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream);
+    await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream, req.user!);
   });
 }

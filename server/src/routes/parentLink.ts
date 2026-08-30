@@ -1,4 +1,6 @@
 import type pg from "pg";
+import type { AuthedUser } from "../auth/middleware.js";
+import { isCenterInScope } from "../auth/centerScope.js";
 
 export type ParentLinkValidation = { ok: true } | { ok: false; status: number; errors: string[] };
 
@@ -19,7 +21,8 @@ export type ParentLinkValidation = { ok: true } | { ok: false; status: number; e
 export async function validateParentLink(
   db: Pick<pg.Pool | pg.PoolClient, "query">,
   farId: string,
-  parentFarId: string
+  parentFarId: string,
+  user: Pick<AuthedUser, "centerScope">
 ): Promise<ParentLinkValidation> {
   if (parentFarId === farId) {
     // Immediate return, not just a collected error: farId may not exist in the table yet
@@ -32,12 +35,19 @@ export async function validateParentLink(
   // deleted_at IS NULL on both lookups below: a soft-deleted asset (Global Admin only,
   // see routes/assets.ts's DELETE /api/assets/:farId) can't be picked as a parent, and
   // "not found" is the right response for one — same as any other endpoint's "find this
-  // asset" lookup, not a special case here.
-  const { rows: parentRows } = await db.query<{ date_of_disposal: string | null; parent_far_id: string | null }>(
-    `SELECT date_of_disposal, parent_far_id FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
-    [parentFarId]
-  );
-  if (parentRows.length === 0) {
+  // asset" lookup, not a special case here. Center-scoped access is folded into this
+  // same lookup: an out-of-scope parent is treated exactly like a nonexistent one — the
+  // caller's own `farId` (if it already exists) is scope-checked separately, by the
+  // caller, before ever reaching this function.
+  const { rows: parentRows } = await db.query<{
+    date_of_disposal: string | null;
+    parent_far_id: string | null;
+    location: string;
+    revised_location: string | null;
+  }>(`SELECT date_of_disposal, parent_far_id, location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [
+    parentFarId
+  ]);
+  if (parentRows.length === 0 || !isCenterInScope(user, parentRows[0]!.revised_location ?? parentRows[0]!.location)) {
     errors.push(`No asset found with FAR ID "${parentFarId}" to use as a parent.`);
     return { ok: false, status: 404, errors };
   }

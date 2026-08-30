@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, verifySession } from "./session.js";
 import type { ActionFor, Module } from "./permissions.js";
+import { fetchCenterScope } from "./centerScope.js";
 
 /** A creation-time template selector/label only (see auth/permissions.ts's
  *  seedPermissionsFromRole and the roles/role_permissions tables) — grants nothing by
@@ -22,6 +23,14 @@ export interface AuthedUser {
    *  Set for O(1) `requirePermission` lookups; the `/api/auth/me` response serializes
    *  it back out as an array for the client. */
   permissions: Set<string>;
+  /** A second, independent dimension on top of `permissions` above, not a replacement
+   *  for it — see auth/centerScope.ts for how this is actually enforced. `null` means
+   *  unscoped (sees/acts on every center — every pre-existing user's behavior, and the
+   *  default for a brand-new one until a Super Admin opts them in); a `Set` — even an
+   *  empty one, meaning scoped to nothing — means every check narrows to exactly these
+   *  center codes (canonical Masters casing, from `user_center_access` joined to
+   *  `centers.code`). */
+  centerScope: Set<string> | null;
 }
 
 declare module "fastify" {
@@ -79,12 +88,15 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
   if (!row || row.status !== "active") return null;
 
   // A fresh read on every request, same as the row above — so a permission grant or
-  // revoke (via the future Permissions UI) takes effect on the user's very next
-  // request, not whenever a cached session happens to expire.
+  // revoke (via the Permissions UI) takes effect on the user's very next request, not
+  // whenever a cached session happens to expire.
   const { rows: permRows } = await db.query<{ module: string; action: string }>(
     `SELECT module, action FROM user_permissions WHERE user_id = $1`,
     [row.id]
   );
+
+  // Same freshness reasoning as permissions above.
+  const centerScope = await fetchCenterScope(db, Number(row.id));
 
   return {
     id: Number(row.id),
@@ -92,7 +104,8 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     email: row.email,
     role: row.role,
     mustChangePassword: row.must_change_password,
-    permissions: new Set(permRows.map((p) => `${p.module}:${p.action}`))
+    permissions: new Set(permRows.map((p) => `${p.module}:${p.action}`)),
+    centerScope
   };
 }
 

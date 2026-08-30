@@ -3,6 +3,7 @@ import {
   ApiError,
   createAdminUser,
   fetchAdminUsers,
+  fetchCenters,
   fetchMasterRoles,
   fetchUserPermissions,
   resetAdminUserPassword,
@@ -172,10 +173,16 @@ function PermissionsPanel({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [granted, setGranted] = useState<Set<string>>(new Set());
+  const [centers, setCenters] = useState<string[]>([]);
+  const [centerAccess, setCenterAccess] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    fetchUserPermissions(target.id)
-      .then((res) => setGranted(new Set(res.grants.map(permissionKey))))
+    Promise.all([fetchUserPermissions(target.id), fetchCenters()])
+      .then(([permRes, centerList]) => {
+        setGranted(new Set(permRes.grants.map(permissionKey)));
+        setCenterAccess(new Set(permRes.centerAccess));
+        setCenters(centerList);
+      })
       .catch((err) => showToast(err instanceof ApiError ? err.message : "Could not load permissions.", "error"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -185,6 +192,15 @@ function PermissionsPanel({
     setGranted(new Set(role.grants.map(permissionKey)));
   }
 
+  function toggleCenter(center: string) {
+    setCenterAccess((prev) => {
+      const next = new Set(prev);
+      if (next.has(center)) next.delete(center);
+      else next.add(center);
+      return next;
+    });
+  }
+
   async function handleSave() {
     setSaving(true);
     try {
@@ -192,7 +208,7 @@ function PermissionsPanel({
         const [module, action] = key.split(":");
         return { module: module!, action: action! };
       });
-      await saveUserPermissions(target.id, grants);
+      await saveUserPermissions(target.id, grants, Array.from(centerAccess));
       showToast(`${target.username}'s permissions updated.`);
       onSaved();
     } catch (err) {
@@ -231,7 +247,39 @@ function PermissionsPanel({
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-5 py-3">
-          <PermissionMatrix granted={granted} onChange={setGranted} loading={loading} />
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <h3 className="text-sm font-semibold text-ink">Center Access</h3>
+            <p className="mt-1 text-xs text-gray-600">
+              A second, independent narrowing on top of the permissions below — which centers' assets this user can
+              see and act on. No centers selected means every center (unscoped), the default for everyone.
+            </p>
+            {loading ? (
+              <div className="mt-3 h-16 animate-pulse rounded bg-amber-100" />
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {centers.map((center) => (
+                    <label
+                      key={center}
+                      className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2 py-1 text-xs text-gray-700"
+                    >
+                      <input type="checkbox" checked={centerAccess.has(center)} onChange={() => toggleCenter(center)} />
+                      {center}
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs font-medium text-amber-800">
+                  {centerAccess.size === 0
+                    ? "Unscoped — sees every center."
+                    : `Scoped to ${centerAccess.size} center${centerAccess.size === 1 ? "" : "s"}.`}
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <PermissionMatrix granted={granted} onChange={setGranted} loading={loading} />
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3">

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
+import { centerScopeSql } from "../auth/centerScope.js";
 
 const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "delete", "masters"] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -103,6 +104,14 @@ export default async function activityLogRoutes(app: FastifyInstance) {
 
     const conditions: string[] = [];
     const params: unknown[] = [];
+    // Center-scoped access: the Capitalization/Addition/Transfer/Disposal/Delete
+    // categories are all far_id-linked (asset_activity_log/asset_delete_audit_log) —
+    // scoped by that ASSET's current location (via the LEFT JOIN below), same
+    // current-state principle as every other scoped listing. The Masters category has
+    // no far_id at all (c.far_id IS NULL) — no asset dimension, so it's always let
+    // through, unaffected by center scope.
+    const scopeSql = centerScopeSql(req.user!, "COALESCE(a.revised_location, a.location)", params);
+    if (scopeSql) conditions.push(`(c.far_id IS NULL OR ${scopeSql})`);
     if (q.farId) {
       params.push(`%${q.farId}%`);
       conditions.push(`c.far_id ILIKE $${params.length}`);
@@ -164,6 +173,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
        SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username
        FROM combined c
        LEFT JOIN users u ON u.id = c.actor_user_id
+       LEFT JOIN assets a ON a.far_id = c.far_id
        ${whereClause}
        ORDER BY c.created_at DESC, c.src DESC, c.id DESC
        LIMIT $${params.length}`,

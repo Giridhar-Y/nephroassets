@@ -7,6 +7,7 @@ import { hashPassword } from "../auth/password.js";
 import { requirePermission, type Role } from "../auth/middleware.js";
 import { allPermissions, fetchUserPermissions, isValidPermission, replaceUserPermissions, seedPermissionsFromRole } from "../auth/permissions.js";
 import type { Permission } from "../auth/permissions.js";
+import { fetchUserCenterAccess, replaceUserCenterAccess, resolveCenters } from "../auth/centerScope.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -260,6 +261,33 @@ export async function replacePermissions(
   return grants;
 }
 
+/** Center-scoped access — a second, independent dimension on top of the permission
+ *  grants above, saved from the same Permissions panel but logged as its own audit
+ *  action (mirrors how updateUser already logs role/status/email changes as separate
+ *  rows within one request, not one blended entry). No self-lockout guard here, unlike
+ *  replacePermissions: center scope never touches the admin/masters modules (see
+ *  auth/centerScope.ts's module comment), so a Super Admin scoping their own center
+ *  access can never lock themselves out of fixing it again. */
+export async function replaceCenterAccess(
+  db: pg.Pool,
+  actorUserId: number,
+  targetId: number,
+  centerCodes: string[]
+): Promise<string[]> {
+  const { rows } = await db.query(`SELECT id FROM users WHERE id = $1`, [targetId]);
+  if (!rows[0]) throw new UserError(404, "No user found with that id.");
+  const { resolved, unknown } = await resolveCenters(db, centerCodes);
+  if (unknown.length > 0) {
+    throw new UserError(400, `${unknown.map((c) => `"${c}"`).join(", ")} not recognized — see Masters for valid values.`);
+  }
+
+  const { added, removed } = await replaceUserCenterAccess(db, targetId, actorUserId, resolved);
+  if (added.length > 0 || removed.length > 0) {
+    await logAudit(db, actorUserId, "center_access_change", targetId, { added, removed });
+  }
+  return resolved.map((c) => c.code);
+}
+
 // --- HTTP routes ---------------------------------------------------------------------
 
 // Not a z.enum anymore — Roles is a manageable Master (routes/masters.ts), any active
@@ -279,7 +307,10 @@ const patchUserSchema = z.object({
 });
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
 const permissionsSchema = z.object({
-  grants: z.array(z.object({ module: z.string(), action: z.string() }))
+  grants: z.array(z.object({ module: z.string(), action: z.string() })),
+  // Empty array means unscoped (sees/acts on every center) — the Permissions panel
+  // always sends the complete desired set, same replace-all contract as grants above.
+  centerAccess: z.array(z.string()).default([])
 });
 
 function handleUserError(err: unknown, reply: { code: (n: number) => void }): { error: string } {
@@ -355,7 +386,11 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         reply.code(404);
         return { error: "No user found with that id." };
       }
-      return { grants: await fetchUserPermissions(db, paramsParsed.data.id), registry: allPermissions() };
+      return {
+        grants: await fetchUserPermissions(db, paramsParsed.data.id),
+        registry: allPermissions(),
+        centerAccess: await fetchUserCenterAccess(db, paramsParsed.data.id)
+      };
     }
   );
 
@@ -370,13 +405,10 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
         return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
       }
       try {
-        const grants = await replacePermissions(
-          await getPool(),
-          req.user!.id,
-          paramsParsed.data.id,
-          bodyParsed.data.grants
-        );
-        return { grants };
+        const db = await getPool();
+        const grants = await replacePermissions(db, req.user!.id, paramsParsed.data.id, bodyParsed.data.grants);
+        const centerAccess = await replaceCenterAccess(db, req.user!.id, paramsParsed.data.id, bodyParsed.data.centerAccess);
+        return { grants, centerAccess };
       } catch (err) {
         return handleUserError(err, reply);
       }

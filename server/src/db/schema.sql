@@ -214,6 +214,28 @@ CREATE TABLE user_permissions (
 );
 CREATE INDEX idx_user_permissions_user ON user_permissions (user_id);
 
+-- Center-scoped access: a second, independent dimension layered on top of
+-- user_permissions, not a replacement for it — a user still needs the relevant
+-- module/action grant (e.g. transfers:create) from the table above; this one narrows
+-- WHICH ROWS that grant applies to. No rows for a user = unscoped (sees/acts on every
+-- center, today's behavior — every pre-existing user must not lose access to centers
+-- they already see, so this is opt-in per user, never a default-deny migration). Keyed
+-- on centers.id, not the code string, so a Masters rename (which cascades to
+-- assets/transfers immediately — see the centers table's own comment) never needs a
+-- matching cascade here; the join to centers.code happens fresh on every request
+-- (auth/middleware.ts's resolveUser). See auth/centerScope.ts for how this is actually
+-- enforced — always as a narrowing filter layered on top of requirePermission, never a
+-- parallel authorization system of its own. granted_at/granted_by mirror
+-- user_permissions's own audit convention above, same ON DELETE SET NULL reasoning.
+CREATE TABLE user_center_access (
+  user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  center_id    BIGINT NOT NULL REFERENCES centers(id) ON DELETE CASCADE,
+  granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  granted_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY (user_id, center_id)
+);
+CREATE INDEX idx_user_center_access_user ON user_center_access (user_id);
+
 -- assets/transfers deleted_by can only reference users(id) now that users exists —
 -- see those columns' own comments above for why the FK isn't inline on their CREATE TABLE.
 ALTER TABLE assets ADD CONSTRAINT assets_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);

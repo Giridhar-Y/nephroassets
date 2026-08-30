@@ -12,6 +12,7 @@ import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
+import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
@@ -183,6 +184,13 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const sortColumn = SORTABLE_COLUMNS[q.sortBy]!;
     const conditions: string[] = [];
     const params: unknown[] = [];
+
+    // Center-scoped access (auth/centerScope.ts) — always applied when the user is
+    // scoped, ANDed with whatever center filter they explicitly chose above (which can
+    // only narrow further within it, never escape it). No-op (null) for every
+    // pre-existing unscoped user.
+    const scopeSql = centerScopeSql(req.user!, "COALESCE(revised_location, location)", params);
+    if (scopeSql) conditions.push(scopeSql);
 
     if (q.center) {
       params.push(q.center);
@@ -376,6 +384,13 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }
+    // Center-scoped access: an out-of-scope asset 404s exactly like a nonexistent one —
+    // a scoped user has no reason to know it exists at all, so this can't distinguish
+    // "not found" from "not yours" (see the approved model's own reasoning).
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
 
     const { rows: settingsRows } = await db.query<SettingsRow>(
       `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
@@ -461,6 +476,13 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: `${badFields.join(", ")} not recognized — see Masters for valid values.` };
     }
+    // Center-scoped access: unlike an out-of-scope EXISTING asset (404, hides
+    // existence), this is a center the user is actively choosing — it's a known,
+    // visible Masters value, so "you don't manage it" is the honest answer.
+    if (!isCenterInScope(req.user!, canonicalLocation!)) {
+      reply.code(403);
+      return { error: `"${canonicalLocation}" is outside your assigned center access.` };
+    }
     const { rows: statusRow } = await db.query<{ system_managed: boolean }>(
       `SELECT system_managed FROM statuses WHERE name = $1`,
       [canonicalStatus]
@@ -496,7 +518,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       };
     }
     if (parentFarId !== null) {
-      const validation = await validateParentLink(db, input.farId, parentFarId);
+      const validation = await validateParentLink(db, input.farId, parentFarId, req.user!);
       if (!validation.ok) {
         reply.code(validation.status);
         return { error: validation.errors.join(" ") };
@@ -553,12 +575,20 @@ export default async function assetsRoutes(app: FastifyInstance) {
       c2_opening_cost: string | number;
       additions_c2: string | number;
       deletions_c2: string | number;
+      location: string;
+      revised_location: string | null;
     }>(
-      `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost, additions_c2, deletions_c2
+      `SELECT status, date_of_disposal, parent_far_id, c1_opening_cost, c2_opening_cost, additions_c2, deletions_c2, location, revised_location
        FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
     if (existing.length === 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    // Center-scoped access: treated exactly like a nonexistent asset — see GET
+    // /api/assets/:farId's own comment for the reasoning.
+    if (!isCenterInScope(req.user!, existing[0]!.revised_location ?? existing[0]!.location)) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }
@@ -638,7 +668,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       const validation =
         input.parentFarId === input.farId
           ? ({ ok: false, status: 400, errors: ["An asset cannot be its own parent."] } as const)
-          : await validateParentLink(db, farId, input.parentFarId);
+          : await validateParentLink(db, farId, input.parentFarId, req.user!);
       if (!validation.ok) {
         reply.code(validation.status);
         return { error: validation.errors.join(" ") };
@@ -684,18 +714,30 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const childFarIds = Array.from(new Set(parsed.data.childFarIds));
     const db = await getPool();
 
-    const { rows: childExisting } = await db.query<{ far_id: string }>(
-      `SELECT far_id FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
-      [childFarIds]
+    const { rows: allExisting } = await db.query<{ far_id: string; location: string; revised_location: string | null }>(
+      `SELECT far_id, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+      [[parentFarId, ...childFarIds]]
     );
-    const found = new Set(childExisting.map((r) => r.far_id));
-    const missing = childFarIds.filter((id) => !found.has(id));
+    const byFarId = new Map(allExisting.map((r) => [r.far_id, r]));
+    const missing = childFarIds.filter((id) => !byFarId.has(id));
     if (missing.length > 0) {
       reply.code(404);
       return { error: `No asset found with FAR ID ${missing.map((id) => `"${id}"`).join(", ")}.` };
     }
+    // Center-scoped access: parent and every child's current location must be in
+    // scope — treated exactly like a nonexistent asset, same reasoning as every other
+    // write-on-an-existing-asset check. A missing parent (not yet checked above) is
+    // simply skipped here; validateParentLink below still catches it.
+    const outOfScope = [parentFarId, ...childFarIds].filter((id) => {
+      const row = byFarId.get(id);
+      return row !== undefined && !isCenterInScope(req.user!, row.revised_location ?? row.location);
+    });
+    if (outOfScope.length > 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID ${outOfScope.map((id) => `"${id}"`).join(", ")}.` };
+    }
     for (const childFarId of childFarIds) {
-      const validation = await validateParentLink(db, childFarId, parentFarId);
+      const validation = await validateParentLink(db, childFarId, parentFarId, req.user!);
       if (!validation.ok) {
         reply.code(validation.status);
         return { error: `${childFarId}: ${validation.errors.join(" ")}` };
@@ -728,8 +770,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
       additions_c2: string;
       date_of_addition: string | null;
       sub_classification: string;
+      location: string;
+      revised_location: string | null;
     }>(
-      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification
+      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification, location, revised_location
        FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
@@ -738,6 +782,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
       return { error: `No asset found with FAR ID "${farId}".` };
     }
     const row = existing[0]!;
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
     if (row.date_of_disposal !== null) {
       reply.code(409);
       return { error: `Asset "${farId}" has been disposed — no further additions can be recorded.` };
@@ -765,7 +813,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       };
     }
     if (input.parentFarId !== undefined) {
-      const validation = await validateParentLink(db, farId, input.parentFarId);
+      const validation = await validateParentLink(db, farId, input.parentFarId, req.user!);
       if (!validation.ok) {
         reply.code(validation.status);
         return { error: validation.errors.join(" ") };
@@ -816,6 +864,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { rows } = await db.query<AssetRow>(`SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [farId]);
     const row = rows[0];
     if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }
@@ -886,6 +938,18 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { farId } = paramsParsed.data;
     const { dateOfDisposal, saleValue } = bodyParsed.data;
     const db = await getPool();
+    // Center-scoped access: fetched separately (rather than relying on the
+    // disposeWithChildren write below to fail) since that write's own failure path
+    // can't distinguish "out of scope" from "already disposed"/"bad date" — this check
+    // must run first, same 404-hides-existence treatment as everywhere else.
+    const { rows: scopeCheckRows } = await db.query<{ location: string; revised_location: string | null }>(
+      `SELECT location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
+    if (scopeCheckRows[0] && !isCenterInScope(req.user!, scopeCheckRows[0].revised_location ?? scopeCheckRows[0].location)) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
     // Rule 1 (2026-08-28): a child asset can't be disposed directly — see the identical
     // check on the preview route above for the full comment.
     const [childViolation] = await findDirectChildActionViolations(db, [farId]);
@@ -966,6 +1030,10 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
 
     const blockers: string[] = [];
     const { rows: transferCountRows } = await db.query<{ count: string }>(
@@ -1038,12 +1106,18 @@ export default async function assetsRoutes(app: FastifyInstance) {
       additions_c2: string | number;
       date_of_addition: string | null;
       date_of_disposal: string | null;
+      location: string;
+      revised_location: string | null;
     }>(
-      `SELECT additions_c1, additions_c2, date_of_addition, date_of_disposal FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      `SELECT additions_c1, additions_c2, date_of_addition, date_of_disposal, location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
     const row = rows[0];
     if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }
@@ -1088,11 +1162,18 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const { rows } = await db.query<{
       date_of_disposal: string | null;
       disposed_via_parent_far_id: string | null;
-    }>(`SELECT date_of_disposal, disposed_via_parent_far_id FROM assets WHERE far_id = $1 AND deleted_at IS NULL`, [
-      farId
-    ]);
+      location: string;
+      revised_location: string | null;
+    }>(
+      `SELECT date_of_disposal, disposed_via_parent_far_id, location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
     const row = rows[0];
     if (!row) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    if (!isCenterInScope(req.user!, row.revised_location ?? row.location)) {
       reply.code(404);
       return { error: `No asset found with FAR ID "${farId}".` };
     }

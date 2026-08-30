@@ -4,6 +4,7 @@ import { SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
 import { hashPassword } from "../auth/password.js";
 import type { Role } from "../auth/middleware.js";
 import { seedBuiltInRoles, seedPermissionsFromRole } from "../auth/permissions.js";
+import { replaceUserCenterAccess, resolveCenters } from "../auth/centerScope.js";
 
 const TEST_ADMIN_USERNAME = "test-harness-admin";
 const TEST_ADMIN_ID_PLACEHOLDER = -1; // overwritten by ensureTestAdminUser's real id
@@ -71,6 +72,11 @@ export async function createTestUser(overrides: {
   role?: Role;
   status?: "active" | "disabled";
   mustChangePassword?: boolean;
+  /** Center-scoped access (Center Manager/Cluster Manager tests) — center codes that
+   *  must already exist in the `centers` table (the caller's own beforeAll/beforeEach
+   *  seeds those, same as it already must for any other center-referencing fixture).
+   *  Omitted or empty means unscoped, same as every user gets by default. */
+  centerAccess?: string[];
 }): Promise<{ id: number; username: string; password: string }> {
   const db = await getPool();
   // Same reasoning as getSharedAuthHeader's own call — a test file that only ever calls
@@ -96,5 +102,12 @@ export async function createTestUser(overrides: {
   // not this row's `role` column, so a test creating "an editor" or "a viewer" needs
   // that role's template actually seeded to behave like one.
   await seedPermissionsFromRole(db, id, overrides.role ?? "editor", null);
+  if (overrides.centerAccess && overrides.centerAccess.length > 0) {
+    const { resolved, unknown } = await resolveCenters(db, overrides.centerAccess);
+    if (unknown.length > 0) {
+      throw new Error(`createTestUser: unrecognized center(s) ${unknown.join(", ")} — seed them before granting access.`);
+    }
+    await replaceUserCenterAccess(db, id, id, resolved);
+  }
   return { id, username: overrides.username, password };
 }

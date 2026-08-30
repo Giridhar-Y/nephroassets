@@ -396,6 +396,18 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
           FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL;
       END IF;
     END $$;
+
+    -- Center-scoped access — see schema.sql's comment for the full reasoning. IF NOT
+    -- EXISTS makes both a no-op on every boot after the first, and on a brand-new
+    -- database where schema.sql already created them directly.
+    CREATE TABLE IF NOT EXISTS user_center_access (
+      user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      center_id    BIGINT NOT NULL REFERENCES centers(id) ON DELETE CASCADE,
+      granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      granted_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      PRIMARY KEY (user_id, center_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_center_access_user ON user_center_access (user_id);
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

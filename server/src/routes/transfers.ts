@@ -5,6 +5,7 @@ import type { SettingsRow } from "../db/mappers.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
+import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { buildTransferConditionSql, transferConditionsQuerySchema } from "./transferColumnFilters.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
@@ -56,6 +57,15 @@ export default async function transfersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: `Location "${parsed.data.toLocation}" not recognized — see Masters for valid values.` };
     }
+    // Center-scoped access (auth/centerScope.ts): the destination is a center the user
+    // is actively choosing — a known, visible Masters value — so "you don't manage it"
+    // is the honest answer, unlike an out-of-scope EXISTING asset below (which 404s,
+    // hiding its existence entirely, same as every other write-on-an-existing-asset
+    // check in this app).
+    if (!isCenterInScope(req.user!, toLocation)) {
+      reply.code(403);
+      return { error: `"${toLocation}" is outside your assigned center access.` };
+    }
     const { transactionDate } = parsed.data;
 
     // Rule 1 (2026-08-28): a child asset can't be transferred directly on its own — but
@@ -88,15 +98,30 @@ export default async function transfersRoutes(app: FastifyInstance) {
     // An asset can't have moved locations before it existed on the books — reject the
     // whole batch (matching the all-or-nothing transaction below) if the transfer date
     // is before any selected asset's capitalization date.
-    const { rows: assetRows } = await db.query<{ far_id: string; date_acquired: string }>(
-      `SELECT far_id, date_acquired FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
-      [farIds]
-    );
+    const { rows: assetRows } = await db.query<{
+      far_id: string;
+      date_acquired: string;
+      location: string;
+      revised_location: string | null;
+    }>(`SELECT far_id, date_acquired, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`, [
+      farIds
+    ]);
     const dateAcquiredByFarId = new Map(assetRows.map((r) => [r.far_id, r.date_acquired]));
+    const currentLocationByFarId = new Map(assetRows.map((r) => [r.far_id, r.revised_location ?? r.location]));
     const missing = farIds.filter((id) => !dateAcquiredByFarId.has(id));
     if (missing.length > 0) {
       reply.code(404);
       return { error: `No asset found with FAR ID ${missing.map((id) => `"${id}"`).join(", ")}.` };
+    }
+    // Center-scoped access: the SOURCE side — every asset (including a cascaded child)
+    // must already be in a center the user manages. Treated exactly like a nonexistent
+    // asset (404, same message as the missing-FAR-ID case above), not a 403 revealing
+    // which center it's actually at — a scoped user has no more reason to learn that
+    // than to learn the asset exists at all.
+    const outOfScopeSource = farIds.filter((id) => !isCenterInScope(req.user!, currentLocationByFarId.get(id)!));
+    if (outOfScopeSource.length > 0) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID ${outOfScopeSource.map((id) => `"${id}"`).join(", ")}.` };
     }
     const tooEarly = farIds.filter((id) => transactionDate < dateAcquiredByFarId.get(id)!);
     if (tooEarly.length > 0) {
@@ -191,6 +216,12 @@ export default async function transfersRoutes(app: FastifyInstance) {
     // from this log — always applied, not an opt-in filter.
     const conditions: string[] = ["t.deleted_at IS NULL", "a.deleted_at IS NULL"];
     const params: unknown[] = [];
+    // Center-scoped access: filtered by the asset's CURRENT location (not this
+    // transfer row's own historical `location`) — "which assets belong to you" is a
+    // current-state question, same as Register/every other scoped listing, not "did
+    // this specific historical move touch your center."
+    const scopeSql = centerScopeSql(req.user!, "COALESCE(a.revised_location, a.location)", params);
+    if (scopeSql) conditions.push(scopeSql);
     if (search) {
       params.push(`${search.toUpperCase()}%`);
       conditions.push(`t.far_id LIKE $${params.length}`);
@@ -329,6 +360,17 @@ export default async function transfersRoutes(app: FastifyInstance) {
     );
     const row = rows[0];
     if (!row) {
+      reply.code(404);
+      return { error: `No transfer found with id ${id}.` };
+    }
+    // Center-scoped access: keyed on the ASSET's current location (not this transfer
+    // row's own historical `location`) — same reasoning as GET /api/transfers' own
+    // scope filter above.
+    const { rows: assetRows } = await db.query<{ location: string; revised_location: string | null }>(
+      `SELECT location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      [row.far_id]
+    );
+    if (assetRows[0] && !isCenterInScope(req.user!, assetRows[0].revised_location ?? assetRows[0].location)) {
       reply.code(404);
       return { error: `No transfer found with id ${id}.` };
     }

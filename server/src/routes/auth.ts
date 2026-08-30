@@ -5,6 +5,7 @@ import { sessionCookieOptions, SESSION_COOKIE_NAME, signSession } from "../auth/
 import { hashPassword, verifyPassword } from "../auth/password.js";
 import { isIpLockedOut, isLockedOut, LOCKOUT_WINDOW_MINUTES, recordLoginAttempt } from "../auth/rateLimit.js";
 import type { Role } from "../auth/middleware.js";
+import { fetchCenterScope } from "../auth/centerScope.js";
 
 const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 const changePasswordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8) });
@@ -74,6 +75,7 @@ export default async function authRoutes(app: FastifyInstance) {
       `SELECT module, action FROM user_permissions WHERE user_id = $1`,
       [row!.id]
     );
+    const centerScope = await fetchCenterScope(db, Number(row!.id));
     return {
       user: {
         id: Number(row!.id),
@@ -81,7 +83,8 @@ export default async function authRoutes(app: FastifyInstance) {
         email: row!.email,
         role: row!.role,
         mustChangePassword: row!.must_change_password,
-        permissions: permRows.map((p) => `${p.module}:${p.action}`)
+        permissions: permRows.map((p) => `${p.module}:${p.action}`),
+        centerAccess: centerScope === null ? null : Array.from(centerScope)
       }
     };
   });
@@ -97,7 +100,11 @@ export default async function authRoutes(app: FastifyInstance) {
   app.get("/api/auth/me", async (req) => {
     // req.user.permissions is a Set — JSON.stringify on a Set serializes to "{}", not an
     // array, so it has to be spread out explicitly here rather than returned as-is.
-    return { user: { ...req.user, permissions: Array.from(req.user!.permissions) } };
+    // centerScope is already either null or a Set; Array.from(null) would throw, so it's
+    // only converted when non-null (naming it centerAccess on the wire — "scope" is the
+    // server-internal enforcement concept, "access" is what this actually grants).
+    const { centerScope, ...user } = req.user!;
+    return { user: { ...user, permissions: Array.from(req.user!.permissions), centerAccess: centerScope === null ? null : Array.from(centerScope) } };
   });
 
   app.post("/api/auth/change-password", async (req, reply) => {

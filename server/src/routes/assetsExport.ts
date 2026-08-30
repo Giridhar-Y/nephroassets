@@ -4,6 +4,7 @@ import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
+import { centerScopeSql } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
@@ -460,6 +461,9 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     // the export, not an opt-in filter.
     const conditions: string[] = ["deleted_at IS NULL"];
     const params: unknown[] = [];
+    // Center-scoped access — same reasoning and column as GET /api/assets' own filter.
+    const scopeSql = centerScopeSql(req.user!, "COALESCE(revised_location, location)", params);
+    if (scopeSql) conditions.push(scopeSql);
     if (q.center) {
       params.push(q.center);
       conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);

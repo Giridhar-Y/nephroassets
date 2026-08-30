@@ -4,7 +4,7 @@ import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import bulkTransfersRoutes from "./bulkTransfers.js";
 import { getPool } from "../db/pool.js";
-import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
 
@@ -244,6 +244,64 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
 
       const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-CHILD-3'`);
       expect(rows[0].revised_location).toBeNull();
+    });
+  });
+
+  // Center-scoped access (auth/centerScope.ts) — per-row, same rule as the single
+  // POST /api/transfers endpoint (both source and destination must be in scope), but
+  // reported as a row error instead of failing the whole request.
+  describe("Center-scoped access", () => {
+    it("per-row: reports the destination by name when it's outside the user's scope", async () => {
+      const user = await createTestUser({ username: "bulk-scope-dest", role: "editor", centerAccess: ["Center-A"] });
+      await insertAsset("BXFER-SCOPE-DEST-1");
+      const csv = [HEADER, "BXFER-SCOPE-DEST-1,Center-B,2026-05-01"].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers/bulk-upload",
+        ...csvPayload(csv),
+        headers: { ...csvPayload(csv).headers, cookie: authHeaderFor(user.id, user.username) }
+      });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].farId).toBe("BXFER-SCOPE-DEST-1");
+      expect(body.errors[0].message).toContain("Center-B");
+    });
+
+    it("per-row: treats an out-of-scope source exactly like a nonexistent asset", async () => {
+      const user = await createTestUser({ username: "bulk-scope-src", role: "editor", centerAccess: ["Center-B"] });
+      await insertAsset("BXFER-SCOPE-SRC-1"); // capitalized at Center-A, not in this user's scope
+      const csv = [HEADER, "BXFER-SCOPE-SRC-1,Center-B,2026-05-01"].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers/bulk-upload",
+        ...csvPayload(csv),
+        headers: { ...csvPayload(csv).headers, cookie: authHeaderFor(user.id, user.username) }
+      });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].farId).toBe("BXFER-SCOPE-SRC-1");
+      expect(body.errors[0].message).toMatch(/No asset found/);
+    });
+
+    it("per-row: a scoped user's in-scope row still succeeds alongside another row's out-of-scope failure", async () => {
+      const user = await createTestUser({ username: "bulk-scope-mixed", role: "editor", centerAccess: ["Center-A", "Center-B"] });
+      await insertAsset("BXFER-SCOPE-OK-1");
+      await insertAsset("BXFER-SCOPE-BAD-1");
+      const csv = [HEADER, "BXFER-SCOPE-OK-1,Center-B,2026-05-01", "BXFER-SCOPE-BAD-1,Center-D,2026-05-01"].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/transfers/bulk-upload",
+        ...csvPayload(csv),
+        headers: { ...csvPayload(csv).headers, cookie: authHeaderFor(user.id, user.username) }
+      });
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].farId).toBe("BXFER-SCOPE-BAD-1");
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-SCOPE-OK-1'`);
+      expect(rows[0].revised_location).toBe("Center-B");
     });
   });
 });

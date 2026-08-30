@@ -5,6 +5,7 @@ import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorkshee
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
+import { isCenterInScope } from "../auth/centerScope.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 
 const disposalRowSchema = z.object({
@@ -49,7 +50,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       const farIds = validRows.map(({ data }) => data.farId);
       const existing = new Map<
         string,
-        { dateOfDisposal: string | null; dateAcquired: string; dateOfAddition: string | null }
+        { dateOfDisposal: string | null; dateAcquired: string; dateOfAddition: string | null; currentLocation: string }
       >();
       if (farIds.length > 0) {
         const { rows } = await db.query<{
@@ -57,15 +58,18 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
           date_of_disposal: string | null;
           date_acquired: string;
           date_of_addition: string | null;
+          location: string;
+          revised_location: string | null;
         }>(
-          `SELECT far_id, date_of_disposal, date_acquired, date_of_addition FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+          `SELECT far_id, date_of_disposal, date_acquired, date_of_addition, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
           [farIds]
         );
         for (const r of rows) {
           existing.set(r.far_id, {
             dateOfDisposal: r.date_of_disposal,
             dateAcquired: r.date_acquired,
-            dateOfAddition: r.date_of_addition
+            dateOfAddition: r.date_of_addition,
+            currentLocation: r.revised_location ?? r.location
           });
         }
       }
@@ -86,7 +90,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             farId: data.farId,
             message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`
           });
-        } else if (!info) {
+        } else if (!info || !isCenterInScope(req.user!, info.currentLocation)) {
           errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
         } else if (info.dateOfDisposal != null) {
           errors.push({ row, farId: data.farId, message: `Asset "${data.farId}" has already been disposed.` });
@@ -136,6 +140,18 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
               farId: data.farId,
               message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`
             });
+            continue;
+          }
+          // Center-scoped access: checked ahead of the write (rather than relying on
+          // disposeWithChildren's own failure path, which can't distinguish "out of
+          // scope" from "already disposed"/"bad date") — same 404-hides-existence
+          // treatment as the preview loop above.
+          const { rows: scopeCheckRows } = await client.query<{ location: string; revised_location: string | null }>(
+            `SELECT location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+            [data.farId]
+          );
+          if (scopeCheckRows[0] && !isCenterInScope(req.user!, scopeCheckRows[0].revised_location ?? scopeCheckRows[0].location)) {
+            errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
             continue;
           }
           try {
