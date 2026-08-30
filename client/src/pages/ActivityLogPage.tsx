@@ -1,21 +1,23 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { fetchActivityLog, type ActivityAction, type ActivityLogEntry } from "../api/client.js";
+import { fetchActivityLog, type ActivityCategory, type ActivityLogEntry } from "../api/client.js";
 import { formatDateTime } from "../lib/format.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 
 const PAGE_SIZE = 50;
 
-const ACTION_LABELS: Record<ActivityAction, string> = {
-  capitalization_create: "Capitalization",
-  addition_create: "Addition",
-  transfer_create: "Transfer",
-  disposal_create: "Disposal"
+const CATEGORY_LABELS: Record<ActivityCategory, string> = {
+  capitalization: "Capitalization",
+  addition: "Addition",
+  transfer: "Transfer",
+  disposal: "Disposal",
+  delete: "Delete",
+  masters: "Masters"
 };
 
 // "additionsC1" -> "Additions C1", "cascadedFromParentFarId" -> "Cascaded From Parent Far
-// Id" — same plain, generic humanizer as Delete Log's DetailsSummary, not a per-action
-// template, since `details`' shape varies by action and new fields shouldn't need a
-// matching UI change every time.
+// Id" — same plain, generic humanizer as Delete Log's old DetailsSummary, not a
+// per-action template, since `details`' shape varies by category and new fields
+// shouldn't need a matching UI change every time.
 function humanizeKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
 }
@@ -46,22 +48,25 @@ function DetailsSummary({ details }: { details: Record<string, unknown> | null }
   );
 }
 
-// Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event
-// (single-item and Bulk Upload/Bulk Transfer/Bulk Dispose alike) — see server
-// routes/activityLog.ts. Editor+ visibility, same as the actions themselves. Only
-// forward-looking: activity from before this feature shipped was never captured (see
-// asset_activity_log's schema.sql comment).
+// Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event, every
+// Global-Admin delete/undo action ("Delete" category — merged in from the former
+// standalone Delete Log page), and every Masters create/rename/deactivate/reactivate
+// ("Masters" category) — single-item and bulk-uploaded alike. See server
+// routes/activityLog.ts. Editor+ visibility throughout, including Delete entries: this
+// is the one deliberate, requested consequence of consolidating what used to be an
+// admin-only page into this editor+ one. A Masters entry has no FAR ID (it's not
+// asset-scoped) — rendered as "—" rather than left blank/broken.
 export function ActivityLogPage() {
   const [items, setItems] = useState<ActivityLogEntry[]>([]);
-  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const [farIdInput, setFarIdInput] = useState("");
   const [farId, setFarId] = useState("");
-  const [action, setAction] = useState<ActivityAction | "">("");
+  const [category, setCategory] = useState<ActivityCategory | "">("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
@@ -71,7 +76,7 @@ export function ActivityLogPage() {
     try {
       const res = await fetchActivityLog({
         farId: farId || undefined,
-        action: action || undefined,
+        category: category || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
         limit: PAGE_SIZE
@@ -83,7 +88,7 @@ export function ActivityLogPage() {
     } finally {
       setLoading(false);
     }
-  }, [farId, action, dateFrom, dateTo]);
+  }, [farId, category, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
@@ -95,7 +100,7 @@ export function ActivityLogPage() {
     try {
       const res = await fetchActivityLog({
         farId: farId || undefined,
-        action: action || undefined,
+        category: category || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
         cursor: nextCursor,
@@ -110,11 +115,11 @@ export function ActivityLogPage() {
     }
   }
 
-  const hasActiveFilters = !!(farId || action || dateFrom || dateTo);
+  const hasActiveFilters = !!(farId || category || dateFrom || dateTo);
   function clearFilters() {
     setFarIdInput("");
     setFarId("");
-    setAction("");
+    setCategory("");
     setDateFrom("");
     setDateTo("");
   }
@@ -127,8 +132,8 @@ export function ActivityLogPage() {
           Activity Log
         </h1>
         <p className="mt-1 max-w-xl text-sm text-gray-500">
-          Every Capitalization, Addition, Transfer, and Disposal — single-item and bulk-uploaded alike — newest
-          first. Read-only. Only covers activity recorded after this log shipped.
+          Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
+          bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped.
         </p>
 
         <div className="mt-4 flex flex-wrap items-end gap-3">
@@ -150,17 +155,17 @@ export function ActivityLogPage() {
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label htmlFor="al-action" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+            <label htmlFor="al-category" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
               Category
             </label>
             <select
-              id="al-action"
+              id="al-category"
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-              value={action}
-              onChange={(e) => setAction(e.target.value as ActivityAction | "")}
+              value={category}
+              onChange={(e) => setCategory(e.target.value as ActivityCategory | "")}
             >
               <option value="">All</option>
-              {Object.entries(ACTION_LABELS).map(([value, label]) => (
+              {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
                 </option>
@@ -224,7 +229,7 @@ export function ActivityLogPage() {
             <p className="text-xs text-gray-400">
               {hasActiveFilters
                 ? "Try widening the filters above."
-                : "Capitalization, Addition, Transfer, and Disposal actions will show up here."}
+                : "Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters changes will show up here."}
             </p>
           </div>
         ) : (
@@ -240,20 +245,21 @@ export function ActivityLogPage() {
             </thead>
             <tbody>
               {items.map((entry) => {
-                const expanded = expandedId === entry.id;
+                const rowKey = `${entry.source}-${entry.id}`;
+                const expanded = expandedId === rowKey;
                 return (
-                  <Fragment key={entry.id}>
+                  <Fragment key={rowKey}>
                     <tr className="border-b border-gray-100 odd:bg-white even:bg-gray-50/60">
                       <td className="whitespace-nowrap py-2 pr-3 text-gray-600">{formatDateTime(entry.createdAt)}</td>
-                      <td className="py-2 pr-3 text-gray-600">{ACTION_LABELS[entry.action]}</td>
-                      <td className="py-2 pr-3 font-medium text-ink">{entry.farId}</td>
+                      <td className="py-2 pr-3 text-gray-600">{CATEGORY_LABELS[entry.category]}</td>
+                      <td className="py-2 pr-3 font-medium text-ink">{entry.farId ?? "—"}</td>
                       <td className="py-2 pr-3 text-gray-600">{entry.actorUsername ?? "Unknown user"}</td>
                       <td className="py-2 pr-3">
                         <button
                           type="button"
                           aria-expanded={expanded}
                           className="flex items-center gap-1 whitespace-nowrap text-xs font-medium text-accent hover:underline"
-                          onClick={() => setExpandedId(expanded ? null : entry.id)}
+                          onClick={() => setExpandedId(expanded ? null : rowKey)}
                         >
                           <ChevronDownIcon fontSize={13} className={expanded ? "" : "-rotate-90"} />
                           Details

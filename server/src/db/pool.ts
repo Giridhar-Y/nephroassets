@@ -312,5 +312,17 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_asset_activity_log_far_id ON asset_activity_log (far_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_asset_activity_log_created_at ON asset_activity_log (created_at DESC);
+
+    -- Masters (Centers/Sub Classifications/Statuses) create/rename/deactivate/reactivate
+    -- — see schema.sql's comment for the full reasoning. IF NOT EXISTS makes this a
+    -- no-op on every boot after the first.
+    CREATE TABLE IF NOT EXISTS master_activity_log (
+      id              BIGSERIAL PRIMARY KEY,
+      actor_user_id   BIGINT REFERENCES users(id),
+      action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update')),
+      details         JSONB,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
   `);
 }
