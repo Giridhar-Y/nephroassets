@@ -47,15 +47,18 @@ function grants<M extends Module>(module: M, ...actions: Array<ActionFor<M>>): P
   return actions.map((action) => ({ module, action }));
 }
 
-// What each role grants a user at creation time (and what every pre-existing user was
-// backfilled to). `capitalization`/`additions`/`disposals`/`assetHistory`'s own `view`
-// actions have no distinct server endpoint — their pages all read through the same
-// `GET /api/assets`/`GET /api/assets/:farId` that `register:view` already gates (see
-// requirePermission's call sites in assets.ts) — so they're granted here purely to
+// Seed data ONLY — what the three built-in roles' templates are the very first time
+// they're created (seedBuiltInRoles below). Once a role row exists, its
+// role_permissions ARE the template; a Super Admin can freely edit it via the Roles
+// master (routes/masters.ts), built-in or custom, and this object is never consulted
+// again for that role. `capitalization`/`additions`/`disposals`/`assetHistory`'s own
+// `view` actions have no distinct server endpoint — their pages all read through the
+// same `GET /api/assets`/`GET /api/assets/:farId` that `register:view` already gates
+// (see requirePermission's call sites in assets.ts) — so they're granted here purely to
 // drive client-side nav visibility, not a second server-enforced boundary over the same
 // data. `transfers:view` is different: `GET /api/transfers` is its own distinct,
 // genuinely gated endpoint.
-export const ROLE_TEMPLATES: Record<Role, Permission[]> = {
+const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[]> = {
   viewer: [
     ...grants("register", "view", "export"),
     ...grants("assetHistory", "view"),
@@ -92,23 +95,99 @@ export const ROLE_TEMPLATES: Record<Role, Permission[]> = {
   ]
 };
 
-/** Seeds one user's permission set from their role's template — used both by the
- *  one-time backfill below (for pre-existing users) and by adminUsers.ts's createUser
- *  (for brand-new ones), so both paths agree on exactly what a fresh grant set looks
- *  like. `grantedBy` is null for the automatic backfill, the acting admin's id for a
- *  create-time seed. */
+/** A role's current permission template, by name (case-insensitive, matching the
+ *  active-master-lookup convention every other Master uses) — the one place
+ *  seedPermissionsFromRole and the "Reset to [role] template" endpoint both read from.
+ *  Empty array for an unknown role name (callers that need "role must exist" should
+ *  check that separately, e.g. against the active roles list — see routes/masters.ts's
+ *  fetchRolesWithUsage). */
+export async function fetchRoleTemplate(db: Pick<pg.Pool | pg.PoolClient, "query">, roleName: string): Promise<Permission[]> {
+  const { rows } = await db.query<{ module: Module; action: string }>(
+    `SELECT rp.module, rp.action FROM role_permissions rp
+     JOIN roles r ON r.id = rp.role_id
+     WHERE LOWER(r.name) = LOWER($1)
+     ORDER BY rp.module, rp.action`,
+    [roleName]
+  );
+  return rows;
+}
+
+/** Seeds one user's permission set from their role's CURRENT template (roles/
+ *  role_permissions — see fetchRoleTemplate) — used both by the one-time backfill below
+ *  (for pre-existing users) and by adminUsers.ts's createUser (for brand-new ones), so
+ *  both paths agree on exactly what a fresh grant set looks like. `grantedBy` is null
+ *  for the automatic backfill, the acting admin's id for a create-time seed. */
 export async function seedPermissionsFromRole(
   db: Pick<pg.Pool | pg.PoolClient, "query">,
   userId: number,
   role: Role,
   grantedBy: number | null
 ): Promise<void> {
-  for (const { module, action } of ROLE_TEMPLATES[role]) {
+  for (const { module, action } of await fetchRoleTemplate(db, role)) {
     await db.query(
       `INSERT INTO user_permissions (user_id, module, action, granted_by) VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id, module, action) DO NOTHING`,
       [userId, module, action, grantedBy]
     );
+  }
+}
+
+/** One-time bootstrap of the three built-in roles (Viewer/Editor/Admin), each seeded
+ *  from BUILT_IN_ROLE_TEMPLATES above — safe to call on every boot (see pool.ts's
+ *  applySchema()). Only seeds a role's template at the moment its ROW is first created:
+ *  if the role already exists (including on every boot after the first, or a database
+ *  migrating in from before this table existed), its template is left completely
+ *  alone — a Super Admin may have since edited it via the Roles master, and this must
+ *  never silently undo that, the same "only fill the gap, never touch what's already
+ *  there" posture backfillUserPermissions below already has for users. */
+export async function seedBuiltInRoles(db: Pick<pg.Pool | pg.PoolClient, "query">): Promise<void> {
+  for (const [name, template] of Object.entries(BUILT_IN_ROLE_TEMPLATES)) {
+    const { rows } = await db.query<{ id: string }>(
+      `INSERT INTO roles (name, system_managed) VALUES ($1, TRUE)
+       ON CONFLICT (LOWER(name)) DO NOTHING RETURNING id`,
+      [name]
+    );
+    if (rows.length === 0) continue;
+    const roleId = Number(rows[0]!.id);
+    for (const { module, action } of template) {
+      await db.query(
+        `INSERT INTO role_permissions (role_id, module, action) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [roleId, module, action]
+      );
+    }
+  }
+}
+
+/** Replaces a role's entire permission template in one transaction (delete-all +
+ *  insert-all) — same replace-all contract as replaceUserPermissions below, and the
+ *  same reasoning: matches the Roles master UI's one Save of the full desired grant
+ *  set, not incremental toggles. Returns the added/removed diff for the caller's
+ *  master_activity_log entry (routes/masters.ts) — this function itself doesn't log
+ *  anything, same convention every other write function in this codebase follows. */
+export async function replaceRolePermissions(db: pg.Pool, roleId: number, grants: Permission[]): Promise<{ added: Permission[]; removed: Permission[] }> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: existingRows } = await client.query<{ module: Module; action: string }>(
+      `SELECT module, action FROM role_permissions WHERE role_id = $1`,
+      [roleId]
+    );
+    const existingKeys = new Set(existingRows.map((r) => `${r.module}:${r.action}`));
+    const incomingKeys = new Set(grants.map((g) => `${g.module}:${g.action}`));
+    const added = grants.filter((g) => !existingKeys.has(`${g.module}:${g.action}`));
+    const removed = existingRows.filter((r) => !incomingKeys.has(`${r.module}:${r.action}`));
+
+    await client.query(`DELETE FROM role_permissions WHERE role_id = $1`, [roleId]);
+    for (const { module, action } of grants) {
+      await client.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, $2, $3)`, [roleId, module, action]);
+    }
+    await client.query("COMMIT");
+    return { added, removed };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }
 

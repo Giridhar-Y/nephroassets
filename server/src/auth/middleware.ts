@@ -3,11 +3,14 @@ import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, verifySession } from "./session.js";
 import type { ActionFor, Module } from "./permissions.js";
 
-/** A creation-time template only (see auth/permissions.ts's ROLE_TEMPLATES) — grants
- *  nothing by itself once a user exists. All real enforcement reads `AuthedUser.
- *  permissions` (backed by the `user_permissions` table), never this field. Kept as a
- *  column/label for at-a-glance display and as the default when creating a new user. */
-export type Role = "viewer" | "editor" | "admin";
+/** A creation-time template selector/label only (see auth/permissions.ts's
+ *  seedPermissionsFromRole and the roles/role_permissions tables) — grants nothing by
+ *  itself once a user exists. All real enforcement reads `AuthedUser.permissions`
+ *  (backed by the `user_permissions` table), never this field. A plain string, not a
+ *  fixed union — Roles is a manageable Master (routes/masters.ts), not a hardcoded
+ *  enum, so any active role name is valid here; validated at write time against the
+ *  `roles` table (routes/adminUsers.ts), not at the type level. */
+export type Role = string;
 
 export interface AuthedUser {
   id: number;

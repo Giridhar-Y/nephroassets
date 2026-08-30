@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
-import { backfillUserPermissions } from "../auth/permissions.js";
+import { backfillUserPermissions, seedBuiltInRoles } from "../auth/permissions.js";
 
 // Return DATE columns as raw "YYYY-MM-DD" strings instead of pg's default JS Date
 // (which applies local-timezone conversion and can shift the day). The calc engine
@@ -143,12 +143,33 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_statuses_name_ci ON statuses (LOWER(name));
 
+    -- Roles master (replaces the hardcoded viewer/editor/admin enum) — see schema.sql's
+    -- comment for the full reasoning. IF NOT EXISTS makes both a no-op on every boot
+    -- after the first, and on a brand-new database where schema.sql already created
+    -- them directly.
+    CREATE TABLE IF NOT EXISTS roles (
+      id               BIGSERIAL PRIMARY KEY,
+      name             TEXT NOT NULL,
+      active           BOOLEAN NOT NULL DEFAULT TRUE,
+      system_managed   BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_name_ci ON roles (LOWER(name));
+
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role_id   BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+      module    TEXT NOT NULL,
+      action    TEXT NOT NULL,
+      PRIMARY KEY (role_id, module, action)
+    );
+    CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions (role_id);
+
     CREATE TABLE IF NOT EXISTS users (
       id                     BIGSERIAL PRIMARY KEY,
       username               TEXT NOT NULL,
       email                  TEXT NOT NULL,
       password_hash          TEXT NOT NULL,
-      role                   TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor', 'admin')),
+      role                   TEXT NOT NULL DEFAULT 'viewer',
       status                 TEXT NOT NULL DEFAULT 'active',
       must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
       created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -172,6 +193,14 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
         ALTER TABLE users DROP COLUMN is_admin;
       END IF;
     END $$;
+
+    -- Roles master: role is no longer a fixed 3-value CHECK, it's validated at write
+    -- time against the roles table above (same convention as location/status/
+    -- sub_classification). A database that ran the old hardcoded CHECK still has it —
+    -- drop it so a custom role name can actually be saved. No-op on a brand-new
+    -- database (schema.sql above never created the constraint) and on every boot after
+    -- the first.
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 
     CREATE TABLE IF NOT EXISTS login_attempts (
       id             BIGSERIAL PRIMARY KEY,
@@ -320,11 +349,26 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     CREATE TABLE IF NOT EXISTS master_activity_log (
       id              BIGSERIAL PRIMARY KEY,
       actor_user_id   BIGINT REFERENCES users(id),
-      action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update')),
+      action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update', 'role_create', 'role_update')),
       details         JSONB,
       created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
+
+    -- One-time migration for a database whose master_activity_log predates the Roles
+    -- master (role_create/role_update) — widens the action CHECK. Guarded on the
+    -- constraint's own definition so this only runs once, not on every boot.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'master_activity_log_action_check' AND pg_get_constraintdef(oid) LIKE '%role_create%'
+      ) THEN
+        ALTER TABLE master_activity_log DROP CONSTRAINT IF EXISTS master_activity_log_action_check;
+        ALTER TABLE master_activity_log ADD CONSTRAINT master_activity_log_action_check
+          CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update', 'role_create', 'role_update'));
+      END IF;
+    END $$;
 
     -- Per-user/per-module permissions — see schema.sql's comment for the full reasoning
     -- and auth/permissions.ts for the module/action registry this is backfilled from.
@@ -354,5 +398,8 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     END $$;
   `);
 
+  // Must run before backfillUserPermissions — a pre-existing user backfilled from a
+  // role whose row/template doesn't exist yet would silently get zero permissions.
+  await seedBuiltInRoles(db);
   await backfillUserPermissions(db);
 }

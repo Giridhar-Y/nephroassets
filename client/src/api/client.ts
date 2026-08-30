@@ -738,11 +738,45 @@ export function updateMasterStatus(
   return request(`/api/masters/statuses/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
+// Roles: a manageable Master like the three above, but no bulk upload (a handful of
+// roles doesn't need one) and each row carries its own permission template (`grants`) —
+// what a user gets at creation time, or an explicit "Reset to [role] template" click
+// (AdminPage.tsx). Editing `grants` never touches an existing user's actual access.
+export interface MasterRole {
+  id: number;
+  name: string;
+  active: boolean;
+  systemManaged: boolean;
+  usageCount: number;
+  grants: PermissionGrant[];
+}
+
+export function fetchMasterRoles(): Promise<MasterRole[]> {
+  return request("/api/masters/roles");
+}
+
+export function createMasterRole(payload: { name: string; grants: PermissionGrant[] }): Promise<MasterRole> {
+  return request("/api/masters/roles", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateMasterRole(
+  id: number,
+  payload: Partial<{ name: string; active: boolean }>
+): Promise<MasterRole & { usersUpdated?: number }> {
+  return request(`/api/masters/roles/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function saveRolePermissions(id: number, grants: PermissionGrant[]): Promise<{ grants: PermissionGrant[] }> {
+  return request(`/api/masters/roles/${id}/permissions`, { method: "PUT", body: JSON.stringify({ grants }) });
+}
+
 // --- Auth ------------------------------------------------------------------------
 
-/** viewer: read/export only. editor: viewer's access + full FAR-module CRUD
- *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management. */
-export type Role = "viewer" | "editor" | "admin";
+/** A creation-time template label, not a fixed set — Roles is a manageable Master
+ *  (MastersPage.tsx's Roles tab), any active role name is valid. The three built-in
+ *  ones (Viewer/Editor/Admin) ship with sensible starting templates; see
+ *  fetchMasterRoles for the live list and each role's actual grants. */
+export type Role = string;
 
 export interface AuthUser {
   id: number;

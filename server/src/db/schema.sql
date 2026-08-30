@@ -133,19 +133,55 @@ CREATE TABLE statuses (
 );
 CREATE UNIQUE INDEX idx_statuses_name_ci ON statuses (LOWER(name));
 
+-- Roles: a manageable Master (like Centers/Sub Classifications/Statuses above) rather
+-- than a hardcoded viewer/editor/admin enum — see auth/permissions.ts's
+-- seedBuiltInRoles() for the three built-in rows' seed templates. A role is nothing
+-- more than a NAMED PERMISSION TEMPLATE (role_permissions below): applying it to a user
+-- happens only at user-creation time or an explicit "Reset to [role] template" click
+-- (routes/adminUsers.ts) — same as the retired hardcoded ROLE_TEMPLATES object, a role
+-- grants nothing by itself once a user exists; user_permissions alone is still what
+-- requirePermission enforces. system_managed marks the three built-in roles, locked
+-- from rename/deactivate here (same convention as statuses.system_managed above) — a
+-- handful of places still special-case the literal string "admin" for a cosmetic
+-- self-relabel guard (adminUsers.ts's updateUser). A role's own template IS freely
+-- editable regardless of system_managed — editing it only changes what a FUTURE user
+-- gets, never an existing user's actual grants.
+CREATE TABLE roles (
+  id               BIGSERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  active           BOOLEAN NOT NULL DEFAULT TRUE,
+  system_managed   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX idx_roles_name_ci ON roles (LOWER(name));
+
+-- One role's permission template — same (module, action) shape as user_permissions
+-- below, keyed by role instead of user. Read only by seedPermissionsFromRole (a new
+-- user, or an explicit template reset) — like user_permissions, never read at
+-- request-enforcement time.
+CREATE TABLE role_permissions (
+  role_id   BIGINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  module    TEXT NOT NULL,
+  action    TEXT NOT NULL,
+  PRIMARY KEY (role_id, module, action)
+);
+CREATE INDEX idx_role_permissions_role ON role_permissions (role_id);
+
 -- Real per-user auth (replaces the old client-side-only demo gate). must_change_password
 -- is set whenever an admin hands out a temporary password (new user, or a reset) — the
 -- user can log in with it, but every other API route is blocked until they change it
 -- (see routes/auth.ts's change-password route and app.ts's requireAuth hook). role
--- replaces an earlier is_admin boolean — viewer (read/export only), editor (full FAR-
--- module CRUD), admin (also user management) — see auth/middleware.ts's requireAdmin/
--- requireEditor preHandlers, the single source of truth for what each tier can reach.
+-- replaces an earlier is_admin boolean, and used to be a hardcoded viewer/editor/admin
+-- CHECK constraint — now a plain TEXT column validated at write time against the roles
+-- table above (active rows only), same denormalized-string-plus-app-level-validation
+-- convention location/sub_classification/status already use, not a DB FK (see
+-- routes/adminUsers.ts's createUser/updateUser).
 CREATE TABLE users (
   id                     BIGSERIAL PRIMARY KEY,
   username               TEXT NOT NULL,
   email                  TEXT NOT NULL,
   password_hash          TEXT NOT NULL,
-  role                   TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'editor', 'admin')),
+  role                   TEXT NOT NULL DEFAULT 'viewer',
   status                 TEXT NOT NULL DEFAULT 'active',
   must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -155,10 +191,10 @@ CREATE UNIQUE INDEX idx_users_username_ci ON users (LOWER(username));
 CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
 
 -- Phase 1 of the move from fixed viewer/editor/admin roles to per-user, per-module
--- access control (see auth/permissions.ts for the full module/action registry and the
--- ROLE_TEMPLATES this table is backfilled from). `role` above is NOT removed — it stays
--- as a creation-time template selector and an at-a-glance label, but grants NOTHING by
--- itself once a user exists. This table is the one and only source of truth for what a
+-- access control (see auth/permissions.ts for the full module/action registry and
+-- role_permissions above, which this table is backfilled from). `role` above is NOT
+-- removed — it stays as a creation-time template selector and an at-a-glance label, but
+-- grants NOTHING by itself once a user exists. This table is the one and only source of truth for what a
 -- user can actually do — deny-by-default, no row means no access, same posture the app
 -- already has everywhere else. Read by every route's `requirePermission` preHandler
 -- (auth/middleware.ts). `granted_by` is NULL for the automatic role-template backfill/
@@ -309,7 +345,7 @@ CREATE INDEX idx_asset_activity_log_created_at ON asset_activity_log (created_at
 CREATE TABLE master_activity_log (
   id              BIGSERIAL PRIMARY KEY,
   actor_user_id   BIGINT REFERENCES users(id),
-  action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update')),
+  action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update', 'role_create', 'role_update')),
   details         JSONB,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

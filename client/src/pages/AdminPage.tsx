@@ -3,17 +3,20 @@ import {
   ApiError,
   createAdminUser,
   fetchAdminUsers,
+  fetchMasterRoles,
   fetchUserPermissions,
   resetAdminUserPassword,
   saveUserPermissions,
   updateAdminUser,
   type AdminUser,
+  type MasterRole,
   type PermissionGrant,
   type Role
 } from "../api/client.js";
 import { useAuth } from "../lib/AuthContext.js";
-import { hasPermission, MODULE_LABELS, PERMISSION_REGISTRY, ROLE_TEMPLATES, actionLabel, type Module } from "../lib/permissions.js";
-import { AdminIcon, ChevronDownIcon, KeyIcon, LockIcon } from "../lib/icons.js";
+import { hasPermission } from "../lib/permissions.js";
+import { PermissionMatrix } from "../components/PermissionMatrix.js";
+import { AdminIcon, KeyIcon, LockIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 
 const INPUT_CLASS =
@@ -21,12 +24,23 @@ const INPUT_CLASS =
 const TH_CLASS = "px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600";
 const TD_CLASS = "px-3 py-2 text-sm text-ink";
 
-const ROLE_LABELS: Record<Role, string> = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
-const ROLE_BADGE_CLASS: Record<Role, string> = {
+// The three built-in roles keep their existing distinct colors; any custom role (Roles
+// master, MastersPage.tsx) gets one consistent neutral badge — simpler than inventing a
+// color per custom role, and still visually distinguishes "one of the original three"
+// from "something someone defined".
+const BUILT_IN_ROLE_BADGE_CLASS: Record<string, string> = {
   viewer: "bg-gray-100 text-gray-600",
   editor: "bg-blue-100 text-blue-800",
   admin: "bg-ink text-white"
 };
+const CUSTOM_ROLE_BADGE_CLASS = "bg-purple-100 text-purple-800";
+
+// Built-in role names are stored lowercase (matching every pre-existing user's `role`
+// column, from before Roles became a Master) — capitalized only for display. A custom
+// role keeps whatever casing its creator typed.
+function roleDisplayName(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
 
 function StatusBadge({ status }: { status: AdminUser["status"] }) {
   return (
@@ -41,31 +55,36 @@ function StatusBadge({ status }: { status: AdminUser["status"] }) {
 }
 
 function RoleBadge({ role }: { role: Role }) {
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${ROLE_BADGE_CLASS[role]}`}>{ROLE_LABELS[role]}</span>;
+  const cls = BUILT_IN_ROLE_BADGE_CLASS[role.toLowerCase()] ?? CUSTOM_ROLE_BADGE_CLASS;
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{roleDisplayName(role)}</span>;
 }
 
 function RoleSelect({
   value,
   onChange,
+  roles,
   disabled,
   title
 }: {
   value: Role;
   onChange: (role: Role) => void;
+  roles: MasterRole[];
   disabled?: boolean;
   title?: string;
 }) {
   return (
-    <select
-      className={INPUT_CLASS}
-      value={value}
-      disabled={disabled}
-      title={title}
-      onChange={(e) => onChange(e.target.value as Role)}
-    >
-      <option value="viewer">Viewer</option>
-      <option value="editor">Editor</option>
-      <option value="admin">Admin</option>
+    <select className={INPUT_CLASS} value={value} disabled={disabled} title={title} onChange={(e) => onChange(e.target.value)}>
+      {roles
+        // A deactivated role stays selectable if it's this field's current value (same
+        // "already-in-use values stay visible" convention every other Masters-backed
+        // dropdown in this app follows) — otherwise <select>'s value wouldn't match any
+        // <option>.
+        .filter((r) => r.active || r.name === value)
+        .map((r) => (
+          <option key={r.id} value={r.name}>
+            {roleDisplayName(r.name)}
+          </option>
+        ))}
     </select>
   );
 }
@@ -126,25 +145,26 @@ function TempPasswordBanner({
   );
 }
 
-const MODULES = Object.keys(PERMISSION_REGISTRY) as Module[];
-
 function permissionKey(p: PermissionGrant): string {
   return `${p.module}:${p.action}`;
 }
 
-/** Per-user slide-over — collapsible module groups, a per-module "select all", a
- *  "Reset to [role] template" bulk-apply, and one Save that replaces the user's entire
- *  grant set in a single request (matches the server's own replace-all contract, not
- *  incremental grant/revoke calls). Only reachable via the "Permissions" button, itself
- *  gated on admin:managePermissions — not every Admin necessarily holds it. */
+/** Per-user slide-over — the shared PermissionMatrix, a "Reset to [role] template"
+ *  bulk-apply per active role (grants come straight off the already-fetched roles
+ *  list, no extra round trip), and one Save that replaces the user's entire grant set
+ *  in a single request (matches the server's own replace-all contract, not incremental
+ *  grant/revoke calls). Only reachable via the "Permissions" button, itself gated on
+ *  admin:managePermissions — not every Admin necessarily holds it. */
 function PermissionsPanel({
   target,
   isSelf,
+  roles,
   onClose,
   onSaved
 }: {
   target: AdminUser;
   isSelf: boolean;
+  roles: MasterRole[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -152,7 +172,6 @@ function PermissionsPanel({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [granted, setGranted] = useState<Set<string>>(new Set());
-  const [expanded, setExpanded] = useState<Set<Module>>(new Set());
 
   useEffect(() => {
     fetchUserPermissions(target.id)
@@ -162,39 +181,8 @@ function PermissionsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target.id]);
 
-  function toggle(module: Module, action: string) {
-    const key = `${module}:${action}`;
-    setGranted((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  function toggleModule(module: Module, allOn: boolean) {
-    setGranted((prev) => {
-      const next = new Set(prev);
-      for (const action of PERMISSION_REGISTRY[module]) {
-        const key = `${module}:${action}`;
-        if (allOn) next.delete(key);
-        else next.add(key);
-      }
-      return next;
-    });
-  }
-
-  function toggleExpanded(module: Module) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(module)) next.delete(module);
-      else next.add(module);
-      return next;
-    });
-  }
-
-  function applyTemplate(role: Role) {
-    setGranted(new Set(ROLE_TEMPLATES[role].map(permissionKey)));
+  function applyTemplate(role: MasterRole) {
+    setGranted(new Set(role.grants.map(permissionKey)));
   }
 
   async function handleSave() {
@@ -227,69 +215,23 @@ function PermissionsPanel({
             actual access.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            {(["viewer", "editor", "admin"] as const).map((role) => (
-              <button
-                key={role}
-                type="button"
-                className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-                onClick={() => applyTemplate(role)}
-              >
-                Reset to {ROLE_LABELS[role]} template
-              </button>
-            ))}
+            {roles
+              .filter((r) => r.active)
+              .map((role) => (
+                <button
+                  key={role.id}
+                  type="button"
+                  className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                  onClick={() => applyTemplate(role)}
+                >
+                  Reset to {roleDisplayName(role.name)} template
+                </button>
+              ))}
           </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-5 py-3">
-          {loading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="h-9 animate-pulse rounded bg-gray-100" />
-              ))}
-            </div>
-          ) : (
-            MODULES.map((module) => {
-              const actions = PERMISSION_REGISTRY[module] as readonly string[];
-              const grantedCount = actions.filter((a) => granted.has(`${module}:${a}`)).length;
-              const allOn = grantedCount === actions.length;
-              const isOpen = expanded.has(module);
-              return (
-                <div key={module} className="border-b border-gray-100 py-2">
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-2 py-1.5 text-left"
-                    onClick={() => toggleExpanded(module)}
-                  >
-                    <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
-                      <ChevronDownIcon fontSize={14} className={isOpen ? "" : "-rotate-90"} />
-                      {MODULE_LABELS[module]}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      {grantedCount}/{actions.length}
-                    </span>
-                  </button>
-                  {isOpen && (
-                    <div className="ml-5 mt-1 space-y-1.5">
-                      <label className="flex items-center gap-2 text-xs font-medium text-accent">
-                        <input type="checkbox" checked={allOn} onChange={() => toggleModule(module, allOn)} />
-                        Select all
-                      </label>
-                      {actions.map((action) => (
-                        <label key={action} className="flex items-center gap-2 text-sm text-gray-700">
-                          <input
-                            type="checkbox"
-                            checked={granted.has(`${module}:${action}`)}
-                            onChange={() => toggle(module, action)}
-                          />
-                          {actionLabel(action)}
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
+          <PermissionMatrix granted={granted} onChange={setGranted} loading={loading} />
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3">
@@ -313,20 +255,29 @@ function PermissionsPanel({
   );
 }
 
+// Prefers the built-in "viewer" role (the historical default) if it's active; falls
+// back to whatever active role sorts first, or "" if every role has been deactivated
+// (an edge case the create form's own validation already guards against submitting).
+function defaultRoleName(roles: MasterRole[]): string {
+  const active = roles.filter((r) => r.active);
+  return active.find((r) => r.name.toLowerCase() === "viewer")?.name ?? active[0]?.name ?? "";
+}
+
 export function AdminPage() {
   const { user: me } = useAuth();
   const { showToast } = useToast();
   const [rows, setRows] = useState<AdminUser[] | null>(null);
+  const [roles, setRoles] = useState<MasterRole[]>([]);
   const [busy, setBusy] = useState(false);
 
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<Role>("viewer");
+  const [role, setRole] = useState<Role>("");
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editEmail, setEditEmail] = useState("");
-  const [editRole, setEditRole] = useState<Role>("viewer");
+  const [editRole, setEditRole] = useState<Role>("");
 
   const [reveal, setReveal] = useState<{ username: string; password: string } | null>(null);
   const [permissionsTarget, setPermissionsTarget] = useState<AdminUser | null>(null);
@@ -338,7 +289,20 @@ export function AdminPage() {
       .catch((err) => showToast(err instanceof ApiError ? err.message : "Could not load users.", "error"));
   }
 
-  useEffect(load, []);
+  function loadRoles() {
+    fetchMasterRoles()
+      .then((list) => {
+        setRoles(list);
+        setRole((current) => current || defaultRoleName(list));
+      })
+      .catch((err) => showToast(err instanceof ApiError ? err.message : "Could not load roles.", "error"));
+  }
+
+  useEffect(() => {
+    load();
+    loadRoles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleCreate() {
     if (!username.trim() || !email.trim() || password.length < 8) return;
@@ -349,7 +313,7 @@ export function AdminPage() {
       setUsername("");
       setEmail("");
       setPassword("");
-      setRole("viewer");
+      setRole(defaultRoleName(roles));
       load();
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Could not create user.", "error");
@@ -442,7 +406,7 @@ export function AdminPage() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Role</label>
-            <RoleSelect value={role} onChange={setRole} />
+            <RoleSelect value={role} onChange={setRole} roles={roles} />
           </div>
           <button
             type="button"
@@ -483,6 +447,7 @@ export function AdminPage() {
                         <RoleSelect
                           value={editRole}
                           onChange={setEditRole}
+                          roles={roles}
                           disabled={isSelf}
                           title={isSelf ? "You can't change your own role." : undefined}
                         />
@@ -569,6 +534,7 @@ export function AdminPage() {
         <PermissionsPanel
           target={permissionsTarget}
           isSelf={permissionsTarget.id === me?.id}
+          roles={roles}
           onClose={() => setPermissionsTarget(null)}
           onSaved={() => setPermissionsTarget(null)}
         />

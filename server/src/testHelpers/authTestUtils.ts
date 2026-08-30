@@ -3,7 +3,7 @@ import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
 import { hashPassword } from "../auth/password.js";
 import type { Role } from "../auth/middleware.js";
-import { seedPermissionsFromRole } from "../auth/permissions.js";
+import { seedBuiltInRoles, seedPermissionsFromRole } from "../auth/permissions.js";
 
 const TEST_ADMIN_USERNAME = "test-harness-admin";
 const TEST_ADMIN_ID_PLACEHOLDER = -1; // overwritten by ensureTestAdminUser's real id
@@ -19,6 +19,12 @@ let cachedAuthHeader: string | null = null;
 export async function getSharedAuthHeader(): Promise<string> {
   if (cachedAuthHeader) return cachedAuthHeader;
   const db = await getPool();
+  // The test database bootstraps from schema.sql alone (see db/testPostgres.ts) — it
+  // never goes through pool.ts's applySchema()/seedBuiltInRoles() migration path, so
+  // Viewer/Editor/Admin's rows+templates wouldn't otherwise exist here at all. Cheap
+  // and idempotent (see seedBuiltInRoles's own comment) — safe to call on every test
+  // file's first use of this shared helper.
+  await seedBuiltInRoles(db);
   const passwordHash = await hashPassword("test-harness-password-unused");
   // id is BIGSERIAL — comes back as a string, not a number (see auth/middleware.ts).
   const { rows } = await db.query<{ id: string }>(
@@ -67,6 +73,9 @@ export async function createTestUser(overrides: {
   mustChangePassword?: boolean;
 }): Promise<{ id: number; username: string; password: string }> {
   const db = await getPool();
+  // Same reasoning as getSharedAuthHeader's own call — a test file that only ever calls
+  // createTestUser (never getSharedAuthHeader) still needs Viewer/Editor/Admin to exist.
+  await seedBuiltInRoles(db);
   const password = overrides.password ?? "correct-horse-battery-staple";
   const passwordHash = await hashPassword(password);
   const { rows } = await db.query<{ id: string }>(

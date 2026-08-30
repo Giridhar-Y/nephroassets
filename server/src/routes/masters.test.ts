@@ -336,4 +336,118 @@ describe("Masters", () => {
       expect(deactivate.statusCode).toBe(409);
     });
   });
+
+  // Roles: unlike Centers/Sub Classifications/Statuses above, this describe block does
+  // NOT get a `DELETE FROM roles` in beforeEach — roles/users are shared with the rest
+  // of the suite (fileParallelism:false, see authTestUtils.ts), so every test here uses
+  // its own uniquely-named role instead of relying on a clean table.
+  describe("Roles", () => {
+    it("creates a custom role with an initial permission template", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/roles",
+        payload: { name: "Auditor", grants: [{ module: "reports", action: "view" }, { module: "register", action: "view" }] }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.systemManaged).toBe(false);
+      expect(body.active).toBe(true);
+      expect(new Set(body.grants.map((g: { module: string; action: string }) => `${g.module}:${g.action}`))).toEqual(
+        new Set(["reports:view", "register:view"])
+      );
+    });
+
+    it("rejects an initial grant that isn't a real (module, action) pair", async () => {
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/roles",
+        payload: { name: "Bad-Grant-Role", grants: [{ module: "reports", action: "nonsense" }] }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a duplicate name", async () => {
+      await authedInject(app, { method: "POST", url: "/api/masters/roles", payload: { name: "Dup-Role", grants: [] } });
+      const dup = await authedInject(app, { method: "POST", url: "/api/masters/roles", payload: { name: "dup-role", grants: [] } });
+      expect(dup.statusCode).toBe(409);
+    });
+
+    it("lists roles with a usage count reflecting real users", async () => {
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/roles", payload: { name: "Usage-Role", grants: [] } });
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, role) VALUES ('usage-role-user', 'usage-role-user@example.invalid', 'x', 'Usage-Role')`
+      );
+
+      const list = await authedInject(app, { method: "GET", url: "/api/masters/roles" });
+      const row = list.json().find((r: { id: number }) => r.id === created.json().id);
+      expect(row.usageCount).toBe(1);
+    });
+
+    it("renaming a custom role cascades to every user holding it", async () => {
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/roles", payload: { name: "Rename-Role", grants: [] } });
+      const { id } = created.json();
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, role) VALUES ('rename-role-user', 'rename-role-user@example.invalid', 'x', 'Rename-Role')`
+      );
+
+      const patch = await authedInject(app, { method: "PATCH", url: `/api/masters/roles/${id}`, payload: { name: "Renamed-Role" } });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().usersUpdated).toBe(1);
+
+      const { rows } = await db.query(`SELECT role FROM users WHERE username = 'rename-role-user'`);
+      expect(rows[0].role).toBe("Renamed-Role");
+    });
+
+    it("deactivating a custom role doesn't touch users already holding it", async () => {
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/roles", payload: { name: "Deactivate-Role", grants: [] } });
+      const { id } = created.json();
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, role) VALUES ('deactivate-role-user', 'deactivate-role-user@example.invalid', 'x', 'Deactivate-Role')`
+      );
+
+      const patch = await authedInject(app, { method: "PATCH", url: `/api/masters/roles/${id}`, payload: { active: false } });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().active).toBe(false);
+
+      const { rows } = await db.query(`SELECT role FROM users WHERE username = 'deactivate-role-user'`);
+      expect(rows[0].role).toBe("Deactivate-Role");
+    });
+
+    it("a built-in role (system_managed) can never be renamed or deactivated via the API", async () => {
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT id FROM roles WHERE LOWER(name) = 'viewer'`);
+      const id = rows[0].id;
+
+      const rename = await authedInject(app, { method: "PATCH", url: `/api/masters/roles/${id}`, payload: { name: "Viewer2" } });
+      expect(rename.statusCode).toBe(409);
+
+      const deactivate = await authedInject(app, { method: "PATCH", url: `/api/masters/roles/${id}`, payload: { active: false } });
+      expect(deactivate.statusCode).toBe(409);
+    });
+
+    it("a built-in role's permission template CAN be edited, even though its name/active can't", async () => {
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT id FROM roles WHERE LOWER(name) = 'editor'`);
+      const id = rows[0].id;
+      const original = (await db.query(`SELECT module, action FROM role_permissions WHERE role_id = $1`, [id])).rows;
+
+      try {
+        const res = await authedInject(app, {
+          method: "PUT",
+          url: `/api/masters/roles/${id}/permissions`,
+          payload: { grants: [{ module: "reports", action: "view" }] }
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().grants).toEqual([{ module: "reports", action: "view" }]);
+      } finally {
+        await db.query(`DELETE FROM role_permissions WHERE role_id = $1`, [id]);
+        for (const { module, action } of original) {
+          await db.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, $2, $3)`, [id, module, action]);
+        }
+      }
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import type { AuthUser, Role } from "../api/client.js";
+import type { AuthUser } from "../api/client.js";
 
 // Client-side mirror of server/src/auth/permissions.ts's PERMISSION_REGISTRY — kept in
 // sync by hand, same convention this app already uses for Role (duplicated here and in
@@ -21,6 +21,11 @@ export const PERMISSION_REGISTRY = {
 } as const;
 
 export type Module = keyof typeof PERMISSION_REGISTRY;
+
+// Registry order, once — the Permissions matrix (per-user panel, Roles master) renders
+// its module groups in this order; both call sites share this instead of each
+// re-deriving Object.keys(PERMISSION_REGISTRY) themselves.
+export const MODULES = Object.keys(PERMISSION_REGISTRY) as Module[];
 
 export const MODULE_LABELS: Record<Module, string> = {
   register: "Register",
@@ -56,51 +61,6 @@ const ACTION_LABELS: Record<string, string> = {
 export function actionLabel(action: string): string {
   return ACTION_LABELS[action] ?? action;
 }
-
-function grants<M extends Module>(module: M, ...actions: Array<(typeof PERMISSION_REGISTRY)[M][number]>) {
-  return actions.map((action) => ({ module: module as string, action: action as string }));
-}
-
-// Mirrors server/src/auth/permissions.ts's ROLE_TEMPLATES exactly — used only for the
-// Permissions panel's "Reset to [role] template" button, a local preview/bulk-apply, not
-// a second source of truth for enforcement (the server computes and stores the real
-// thing at user-creation time).
-export const ROLE_TEMPLATES: Record<Role, Array<{ module: string; action: string }>> = {
-  viewer: [
-    ...grants("register", "view", "export"),
-    ...grants("assetHistory", "view"),
-    ...grants("reports", "view", "export"),
-    ...grants("masters", "view"),
-    ...grants("settings", "view")
-  ],
-  editor: [
-    ...grants("register", "view", "edit", "export"),
-    ...grants("assetHistory", "view"),
-    ...grants("transfers", "view", "create"),
-    ...grants("capitalization", "view", "create"),
-    ...grants("additions", "view", "create"),
-    ...grants("disposals", "view", "create"),
-    ...grants("bulkUpload", "capitalization", "transfers", "disposals", "merge"),
-    ...grants("reports", "view", "export"),
-    ...grants("activityLog", "view"),
-    ...grants("masters", "view", "edit"),
-    ...grants("settings", "view")
-  ],
-  admin: [
-    ...grants("register", "view", "edit", "export"),
-    ...grants("assetHistory", "view"),
-    ...grants("transfers", "view", "create", "delete"),
-    ...grants("capitalization", "view", "create", "delete"),
-    ...grants("additions", "view", "create", "undo"),
-    ...grants("disposals", "view", "create", "undo"),
-    ...grants("bulkUpload", "capitalization", "transfers", "disposals", "merge"),
-    ...grants("reports", "view", "export"),
-    ...grants("activityLog", "view"),
-    ...grants("masters", "view", "edit"),
-    ...grants("settings", "view", "edit"),
-    ...grants("admin", "view", "create", "edit", "resetPassword", "managePermissions")
-  ]
-};
 
 /** The one function every nav-visibility/button-gating check in the app should use —
  *  reads the user's actual permission set (fetched once at login, see AuthContext),

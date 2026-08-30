@@ -6,7 +6,7 @@ import authRoutes from "./auth.js";
 import { getPool } from "../db/pool.js";
 import { authGateHook } from "../auth/middleware.js";
 import { authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
-import { ROLE_TEMPLATES } from "../auth/permissions.js";
+import { fetchRoleTemplate } from "../auth/permissions.js";
 
 describe("Admin: user management", () => {
   let app: FastifyInstance;
@@ -105,11 +105,59 @@ describe("Admin: user management", () => {
       [created.id]
     );
     const got = new Set(rows.map((r) => `${r.module}:${r.action}`));
-    const want = new Set(ROLE_TEMPLATES.editor.map((p) => `${p.module}:${p.action}`));
+    const template = await fetchRoleTemplate(db, "editor");
+    const want = new Set(template.map((p) => `${p.module}:${p.action}`));
     expect(got).toEqual(want);
     // granted_by is the acting admin, not null — distinguishes an explicit create-time
     // seed from the automatic legacy-data backfill (see permissions.test.ts).
     expect(rows.every((r) => Number(r.granted_by) === adminId)).toBe(true);
+  });
+
+  it("creates a user with a custom (non-built-in) role and seeds exactly that role's own template", async () => {
+    const db = await getPool();
+    const { rows } = await db.query<{ id: string }>(
+      `INSERT INTO roles (name) VALUES ('Field-Auditor') RETURNING id`
+    );
+    const roleId = rows[0]!.id;
+    await db.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, 'reports', 'view'), ($1, 'register', 'view')`, [
+      roleId
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: {
+        username: "custom-role-user",
+        email: "custom-role-user@example.com",
+        password: "temp-password-123",
+        role: "Field-Auditor"
+      }
+    });
+    expect(res.statusCode).toBe(200);
+    const created = res.json();
+    expect(created.role).toBe("Field-Auditor");
+
+    const { rows: permRows } = await db.query<{ module: string; action: string }>(
+      `SELECT module, action FROM user_permissions WHERE user_id = $1`,
+      [created.id]
+    );
+    expect(new Set(permRows.map((r) => `${r.module}:${r.action}`))).toEqual(new Set(["reports:view", "register:view"]));
+  });
+
+  it("rejects creating a user with a role that doesn't exist (or is inactive)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: {
+        username: "no-such-role-user",
+        email: "no-such-role-user@example.com",
+        password: "temp-password-123",
+        role: "Not-A-Real-Role"
+      }
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("defaults a new user to the viewer role when none is specified", async () => {

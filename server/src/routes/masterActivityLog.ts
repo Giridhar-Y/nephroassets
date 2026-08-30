@@ -6,7 +6,9 @@ export type MasterActivityAction =
   | "sub_classification_create"
   | "sub_classification_update"
   | "status_create"
-  | "status_update";
+  | "status_update"
+  | "role_create"
+  | "role_update";
 
 /** Writes one row to master_activity_log — a Centers/Sub Classifications/Statuses
  *  create/rename/deactivate/reactivate. See schema.sql's table comment for what

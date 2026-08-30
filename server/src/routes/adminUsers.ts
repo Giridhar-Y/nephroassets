@@ -86,11 +86,24 @@ export async function fetchUsers(db: pg.Pool): Promise<AdminUserRow[]> {
   return rows.map(mapUserRow);
 }
 
+/** Case-insensitive lookup against active roles, returning the Roles master's own
+ *  canonical casing — same convention every other master-data reference in this app
+ *  uses (see bulkParse.ts's lookupCanonical), not a DB FK (see schema.sql's comment on
+ *  users.role). undefined means no active role matches. */
+async function resolveActiveRole(db: Pick<pg.Pool | pg.PoolClient, "query">, roleName: string): Promise<string | undefined> {
+  const { rows } = await db.query<{ name: string }>(`SELECT name FROM roles WHERE active = TRUE AND LOWER(name) = LOWER($1)`, [
+    roleName
+  ]);
+  return rows[0]?.name;
+}
+
 export async function createUser(
   db: pg.Pool,
   actorUserId: number,
   data: { username: string; email: string; password: string; role: Role }
 ): Promise<AdminUserRow> {
+  const canonicalRole = await resolveActiveRole(db, data.role);
+  if (!canonicalRole) throw new UserError(400, `Role "${data.role}" not recognized — see Masters for valid values.`);
   const passwordHash = await hashPassword(data.password);
   const client = await db.connect();
   try {
@@ -99,13 +112,13 @@ export async function createUser(
       `INSERT INTO users (username, email, password_hash, role, must_change_password)
        VALUES ($1, $2, $3, $4, TRUE)
        RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
-      [data.username, data.email, passwordHash, data.role]
+      [data.username, data.email, passwordHash, canonicalRole]
     );
     const user = mapUserRow(rows[0]);
     // Same-transaction as the INSERT above — a new user should never exist even
     // momentarily without the permission set their role implies (Phase 1 of the
     // per-user permissions move, see auth/permissions.ts).
-    await seedPermissionsFromRole(client, user.id, data.role, actorUserId);
+    await seedPermissionsFromRole(client, user.id, user.role, actorUserId);
     await logAudit(client, actorUserId, "create", user.id, { username: user.username, email: user.email, role: user.role });
     await client.query("COMMIT");
     return user;
@@ -133,6 +146,11 @@ export async function updateUser(
   if (targetId === actorUserId && patch.status === "disabled") {
     throw new UserError(400, "You can't disable your own account.");
   }
+  let canonicalRole: string | undefined;
+  if (patch.role !== undefined) {
+    canonicalRole = await resolveActiveRole(db, patch.role);
+    if (!canonicalRole) throw new UserError(400, `Role "${patch.role}" not recognized — see Masters for valid values.`);
+  }
 
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -140,8 +158,8 @@ export async function updateUser(
     values.push(patch.email);
     sets.push(`email = $${values.length}`);
   }
-  if (patch.role !== undefined) {
-    values.push(patch.role);
+  if (canonicalRole !== undefined) {
+    values.push(canonicalRole);
     sets.push(`role = $${values.length}`);
   }
   if (patch.status !== undefined) {
@@ -165,8 +183,8 @@ export async function updateUser(
 
   // Logged as separate, precisely-named actions (rather than one generic "update") so
   // the audit trail reads the way the spec asks for it: create/disable/reset/role-change.
-  if (patch.role !== undefined && patch.role !== existing.role) {
-    await logAudit(db, actorUserId, "role_change", targetId, { from: existing.role, to: patch.role });
+  if (canonicalRole !== undefined && canonicalRole !== existing.role) {
+    await logAudit(db, actorUserId, "role_change", targetId, { from: existing.role, to: canonicalRole });
   }
   if (patch.status !== undefined && patch.status !== existing.status) {
     await logAudit(db, actorUserId, patch.status === "disabled" ? "disable" : "enable", targetId, {
@@ -244,7 +262,10 @@ export async function replacePermissions(
 
 // --- HTTP routes ---------------------------------------------------------------------
 
-const roleSchema = z.enum(["viewer", "editor", "admin"]);
+// Not a z.enum anymore — Roles is a manageable Master (routes/masters.ts), any active
+// role name is a valid string here; actually checked against the roles table by
+// resolveActiveRole in createUser/updateUser above.
+const roleSchema = z.string().min(1);
 const createUserSchema = z.object({
   username: z.string().min(3),
   email: z.string().email(),

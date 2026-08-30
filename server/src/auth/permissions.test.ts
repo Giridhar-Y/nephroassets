@@ -1,43 +1,89 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { getPool } from "../db/pool.js";
-import { PERMISSION_REGISTRY, ROLE_TEMPLATES, seedPermissionsFromRole, backfillUserPermissions } from "./permissions.js";
+import { PERMISSION_REGISTRY, fetchRoleTemplate, seedBuiltInRoles, seedPermissionsFromRole, backfillUserPermissions } from "./permissions.js";
 import { createTestUser } from "../testHelpers/authTestUtils.js";
 import type { Role } from "./middleware.js";
+import type { Permission } from "./permissions.js";
 
 const ROLES: Role[] = ["viewer", "editor", "admin"];
 
-// Registry self-consistency — catches a typo'd (module, action) pair in ROLE_TEMPLATES
-// that would otherwise only surface as a silently-missing grant.
-describe("ROLE_TEMPLATES", () => {
-  it("only references (module, action) pairs that exist in PERMISSION_REGISTRY", () => {
+async function templatesByRole(): Promise<Map<Role, Permission[]>> {
+  const db = await getPool();
+  await seedBuiltInRoles(db);
+  const entries = await Promise.all(ROLES.map(async (role) => [role, await fetchRoleTemplate(db, role)] as const));
+  return new Map(entries);
+}
+
+// Registry self-consistency — catches a typo'd (module, action) pair in a built-in
+// role's seed template that would otherwise only surface as a silently-missing grant.
+// Reads the actual roles/role_permissions rows, not the BUILT_IN_ROLE_TEMPLATES seed
+// object directly — these are the real, live templates seedPermissionsFromRole and
+// "Reset to [role] template" both read from (see auth/permissions.ts's own comment on
+// why a Super Admin editing a built-in role's template is expected, not a bug).
+describe("Built-in role templates (Viewer/Editor/Admin)", () => {
+  it("only references (module, action) pairs that exist in PERMISSION_REGISTRY", async () => {
+    const templates = await templatesByRole();
     for (const role of ROLES) {
-      for (const { module, action } of ROLE_TEMPLATES[role]) {
-        const validActions: readonly string[] = PERMISSION_REGISTRY[module];
+      for (const { module, action } of templates.get(role)!) {
+        const validActions: readonly string[] = PERMISSION_REGISTRY[module as keyof typeof PERMISSION_REGISTRY];
         expect(validActions).toContain(action);
       }
     }
   });
 
-  it("has no duplicate (module, action) pairs within one role's template", () => {
+  it("has no duplicate (module, action) pairs within one role's template", async () => {
+    const templates = await templatesByRole();
     for (const role of ROLES) {
-      const keys = ROLE_TEMPLATES[role].map((p) => `${p.module}:${p.action}`);
+      const keys = templates.get(role)!.map((p) => `${p.module}:${p.action}`);
       expect(new Set(keys).size).toBe(keys.length);
     }
   });
 
-  it("admin's template is a superset of editor's, which is a superset of viewer's — matches today's tiered access", () => {
+  it("admin's template is a superset of editor's, which is a superset of viewer's — matches today's tiered access", async () => {
+    const templates = await templatesByRole();
     const key = (p: { module: string; action: string }) => `${p.module}:${p.action}`;
-    const viewerKeys = new Set(ROLE_TEMPLATES.viewer.map(key));
-    const editorKeys = new Set(ROLE_TEMPLATES.editor.map(key));
-    const adminKeys = new Set(ROLE_TEMPLATES.admin.map(key));
+    const viewerKeys = new Set(templates.get("viewer")!.map(key));
+    const editorKeys = new Set(templates.get("editor")!.map(key));
+    const adminKeys = new Set(templates.get("admin")!.map(key));
     for (const k of viewerKeys) expect(editorKeys.has(k)).toBe(true);
     for (const k of editorKeys) expect(adminKeys.has(k)).toBe(true);
   });
 
-  it("only admin's template grants admin:managePermissions", () => {
-    expect(ROLE_TEMPLATES.viewer.some((p) => p.module === "admin")).toBe(false);
-    expect(ROLE_TEMPLATES.editor.some((p) => p.module === "admin")).toBe(false);
-    expect(ROLE_TEMPLATES.admin).toContainEqual({ module: "admin", action: "managePermissions" });
+  it("only admin's template grants admin:managePermissions", async () => {
+    const templates = await templatesByRole();
+    expect(templates.get("viewer")!.some((p) => p.module === "admin")).toBe(false);
+    expect(templates.get("editor")!.some((p) => p.module === "admin")).toBe(false);
+    expect(templates.get("admin")).toContainEqual({ module: "admin", action: "managePermissions" });
+  });
+});
+
+describe("seedBuiltInRoles", () => {
+  it("is idempotent and never overwrites a since-edited built-in role's template", async () => {
+    const db = await getPool();
+    await seedBuiltInRoles(db);
+    const { rows: roleRows } = await db.query<{ id: string }>(`SELECT id FROM roles WHERE LOWER(name) = 'viewer'`);
+    const roleId = roleRows[0]!.id;
+    // This file shares one Postgres instance sequentially with every other test file
+    // (vitest.config.ts's fileParallelism:false) — every OTHER file's createTestUser/
+    // getSharedAuthHeader calls rely on Viewer's real template, so this test must leave
+    // it exactly as it found it, not just assert against its own mutation.
+    const original = (await db.query(`SELECT module, action FROM role_permissions WHERE role_id = $1`, [roleId])).rows;
+
+    try {
+      // Simulate a Super Admin having edited Viewer's template via the Roles master.
+      await db.query(`DELETE FROM role_permissions WHERE role_id = $1`, [roleId]);
+      await db.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, 'reports', 'view')`, [roleId]);
+
+      await seedBuiltInRoles(db);
+
+      const { rows } = await db.query(`SELECT module, action FROM role_permissions WHERE role_id = $1`, [roleId]);
+      expect(rows).toEqual([{ module: "reports", action: "view" }]);
+    } finally {
+      await db.query(`DELETE FROM role_permissions WHERE role_id = $1`, [roleId]);
+      for (const { module, action } of original) {
+        await db.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, $2, $3)`, [roleId, module, action]);
+      }
+    }
   });
 });
 
@@ -63,7 +109,8 @@ describe("seedPermissionsFromRole / backfillUserPermissions", () => {
       [user.id]
     );
     const got = new Set(rows.map((r) => `${r.module}:${r.action}`));
-    const want = new Set(ROLE_TEMPLATES[role].map((p) => `${p.module}:${p.action}`));
+    const template = await fetchRoleTemplate(db, role);
+    const want = new Set(template.map((p) => `${p.module}:${p.action}`));
     expect(got).toEqual(want);
   });
 
@@ -74,7 +121,8 @@ describe("seedPermissionsFromRole / backfillUserPermissions", () => {
     await seedPermissionsFromRole(db, user.id, "editor", null);
 
     const { rows } = await db.query(`SELECT * FROM user_permissions WHERE user_id = $1`, [user.id]);
-    expect(rows).toHaveLength(ROLE_TEMPLATES.editor.length);
+    const template = await fetchRoleTemplate(db, "editor");
+    expect(rows).toHaveLength(template.length);
   });
 
   it("backfills every user who predates this table (zero permission rows) from their role", async () => {
@@ -102,7 +150,8 @@ describe("seedPermissionsFromRole / backfillUserPermissions", () => {
         [user.id]
       );
       const got = new Set(rows.map((r) => `${r.module}:${r.action}`));
-      const want = new Set(ROLE_TEMPLATES[role].map((p) => `${p.module}:${p.action}`));
+      const template = await fetchRoleTemplate(db, role);
+      const want = new Set(template.map((p) => `${p.module}:${p.action}`));
       expect(got).toEqual(want);
     }
   });

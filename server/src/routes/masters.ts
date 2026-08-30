@@ -5,6 +5,7 @@ import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
 import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
 import { logMasterActivity } from "./masterActivityLog.js";
+import { isValidPermission, replaceRolePermissions, type Module, type Permission } from "../auth/permissions.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -359,6 +360,155 @@ export async function updateStatusById(db: pg.Pool, id: number, patch: { name?: 
   }
 }
 
+// --- Roles -------------------------------------------------------------------------
+// A manageable Master (like Centers/Sub Classifications/Statuses above) rather than a
+// hardcoded viewer/editor/admin enum — see schema.sql's roles/role_permissions comment
+// and auth/permissions.ts's seedBuiltInRoles for the three built-in rows. A role is a
+// NAME plus a permission template (role_permissions); creating/editing one never
+// touches any user — it only changes what a FUTURE user gets, at creation time or an
+// explicit "Reset to [role] template" (routes/adminUsers.ts). Deliberately no bulk
+// upload, unlike the three Masters above — a handful of roles doesn't need one.
+
+export interface RoleRow {
+  id: number;
+  name: string;
+  active: boolean;
+  systemManaged: boolean;
+  usageCount: number;
+  grants: Permission[];
+}
+
+export async function fetchRolesWithUsage(db: pg.Pool): Promise<RoleRow[]> {
+  const { rows } = await db.query(
+    `SELECT r.id, r.name, r.active, r.system_managed,
+            (SELECT COUNT(*) FROM users u WHERE LOWER(u.role) = LOWER(r.name)) AS usage_count
+     FROM roles r ORDER BY r.name`
+  );
+  const { rows: grantRows } = await db.query<{ role_id: string; module: Module; action: string }>(
+    `SELECT role_id, module, action FROM role_permissions ORDER BY role_id, module, action`
+  );
+  const grantsByRole = new Map<string, Permission[]>();
+  for (const g of grantRows) {
+    const list = grantsByRole.get(g.role_id);
+    const grant = { module: g.module, action: g.action };
+    if (list) list.push(grant);
+    else grantsByRole.set(g.role_id, [grant]);
+  }
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    active: r.active,
+    systemManaged: r.system_managed,
+    usageCount: Number(r.usage_count),
+    grants: grantsByRole.get(String(r.id)) ?? []
+  }));
+}
+
+export async function createRole(
+  db: pg.Pool,
+  data: { name: string; grants: Array<{ module: string; action: string }> }
+): Promise<RoleRow> {
+  const grants: Permission[] = [];
+  for (const g of data.grants) {
+    if (!isValidPermission(g.module, g.action)) throw new MasterError(400, `"${g.module}:${g.action}" is not a real permission.`);
+    grants.push({ module: g.module, action: g.action });
+  }
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`INSERT INTO roles (name) VALUES ($1) RETURNING id, name, active, system_managed`, [
+      data.name
+    ]);
+    const role = rows[0];
+    for (const { module, action } of grants) {
+      await client.query(`INSERT INTO role_permissions (role_id, module, action) VALUES ($1, $2, $3)`, [role.id, module, action]);
+    }
+    await client.query("COMMIT");
+    return { id: role.id, name: role.name, active: role.active, systemManaged: role.system_managed, usageCount: 0, grants };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (isUniqueViolation(err)) throw new MasterError(409, `A role named "${data.name}" already exists.`);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Renaming cascades to every user currently holding the old role name (same
+// transaction, same reasoning as updateCenterById's cascade to assets/transfers) so
+// users.role and the Roles master never disagree. system_managed (Viewer/Editor/Admin)
+// blocks BOTH rename and deactivate here — same convention as updateStatusById — but
+// NOT its permission template, which stays editable regardless; see
+// replaceRolePermissionsById below.
+export async function updateRoleById(
+  db: pg.Pool,
+  id: number,
+  patch: { name?: string; active?: boolean }
+): Promise<{ id: number; name: string; active: boolean; systemManaged: boolean; usersUpdated: number }> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: existingRows } = await client.query(`SELECT name, system_managed FROM roles WHERE id = $1 FOR UPDATE`, [id]);
+    const existing = existingRows[0];
+    if (!existing) throw new MasterError(404, "No role found with that id.");
+    if (existing.system_managed) {
+      throw new MasterError(409, `"${existing.name}" is a built-in role and cannot be renamed or deactivated.`);
+    }
+
+    let usersUpdated = 0;
+    if (patch.name !== undefined && patch.name !== existing.name) {
+      const { rows } = await client.query(`UPDATE users SET role = $1 WHERE role = $2 RETURNING id`, [patch.name, existing.name]);
+      usersUpdated = rows.length;
+    }
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    if (patch.name !== undefined) {
+      values.push(patch.name);
+      sets.push(`name = $${values.length}`);
+    }
+    if (patch.active !== undefined) {
+      values.push(patch.active);
+      sets.push(`active = $${values.length}`);
+    }
+    if (sets.length === 0) throw new MasterError(400, "Nothing to update.");
+    values.push(id);
+    const { rows } = await client.query(
+      `UPDATE roles SET ${sets.join(", ")} WHERE id = $${values.length} RETURNING id, name, active, system_managed`,
+      values
+    );
+    await client.query("COMMIT");
+    const r = rows[0];
+    return { id: r.id, name: r.name, active: r.active, systemManaged: r.system_managed, usersUpdated };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (isUniqueViolation(err)) throw new MasterError(409, `A role named "${patch.name}" already exists.`);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Edits a role's own permission template — the checkbox-matrix "Save" — works for ANY
+ *  role, built-in or custom (see updateRoleById's comment for why system_managed
+ *  doesn't block this one). Never touches an existing user's actual grants, only what a
+ *  future user (created with, or reset to, this role) would get. */
+export async function replaceRolePermissionsById(
+  db: pg.Pool,
+  id: number,
+  rawGrants: Array<{ module: string; action: string }>
+): Promise<{ grants: Permission[]; added: Permission[]; removed: Permission[] }> {
+  const { rows } = await db.query(`SELECT id FROM roles WHERE id = $1`, [id]);
+  if (!rows[0]) throw new MasterError(404, "No role found with that id.");
+  const grants: Permission[] = [];
+  for (const { module, action } of rawGrants) {
+    if (!isValidPermission(module, action)) throw new MasterError(400, `"${module}:${action}" is not a real permission.`);
+    grants.push({ module, action });
+  }
+  const { added, removed } = await replaceRolePermissions(db, id, grants);
+  return { grants, added, removed };
+}
+
 // --- HTTP routes ---------------------------------------------------------------------
 
 const createCenterSchema = z.object({ code: z.string().min(1), description: z.string().optional().default("") });
@@ -380,6 +530,11 @@ const patchSubClassSchema = z.object({
 
 const createStatusSchema = z.object({ name: z.string().min(1) });
 const patchStatusSchema = z.object({ name: z.string().min(1).optional(), active: z.boolean().optional() });
+
+const grantSchema = z.object({ module: z.string(), action: z.string() });
+const createRoleSchema = z.object({ name: z.string().min(1), grants: z.array(grantSchema).default([]) });
+const patchRoleSchema = z.object({ name: z.string().min(1).optional(), active: z.boolean().optional() });
+const rolePermissionsSchema = z.object({ grants: z.array(grantSchema) });
 
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
 
@@ -549,4 +704,91 @@ export default async function mastersRoutes(app: FastifyInstance) {
       return handleMasterError(err, reply);
     }
   });
+
+  // --- Roles -------------------------------------------------------------------------
+  // List/name/active follow the same masters:view/edit gate as every other Master
+  // above. The two routes that shape a role's actual permission template (create, and
+  // the dedicated .../permissions endpoint) are additionally gated on
+  // admin:managePermissions — the same "Super Admin" tier the per-user Permissions
+  // panel already requires (routes/adminUsers.ts), since defining what a role grants is
+  // exactly that kind of action, not an ordinary Masters edit.
+
+  app.get(
+    "/api/masters/roles",
+    { preHandler: requirePermission("masters", "view") },
+    async () => fetchRolesWithUsage(await getPool())
+  );
+
+  app.post("/api/masters/roles", { preHandler: requirePermission("admin", "managePermissions") }, async (req, reply) => {
+    const parsed = createRoleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid role.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    try {
+      const result = await createRole(db, parsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "role_create",
+        details: { name: parsed.data.name, grants: parsed.data.grants, source: "single" }
+      });
+      return result;
+    } catch (err) {
+      return handleMasterError(err, reply);
+    }
+  });
+
+  app.patch("/api/masters/roles/:id", { preHandler: requirePermission("masters", "edit") }, async (req, reply) => {
+    const paramsParsed = idParamSchema.safeParse(req.params);
+    const bodyParsed = patchRoleSchema.safeParse(req.body);
+    if (!paramsParsed.success || !bodyParsed.success) {
+      reply.code(400);
+      return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
+    }
+    const db = await getPool();
+    try {
+      const result = await updateRoleById(db, paramsParsed.data.id, bodyParsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "role_update",
+        details: { ...bodyParsed.data, usersUpdated: result.usersUpdated, source: "single" }
+      });
+      return result;
+    } catch (err) {
+      return handleMasterError(err, reply);
+    }
+  });
+
+  app.put(
+    "/api/masters/roles/:id/permissions",
+    { preHandler: requirePermission("admin", "managePermissions") },
+    async (req, reply) => {
+      const paramsParsed = idParamSchema.safeParse(req.params);
+      const bodyParsed = rolePermissionsSchema.safeParse(req.body);
+      if (!paramsParsed.success || !bodyParsed.success) {
+        reply.code(400);
+        return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
+      }
+      const db = await getPool();
+      try {
+        const { grants, added, removed } = await replaceRolePermissionsById(db, paramsParsed.data.id, bodyParsed.data.grants);
+        if (added.length > 0 || removed.length > 0) {
+          await logMasterActivity(db, {
+            actorUserId: req.user!.id,
+            action: "role_update",
+            details: {
+              roleId: paramsParsed.data.id,
+              added: added.map((g) => `${g.module}:${g.action}`),
+              removed: removed.map((g) => `${g.module}:${g.action}`),
+              source: "single"
+            }
+          });
+        }
+        return { grants };
+      } catch (err) {
+        return handleMasterError(err, reply);
+      }
+    }
+  );
 }
