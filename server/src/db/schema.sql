@@ -154,6 +154,27 @@ CREATE TABLE users (
 CREATE UNIQUE INDEX idx_users_username_ci ON users (LOWER(username));
 CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
 
+-- Phase 1 of the move from fixed viewer/editor/admin roles to per-user, per-module
+-- access control (see auth/permissions.ts for the full module/action registry and the
+-- ROLE_TEMPLATES this table is backfilled from). `role` above is NOT removed — it stays
+-- as a creation-time template selector and an at-a-glance label, but grants NOTHING by
+-- itself once a user exists. This table is the one and only source of truth for what a
+-- user can actually do — deny-by-default, no row means no access, same posture the app
+-- already has everywhere else. Not yet read by any requireX preHandler (see
+-- auth/permissions.ts's own comment) — Phase 1 only backfills and dual-writes this data
+-- so it can be verified against real production data before anything starts enforcing
+-- it. `granted_by` is NULL for the automatic role-template backfill/seed, and set to the
+-- acting admin's id for anything granted through the future permissions UI.
+CREATE TABLE user_permissions (
+  user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  module       TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  granted_by   BIGINT REFERENCES users(id),
+  PRIMARY KEY (user_id, module, action)
+);
+CREATE INDEX idx_user_permissions_user ON user_permissions (user_id);
+
 -- assets/transfers deleted_by can only reference users(id) now that users exists —
 -- see those columns' own comments above for why the FK isn't inline on their CREATE TABLE.
 ALTER TABLE assets ADD CONSTRAINT assets_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES users(id);
