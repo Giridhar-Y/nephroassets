@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { requirePermission } from "../auth/middleware.js";
 import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
 import { logMasterActivity } from "./masterActivityLog.js";
 
@@ -393,9 +394,13 @@ function handleMasterError(err: unknown, reply: { code: (n: number) => void }): 
 export default async function mastersRoutes(app: FastifyInstance) {
   // --- Centers ---------------------------------------------------------------------
 
-  app.get("/api/masters/centers", async () => fetchCentersWithUsage(await getPool()));
+  app.get(
+    "/api/masters/centers",
+    { preHandler: requirePermission("masters", "view") },
+    async () => fetchCentersWithUsage(await getPool())
+  );
 
-  app.post("/api/masters/centers", async (req, reply) => {
+  app.post("/api/masters/centers", { preHandler: requirePermission("masters", "edit") }, async (req, reply) => {
     const parsed = createCenterSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -415,7 +420,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/api/masters/centers/:id", async (req, reply) => {
+  app.patch("/api/masters/centers/:id", { preHandler: requirePermission("masters", "edit") }, async (req, reply) => {
     const paramsParsed = idParamSchema.safeParse(req.params);
     const bodyParsed = patchCenterSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -443,9 +448,16 @@ export default async function mastersRoutes(app: FastifyInstance) {
 
   // --- Sub Classifications -----------------------------------------------------------
 
-  app.get("/api/masters/sub-classifications", async () => fetchSubClassificationsWithUsage(await getPool()));
+  app.get(
+    "/api/masters/sub-classifications",
+    { preHandler: requirePermission("masters", "view") },
+    async () => fetchSubClassificationsWithUsage(await getPool())
+  );
 
-  app.post("/api/masters/sub-classifications", async (req, reply) => {
+  app.post(
+    "/api/masters/sub-classifications",
+    { preHandler: requirePermission("masters", "edit") },
+    async (req, reply) => {
     const parsed = createSubClassSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -465,7 +477,10 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/api/masters/sub-classifications/:id", async (req, reply) => {
+  app.patch(
+    "/api/masters/sub-classifications/:id",
+    { preHandler: requirePermission("masters", "edit") },
+    async (req, reply) => {
     const paramsParsed = idParamSchema.safeParse(req.params);
     const bodyParsed = patchSubClassSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -488,9 +503,13 @@ export default async function mastersRoutes(app: FastifyInstance) {
 
   // --- Statuses ------------------------------------------------------------------
 
-  app.get("/api/masters/statuses", async () => fetchStatusesWithUsage(await getPool()));
+  app.get(
+    "/api/masters/statuses",
+    { preHandler: requirePermission("masters", "view") },
+    async () => fetchStatusesWithUsage(await getPool())
+  );
 
-  app.post("/api/masters/statuses", async (req, reply) => {
+  app.post("/api/masters/statuses", { preHandler: requirePermission("masters", "edit") }, async (req, reply) => {
     const parsed = createStatusSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -510,7 +529,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/api/masters/statuses/:id", async (req, reply) => {
+  app.patch("/api/masters/statuses/:id", { preHandler: requirePermission("masters", "edit") }, async (req, reply) => {
     const paramsParsed = idParamSchema.safeParse(req.params);
     const bodyParsed = patchStatusSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {

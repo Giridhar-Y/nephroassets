@@ -14,6 +14,7 @@ import {
 } from "../api/client.js";
 import type { FySettings } from "../lib/types.js";
 import { DepreciationIcon, ErrorIcon, HistoryIcon, SettingsIcon } from "../lib/icons.js";
+import { hasPermission } from "../lib/permissions.js";
 
 function todayIso(): string {
   const d = new Date();
@@ -89,18 +90,18 @@ export function SettingsPage() {
         These control every figure in NephroAssets: the cut-off date used for depreciation, and the financial year
         it falls within.
       </p>
-      {notConfigured && user?.role === "admin" && (
+      {notConfigured && hasPermission(user, "settings", "edit") && (
         <p className="mt-3 max-w-xl rounded-md bg-accent-light px-3 py-2 text-sm text-accent-hover">
           Welcome! Set up your financial year below to get started.
         </p>
       )}
-      {notConfigured && user?.role !== "admin" && (
+      {notConfigured && !hasPermission(user, "settings", "edit") && (
         <p className="mt-3 max-w-xl rounded-md bg-accent-light px-3 py-2 text-sm text-accent-hover">
           The financial year hasn't been set up yet — contact an admin to get started.
         </p>
       )}
 
-      {user?.role === "admin" ? (
+      {hasPermission(user, "settings", "edit") ? (
         <div className="mt-6 max-w-md rounded-xl bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-1">
             <label htmlFor="settings-as-at" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
@@ -186,7 +187,7 @@ export function SettingsPage() {
         )
       )}
 
-      {user?.role === "admin" && settings && <DepreciationFormulaSettings daysInFy={settings.daysInFy} />}
+      {hasPermission(user, "settings", "edit") && settings && <DepreciationFormulaSettings daysInFy={settings.daysInFy} />}
     </div>
   );
 }

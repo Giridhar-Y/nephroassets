@@ -9,7 +9,7 @@ import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkPars
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
-import { requireEditor, requireAdmin } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
@@ -153,7 +153,7 @@ function encodeCursor(sortValue: string, farId: string): string {
 }
 
 export default async function assetsRoutes(app: FastifyInstance) {
-  app.get("/api/assets", async (req, reply) => {
+  app.get("/api/assets", { preHandler: requirePermission("register", "view") }, async (req, reply) => {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -358,7 +358,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
   // Asset 360: one asset's full record plus its complete transfer history (not just
   // transfers up to AS_AT — the lifecycle timeline shows everything that ever happened).
-  app.get("/api/assets/:farId", async (req, reply) => {
+  app.get("/api/assets/:farId", { preHandler: requirePermission("register", "view") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const queryParsed = z.object({ asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }).safeParse(req.query);
     if (!paramsParsed.success || !queryParsed.success) {
@@ -416,7 +416,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
   // Capitalization: register a brand-new asset. Disposal fields are left at their
   // column defaults (null / 0) — an asset is never created pre-disposed.
-  app.post("/api/assets", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/assets", { preHandler: requirePermission("capitalization", "create") }, async (req, reply) => {
     const parsed = assetCreateSchema.safeParse(req.body);
     const parentParsed = capitalizationParentSchema.safeParse(req.body);
     if (!parsed.success || !parentParsed.success) {
@@ -516,7 +516,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // Classification, Asset Description, Serial No, Useful Life C1/C2, Opening Acc Dep
   // C1/C2) without going through Bulk Upload. See editAssetSchema's comment for why this
   // field list stops here.
-  app.patch("/api/assets/:farId", { preHandler: requireEditor }, async (req, reply) => {
+  app.patch("/api/assets/:farId", { preHandler: requirePermission("register", "edit") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = editAssetSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -656,7 +656,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // existing parent in a single request — same validateParentLink rules Edit already
   // enforces one-at-a-time, applied per child, with nothing written until every child
   // passes (matches the confirm-step UX: nothing partially applies).
-  app.post("/api/assets/merge", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/assets/merge", { preHandler: requirePermission("register", "edit") }, async (req, reply) => {
     const parsed = mergeSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -692,7 +692,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // additionsC1/C2 + dateOfAddition columns Capitalization's own "Mid-Year Additions"
   // section uses, so the FY-rollover engine classifies it identically either way. See
   // additionSchema's comment for the one-addition-per-asset limit.
-  app.patch("/api/assets/:farId/addition", { preHandler: requireEditor }, async (req, reply) => {
+  app.patch("/api/assets/:farId/addition", { preHandler: requirePermission("additions", "create") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = additionSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -784,7 +784,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // chosen Disposal Date itself (not whatever the app's global "Figures as of" is set
   // to) so depreciation accrues up to exactly that date, matching what disposing on it
   // for real would produce.
-  app.post("/api/assets/:farId/disposal/preview", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/assets/:farId/disposal/preview", { preHandler: requirePermission("disposals", "create") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = disposalSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -858,7 +858,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // cost (opening + additions) rather than a user-entered partial amount. Cascades to
   // every still-active child of this asset (see disposeWithChildren) inside one
   // transaction, so a parent and its children are disposed together or not at all.
-  app.patch("/api/assets/:farId/disposal", { preHandler: requireEditor }, async (req, reply) => {
+  app.patch("/api/assets/:farId/disposal", { preHandler: requirePermission("disposals", "create") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = disposalSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -931,7 +931,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // the parent of another asset — so the admin must undo those first, in reverse order,
   // via the addition/disposal/transfer undo endpoints below. Deliberately no
   // force-cascade option: each undo stays its own deliberate, auditable action.
-  app.delete("/api/assets/:farId", { preHandler: requireAdmin }, async (req, reply) => {
+  app.delete("/api/assets/:farId", { preHandler: requirePermission("capitalization", "delete") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = deleteReasonSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -1004,7 +1004,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // disposed: applyFullDisposal computed deletions_c1/c2 as opening_cost + additions_c1/c2
   // at disposal time, so undoing the addition afterward would silently leave that
   // already-realized disposal figure wrong — the admin must undo the disposal first.
-  app.post("/api/assets/:farId/addition/undo", { preHandler: requireAdmin }, async (req, reply) => {
+  app.post("/api/assets/:farId/addition/undo", { preHandler: requirePermission("additions", "undo") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = deleteReasonSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -1056,7 +1056,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
   // that was itself a cascade (disposed_via_parent_far_id set) can't be undone directly —
   // same "act on the parent instead" rule Rule 1 already applies to disposing a child
   // directly, mirrored here for undoing one.
-  app.post("/api/assets/:farId/disposal/undo", { preHandler: requireAdmin }, async (req, reply) => {
+  app.post("/api/assets/:farId/disposal/undo", { preHandler: requirePermission("disposals", "undo") }, async (req, reply) => {
     const paramsParsed = z.object({ farId: z.string().min(1) }).safeParse(req.params);
     const bodyParsed = deleteReasonSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {

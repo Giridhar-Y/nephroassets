@@ -14,6 +14,7 @@ import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js"
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
 import { fetchSubClassifications, undoAddition, type SubClassificationOption } from "../api/client.js";
+import { hasPermission } from "../lib/permissions.js";
 
 type Tab = "new" | "log";
 
@@ -141,7 +142,7 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
         emptyHint="Record an addition from the New Addition tab, or via Capitalization's own Mid-Year Additions section."
         getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
         headerFilters={headerFilters}
-        onDeleteAsset={user?.role === "admin" ? (farId) => setUndoTargetFarId(farId) : undefined}
+        onDeleteAsset={hasPermission(user, "additions", "undo") ? (farId) => setUndoTargetFarId(farId) : undefined}
         deleteActionLabel="Undo Addition (Global Admin)"
       />
       {undoTargetFarId && (

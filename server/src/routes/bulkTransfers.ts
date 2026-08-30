@@ -4,7 +4,7 @@ import type pg from "pg";
 import { getPool } from "../db/pool.js";
 import { bulkDate, isoToDDMMYYYY, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
-import { requireEditor } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 
 const transferRowSchema = z.object({
@@ -65,7 +65,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
   // Bulk Transfers: same effect as POST /api/transfers (one transfer history row plus a
   // denormalized location update per asset), but each row can move to a different
   // center/date — the single endpoint only supports one shared destination per batch.
-  app.post("/api/transfers/bulk-upload", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/transfers/bulk-upload", { preHandler: requirePermission("bulkUpload", "transfers") }, async (req, reply) => {
     const file = await req.file();
     if (!file) {
       reply.code(400);

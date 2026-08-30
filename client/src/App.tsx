@@ -24,8 +24,7 @@ import { FiltersProvider } from "./lib/FiltersContext.js";
 import { AuthProvider } from "./lib/AuthContext.js";
 import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
-import { RequireAdmin } from "./components/RequireAdmin.js";
-import { RequireEditor } from "./components/RequireEditor.js";
+import { RequirePermission } from "./components/RequirePermission.js";
 import { ToastProvider } from "./components/Toast.js";
 
 export default function App() {
@@ -49,135 +48,166 @@ export default function App() {
                 <Route
                   path="/register"
                   element={
-                    <SettingsGate>
-                      <RegisterPage />
-                    </SettingsGate>
+                    <RequirePermission module="register" action="view">
+                      <SettingsGate>
+                        <RegisterPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/location-summary"
                   element={
-                    <SettingsGate>
-                      <LocationSummaryPage />
-                    </SettingsGate>
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <LocationSummaryPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/audit-reconciliation"
                   element={
-                    <SettingsGate>
-                      <AuditReconciliationPage />
-                    </SettingsGate>
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <AuditReconciliationPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/depreciation-posting"
                   element={
-                    <SettingsGate>
-                      <DepreciationPostingPage />
-                    </SettingsGate>
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <DepreciationPostingPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/reports"
                   element={
-                    <SettingsGate>
-                      <ReportsPage />
-                    </SettingsGate>
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <ReportsPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/transfer-depreciation-report"
                   element={
-                    <SettingsGate>
-                      <TransferDepreciationReportPage />
-                    </SettingsGate>
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <TransferDepreciationReportPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/assets"
                   element={
-                    <SettingsGate>
-                      <AssetSearchPage />
-                    </SettingsGate>
+                    <RequirePermission module="assetHistory" action="view">
+                      <SettingsGate>
+                        <AssetSearchPage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/assets/:farId"
                   element={
-                    <SettingsGate>
-                      <AssetLifecyclePage />
-                    </SettingsGate>
+                    <RequirePermission module="assetHistory" action="view">
+                      <SettingsGate>
+                        <AssetLifecyclePage />
+                      </SettingsGate>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/transfers"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="transfers" action="view">
                       <SettingsGate>
                         <TransfersPage />
                       </SettingsGate>
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/capitalization"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="capitalization" action="view">
                       <SettingsGate>
                         <CapitalizationPage />
                       </SettingsGate>
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/disposals"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="disposals" action="view">
                       <SettingsGate>
                         <DisposalPage />
                       </SettingsGate>
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/additions"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="additions" action="view">
                       <SettingsGate>
                         <AdditionsPage />
                       </SettingsGate>
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/bulk-upload"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="bulkUpload" anyOf={["capitalization", "transfers", "disposals", "merge"]}>
                       <SettingsGate>
                         <BulkUploadPage />
                       </SettingsGate>
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
                 {/* Not gated by SettingsGate: this is where a first-run user configures settings. */}
-                <Route path="/settings" element={<SettingsPage />} />
-                {/* Also ungated — an admin should be able to set up master data before FY settings exist. */}
-                <Route path="/masters" element={<MastersPage />} />
+                <Route
+                  path="/settings"
+                  element={
+                    <RequirePermission module="settings" action="view">
+                      <SettingsPage />
+                    </RequirePermission>
+                  }
+                />
+                {/* Also ungated by SettingsGate — a Masters editor should be able to set up master
+                    data before FY settings exist. */}
+                <Route
+                  path="/masters"
+                  element={
+                    <RequirePermission module="masters" action="view">
+                      <MastersPage />
+                    </RequirePermission>
+                  }
+                />
                 <Route
                   path="/admin"
                   element={
-                    <RequireAdmin>
+                    <RequirePermission module="admin" action="view">
                       <AdminPage />
-                    </RequireAdmin>
+                    </RequirePermission>
                   }
                 />
                 <Route
                   path="/activity-log"
                   element={
-                    <RequireEditor>
+                    <RequirePermission module="activityLog" action="view">
                       <ActivityLogPage />
-                    </RequireEditor>
+                    </RequirePermission>
                   }
                 />
               </Route>

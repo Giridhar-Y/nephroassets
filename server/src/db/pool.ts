@@ -326,18 +326,32 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
 
-    -- Phase 1 of per-user/per-module permissions — see schema.sql's comment for the full
-    -- reasoning and auth/permissions.ts for the module/action registry this is backfilled
-    -- from. IF NOT EXISTS makes this a no-op on every boot after the first.
+    -- Per-user/per-module permissions — see schema.sql's comment for the full reasoning
+    -- and auth/permissions.ts for the module/action registry this is backfilled from.
+    -- IF NOT EXISTS makes this a no-op on every boot after the first.
     CREATE TABLE IF NOT EXISTS user_permissions (
       user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       module       TEXT NOT NULL,
       action       TEXT NOT NULL,
       granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-      granted_by   BIGINT REFERENCES users(id),
+      granted_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
       PRIMARY KEY (user_id, module, action)
     );
     CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions (user_id);
+
+    -- One-time migration for a database whose user_permissions table predates ON DELETE
+    -- SET NULL being added to its granted_by FK — see that column's comment in
+    -- schema.sql. Guarded on confdeltype so this only runs once, not on every boot.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_permissions_granted_by_fkey' AND confdeltype = 'n'
+      ) THEN
+        ALTER TABLE user_permissions DROP CONSTRAINT IF EXISTS user_permissions_granted_by_fkey;
+        ALTER TABLE user_permissions ADD CONSTRAINT user_permissions_granted_by_fkey
+          FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
   `);
 
   await backfillUserPermissions(db);

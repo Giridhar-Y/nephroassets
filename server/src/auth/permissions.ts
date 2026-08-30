@@ -1,14 +1,13 @@
 import type pg from "pg";
 import type { Role } from "./middleware.js";
 
-// Phase 1 of the move from fixed viewer/editor/admin roles to per-user, per-module
-// access control. This registry (module -> valid actions) is the one and only
-// definition of what's grantable — a plain TS const, not a DB table, since it only
-// changes when a developer ships new code, never at runtime. `user_permissions`
-// (schema.sql) is the actual per-user grant store; nothing in this file is read by any
-// requireX preHandler yet — every route still enforces via `role` exactly as before.
-// This phase only backfills/dual-writes user_permissions so it can be verified against
-// real production data before a future phase cuts enforcement over to it.
+// The move from fixed viewer/editor/admin roles to per-user, per-module access
+// control. This registry (module -> valid actions) is the one and only definition of
+// what's grantable — a plain TS const, not a DB table, since it only changes when a
+// developer ships new code, never at runtime. `user_permissions` (schema.sql) is the
+// actual per-user grant store, read by every route's `requirePermission` preHandler
+// (auth/middleware.ts) — `role` itself grants nothing once a user exists; it's a
+// creation-time template only (see ROLE_TEMPLATES below).
 //
 // Module boundaries follow the sidebar/mental model, not backend file layout — e.g.
 // Register's `edit` action is `PATCH /api/assets/:farId`, which lives in assets.ts
@@ -48,14 +47,14 @@ function grants<M extends Module>(module: M, ...actions: Array<ActionFor<M>>): P
   return actions.map((action) => ({ module, action }));
 }
 
-// Exactly replicates what each role can do TODAY (every requireEditor/requireAdmin gate,
-// every client-side nav-visibility restriction) — this is what existing users get
-// backfilled to, and what a new user gets seeded with at creation. A "view" action with
-// no distinct server endpoint of its own (Capitalization/Additions/Disposals/Bulk
-// Upload's own "view" tabs all just reuse the already-viewer-open GET /api/assets) is
-// granted here purely to match today's nav-visibility gate — whether that becomes a real
-// server-side check is a decision for the phase that actually wires enforcement up, not
-// this one.
+// What each role grants a user at creation time (and what every pre-existing user was
+// backfilled to). `capitalization`/`additions`/`disposals`/`assetHistory`'s own `view`
+// actions have no distinct server endpoint — their pages all read through the same
+// `GET /api/assets`/`GET /api/assets/:farId` that `register:view` already gates (see
+// requirePermission's call sites in assets.ts) — so they're granted here purely to
+// drive client-side nav visibility, not a second server-enforced boundary over the same
+// data. `transfers:view` is different: `GET /api/transfers` is its own distinct,
+// genuinely gated endpoint.
 export const ROLE_TEMPLATES: Record<Role, Permission[]> = {
   viewer: [
     ...grants("register", "view", "export"),
@@ -110,6 +109,72 @@ export async function seedPermissionsFromRole(
        ON CONFLICT (user_id, module, action) DO NOTHING`,
       [userId, module, action, grantedBy]
     );
+  }
+}
+
+/** True if (module, action) is a real, grantable pair — the one runtime check against
+ *  PERMISSION_REGISTRY, used to validate a permissions-matrix save before it ever
+ *  reaches the database. */
+export function isValidPermission(module: string, action: string): module is Module {
+  const actions: readonly string[] | undefined = (PERMISSION_REGISTRY as Record<string, readonly string[]>)[module];
+  return actions !== undefined && actions.includes(action);
+}
+
+/** The full flat list of every grantable (module, action) pair, in registry order —
+ *  what the permissions-matrix UI renders as its checkbox grid, independent of any one
+ *  user's current grants. */
+export function allPermissions(): Permission[] {
+  return (Object.keys(PERMISSION_REGISTRY) as Module[]).flatMap((module) =>
+    (PERMISSION_REGISTRY[module] as readonly string[]).map((action) => ({ module, action }))
+  );
+}
+
+export async function fetchUserPermissions(db: Pick<pg.Pool | pg.PoolClient, "query">, userId: number): Promise<Permission[]> {
+  const { rows } = await db.query<{ module: Module; action: string }>(
+    `SELECT module, action FROM user_permissions WHERE user_id = $1 ORDER BY module, action`,
+    [userId]
+  );
+  return rows;
+}
+
+/** Replaces a user's entire permission set in one transaction (delete-all + insert-all)
+ *  — matches the permissions-matrix UI's own "one Save, full desired state" contract
+ *  rather than incremental grant/revoke calls. Returns the added/removed diff purely
+ *  for the audit log entry the caller writes (adminUsers.ts) — this function itself
+ *  doesn't log anything, staying consistent with every other write function in this
+ *  codebase (masters.ts, assets.ts) that leaves audit logging to its HTTP route. */
+export async function replaceUserPermissions(
+  db: pg.Pool,
+  targetUserId: number,
+  actorUserId: number,
+  grants: Permission[]
+): Promise<{ added: Permission[]; removed: Permission[] }> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: existingRows } = await client.query<{ module: Module; action: string }>(
+      `SELECT module, action FROM user_permissions WHERE user_id = $1`,
+      [targetUserId]
+    );
+    const existingKeys = new Set(existingRows.map((r) => `${r.module}:${r.action}`));
+    const incomingKeys = new Set(grants.map((g) => `${g.module}:${g.action}`));
+    const added = grants.filter((g) => !existingKeys.has(`${g.module}:${g.action}`));
+    const removed = existingRows.filter((r) => !incomingKeys.has(`${r.module}:${r.action}`));
+
+    await client.query(`DELETE FROM user_permissions WHERE user_id = $1`, [targetUserId]);
+    for (const { module, action } of grants) {
+      await client.query(
+        `INSERT INTO user_permissions (user_id, module, action, granted_by) VALUES ($1, $2, $3, $4)`,
+        [targetUserId, module, action, actorUserId]
+      );
+    }
+    await client.query("COMMIT");
+    return { added, removed };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }
 

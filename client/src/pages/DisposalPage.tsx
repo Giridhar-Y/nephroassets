@@ -15,6 +15,7 @@ import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, UploadIcon } from "../lib/icons.js";
+import { hasPermission } from "../lib/permissions.js";
 
 type Tab = "new" | "log";
 
@@ -135,7 +136,7 @@ function DisposalLogTab() {
         emptyTitle="No disposed assets yet."
         emptyHint="Dispose an asset from the New Disposal tab, or from the Register (select rows, then Dispose Selected)."
         headerFilters={headerFilters}
-        onDeleteAsset={user?.role === "admin" ? (farId) => setUndoTargetFarId(farId) : undefined}
+        onDeleteAsset={hasPermission(user, "disposals", "undo") ? (farId) => setUndoTargetFarId(farId) : undefined}
         deleteActionLabel="Undo Disposal (Global Admin)"
       />
       {undoTargetFarId && (
@@ -179,7 +180,7 @@ export function DisposalPage() {
             <DeleteIcon fontSize={20} />
             Disposals
           </h1>
-          {user?.role !== "viewer" && (
+          {hasPermission(user, "bulkUpload", "disposals") && (
             <button
               type="button"
               className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"

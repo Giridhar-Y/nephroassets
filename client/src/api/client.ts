@@ -736,6 +736,10 @@ export interface AuthUser {
   email: string;
   role: Role;
   mustChangePassword: boolean;
+  /** `"module:action"` strings — see server/src/auth/permissions.ts's PERMISSION_REGISTRY.
+   *  The single source of truth for what this user can actually do; `role` above is a
+   *  creation-time label only. Use lib/permissions.ts's `hasPermission` to check it. */
+  permissions: string[];
 }
 
 export function login(username: string, password: string): Promise<{ user: AuthUser }> {
@@ -800,4 +804,22 @@ export function updateAdminUser(
 
 export function resetAdminUserPassword(id: number): Promise<{ user: AdminUser; tempPassword: string }> {
   return request(`/api/admin/users/${id}/reset-password`, { method: "POST" });
+}
+
+export interface PermissionGrant {
+  module: string;
+  action: string;
+}
+
+// registry: the full, static list of every grantable (module, action) pair, independent
+// of this one user's current grants — what the Permissions panel renders as its
+// checkbox grid. grants: this user's actual current permissions.
+export function fetchUserPermissions(id: number): Promise<{ grants: PermissionGrant[]; registry: PermissionGrant[] }> {
+  return request(`/api/admin/users/${id}/permissions`);
+}
+
+// Replaces the user's entire permission set in one call — matches the Permissions
+// panel's "one Save, full desired state" contract, not incremental grant/revoke calls.
+export function saveUserPermissions(id: number, grants: PermissionGrant[]): Promise<{ grants: PermissionGrant[] }> {
+  return request(`/api/admin/users/${id}/permissions`, { method: "PUT", body: JSON.stringify({ grants }) });
 }

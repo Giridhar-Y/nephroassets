@@ -2,6 +2,7 @@ import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect, useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
+import { hasPermission, type Module } from "../lib/permissions.js";
 import { Logo } from "./Logo.js";
 import {
   RegisterIcon,
@@ -25,32 +26,41 @@ import type { FluentIconsProps } from "@fluentui/react-icons";
 
 const SIDEBAR_COLLAPSED_KEY = "nephroassets.sidebarCollapsed";
 
-const NAV_ITEMS: Array<{ to: string; label: string; icon: ComponentType<FluentIconsProps> }> = [
-  { to: "/register", label: "Register", icon: RegisterIcon },
-  { to: "/assets", label: "Asset History", icon: LifecycleIcon },
-  { to: "/transfers", label: "Transfers", icon: HistoryIcon },
-  { to: "/capitalization", label: "Capitalization", icon: AddCircleIcon },
-  { to: "/additions", label: "Additions", icon: AdditionIcon },
-  { to: "/disposals", label: "Disposals", icon: DeleteIcon },
-  { to: "/bulk-upload", label: "Bulk Upload", icon: UploadIcon },
-  { to: "/reports", label: "Reports", icon: ReportsIcon },
-  { to: "/activity-log", label: "Activity Log", icon: AuditLogIcon },
-  { to: "/masters", label: "Masters", icon: BookDatabaseIcon },
-  { to: "/settings", label: "Settings", icon: SettingsIcon }
+interface NavItem {
+  to: string;
+  label: string;
+  icon: ComponentType<FluentIconsProps>;
+  module: Module;
+  action?: string;
+  /** Bulk Upload only — see RequirePermission's own comment on why it has no single
+   *  umbrella permission. */
+  anyOf?: string[];
+}
+
+// Each item's module/action is the client-side mirror of exactly what its route
+// requires (see App.tsx's RequirePermission usage) — nav visibility and route
+// reachability always agree because they read the same permission set.
+const NAV_ITEMS: NavItem[] = [
+  { to: "/register", label: "Register", icon: RegisterIcon, module: "register", action: "view" },
+  { to: "/assets", label: "Asset History", icon: LifecycleIcon, module: "assetHistory", action: "view" },
+  { to: "/transfers", label: "Transfers", icon: HistoryIcon, module: "transfers", action: "view" },
+  { to: "/capitalization", label: "Capitalization", icon: AddCircleIcon, module: "capitalization", action: "view" },
+  { to: "/additions", label: "Additions", icon: AdditionIcon, module: "additions", action: "view" },
+  { to: "/disposals", label: "Disposals", icon: DeleteIcon, module: "disposals", action: "view" },
+  {
+    to: "/bulk-upload",
+    label: "Bulk Upload",
+    icon: UploadIcon,
+    module: "bulkUpload",
+    anyOf: ["capitalization", "transfers", "disposals", "merge"]
+  },
+  { to: "/reports", label: "Reports", icon: ReportsIcon, module: "reports", action: "view" },
+  { to: "/activity-log", label: "Activity Log", icon: AuditLogIcon, module: "activityLog", action: "view" },
+  { to: "/masters", label: "Masters", icon: BookDatabaseIcon, module: "masters", action: "view" },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, module: "settings", action: "view" }
 ];
 
-const ADMIN_NAV_ITEM = { to: "/admin", label: "Admin", icon: AdminIcon };
-
-// Editor-only screens — a viewer has no access to these at all (server-enforced by
-// requireEditor on their API routes; this is just the client-side nav/UX mirror).
-const EDITOR_ONLY_PATHS = new Set([
-  "/transfers",
-  "/capitalization",
-  "/additions",
-  "/disposals",
-  "/bulk-upload",
-  "/activity-log"
-]);
+const ADMIN_NAV_ITEM: NavItem = { to: "/admin", label: "Admin", icon: AdminIcon, module: "admin", action: "view" };
 
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();
@@ -106,9 +116,9 @@ export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
-  const visibleItems =
-    user?.role === "viewer" ? NAV_ITEMS.filter((item) => !EDITOR_ONLY_PATHS.has(item.to)) : NAV_ITEMS;
-  const navItems = user?.role === "admin" ? [...visibleItems, ADMIN_NAV_ITEM] : visibleItems;
+  const isVisible = (item: NavItem) =>
+    item.anyOf ? item.anyOf.some((a) => hasPermission(user, item.module, a)) : hasPermission(user, item.module, item.action!);
+  const navItems = [...NAV_ITEMS, ADMIN_NAV_ITEM].filter(isVisible);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));

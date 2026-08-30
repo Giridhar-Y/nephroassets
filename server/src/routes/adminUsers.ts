@@ -4,8 +4,9 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { hashPassword } from "../auth/password.js";
-import { requireAdmin, type Role } from "../auth/middleware.js";
-import { seedPermissionsFromRole } from "../auth/permissions.js";
+import { requirePermission, type Role } from "../auth/middleware.js";
+import { allPermissions, fetchUserPermissions, isValidPermission, replaceUserPermissions, seedPermissionsFromRole } from "../auth/permissions.js";
+import type { Permission } from "../auth/permissions.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -197,6 +198,50 @@ export async function resetPassword(
   return { user: mapUserRow(rows[0]), tempPassword };
 }
 
+const permissionKey = (p: { module: string; action: string }): string => `${p.module}:${p.action}`;
+
+/** Self-lockout guard for the permissions-matrix save below — mirrors updateUser's own
+ *  "you can't remove your own admin access" check, extended to the two grants that
+ *  would leave nobody (including the acting Super Admin themselves) able to fix
+ *  permissions again: losing `admin:managePermissions` means this exact panel becomes
+ *  unreachable for them, and losing `admin:view` means the Admin page itself won't load.
+ *  Only checked when the target is the actor themselves — granting/revoking someone
+ *  else's access, however drastic, is a normal Super Admin action. */
+function assertNotSelfLockout(actorUserId: number, targetId: number, grants: Permission[]): void {
+  if (targetId !== actorUserId) return;
+  const keys = new Set(grants.map(permissionKey));
+  if (!keys.has("admin:managePermissions") || !keys.has("admin:view")) {
+    throw new UserError(400, "You can't remove your own permission-management access.");
+  }
+}
+
+export async function replacePermissions(
+  db: pg.Pool,
+  actorUserId: number,
+  targetId: number,
+  rawGrants: Array<{ module: string; action: string }>
+): Promise<Permission[]> {
+  const { rows } = await db.query(`SELECT id FROM users WHERE id = $1`, [targetId]);
+  if (!rows[0]) throw new UserError(404, "No user found with that id.");
+  const grants: Permission[] = [];
+  for (const { module, action } of rawGrants) {
+    if (!isValidPermission(module, action)) {
+      throw new UserError(400, `"${module}:${action}" is not a real permission.`);
+    }
+    grants.push({ module, action });
+  }
+  assertNotSelfLockout(actorUserId, targetId, grants);
+
+  const { added, removed } = await replaceUserPermissions(db, targetId, actorUserId, grants);
+  if (added.length > 0 || removed.length > 0) {
+    await logAudit(db, actorUserId, "permissions_change", targetId, {
+      added: added.map(permissionKey),
+      removed: removed.map(permissionKey)
+    });
+  }
+  return grants;
+}
+
 // --- HTTP routes ---------------------------------------------------------------------
 
 const roleSchema = z.enum(["viewer", "editor", "admin"]);
@@ -212,6 +257,9 @@ const patchUserSchema = z.object({
   status: z.enum(["active", "disabled"]).optional()
 });
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
+const permissionsSchema = z.object({
+  grants: z.array(z.object({ module: z.string(), action: z.string() }))
+});
 
 function handleUserError(err: unknown, reply: { code: (n: number) => void }): { error: string } {
   if (err instanceof UserError) {
@@ -222,9 +270,9 @@ function handleUserError(err: unknown, reply: { code: (n: number) => void }): { 
 }
 
 export default async function adminUsersRoutes(app: FastifyInstance) {
-  app.get("/api/admin/users", { preHandler: requireAdmin }, async () => fetchUsers(await getPool()));
+  app.get("/api/admin/users", { preHandler: requirePermission("admin", "view") }, async () => fetchUsers(await getPool()));
 
-  app.post("/api/admin/users", { preHandler: requireAdmin }, async (req, reply) => {
+  app.post("/api/admin/users", { preHandler: requirePermission("admin", "create") }, async (req, reply) => {
     const parsed = createUserSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -237,7 +285,7 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/api/admin/users/:id", { preHandler: requireAdmin }, async (req, reply) => {
+  app.patch("/api/admin/users/:id", { preHandler: requirePermission("admin", "edit") }, async (req, reply) => {
     const paramsParsed = idParamSchema.safeParse(req.params);
     const bodyParsed = patchUserSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {
@@ -251,16 +299,66 @@ export default async function adminUsersRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/api/admin/users/:id/reset-password", { preHandler: requireAdmin }, async (req, reply) => {
-    const paramsParsed = idParamSchema.safeParse(req.params);
-    if (!paramsParsed.success) {
-      reply.code(400);
-      return { error: "Invalid user id." };
+  app.post(
+    "/api/admin/users/:id/reset-password",
+    { preHandler: requirePermission("admin", "resetPassword") },
+    async (req, reply) => {
+      const paramsParsed = idParamSchema.safeParse(req.params);
+      if (!paramsParsed.success) {
+        reply.code(400);
+        return { error: "Invalid user id." };
+      }
+      try {
+        return await resetPassword(await getPool(), req.user!.id, paramsParsed.data.id);
+      } catch (err) {
+        return handleUserError(err, reply);
+      }
     }
-    try {
-      return await resetPassword(await getPool(), req.user!.id, paramsParsed.data.id);
-    } catch (err) {
-      return handleUserError(err, reply);
+  );
+
+  // Permissions-matrix UI (Admin page's per-user "Permissions" panel) — both routes
+  // gated by managePermissions specifically, not just admin:view/edit, since not every
+  // Admin necessarily holds it (see auth/permissions.ts's own comment on that action).
+  app.get(
+    "/api/admin/users/:id/permissions",
+    { preHandler: requirePermission("admin", "managePermissions") },
+    async (req, reply) => {
+      const paramsParsed = idParamSchema.safeParse(req.params);
+      if (!paramsParsed.success) {
+        reply.code(400);
+        return { error: "Invalid user id." };
+      }
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT id FROM users WHERE id = $1`, [paramsParsed.data.id]);
+      if (!rows[0]) {
+        reply.code(404);
+        return { error: "No user found with that id." };
+      }
+      return { grants: await fetchUserPermissions(db, paramsParsed.data.id), registry: allPermissions() };
     }
-  });
+  );
+
+  app.put(
+    "/api/admin/users/:id/permissions",
+    { preHandler: requirePermission("admin", "managePermissions") },
+    async (req, reply) => {
+      const paramsParsed = idParamSchema.safeParse(req.params);
+      const bodyParsed = permissionsSchema.safeParse(req.body);
+      if (!paramsParsed.success || !bodyParsed.success) {
+        reply.code(400);
+        return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
+      }
+      try {
+        const grants = await replacePermissions(
+          await getPool(),
+          req.user!.id,
+          paramsParsed.data.id,
+          bodyParsed.data.grants
+        );
+        return { grants };
+      } catch (err) {
+        return handleUserError(err, reply);
+      }
+    }
+  );
 }

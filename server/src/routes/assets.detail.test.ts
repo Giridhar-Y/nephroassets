@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import transfersRoutes from "./transfers.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -36,6 +38,9 @@ describe("GET /api/assets/:farId (Asset 360)", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.register(transfersRoutes);
     await app.ready();

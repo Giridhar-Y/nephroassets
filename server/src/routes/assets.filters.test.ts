@@ -1,8 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -29,6 +31,9 @@ describe("GET /api/assets: an asset never appears before its own capitalization 
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -92,6 +97,9 @@ describe("GET /api/assets: hasAddition filter (Additions Log)", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -140,6 +148,9 @@ describe("GET /api/assets: descriptionSearch filter", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -194,6 +205,9 @@ describe("GET /api/assets: globalSearch (Register's toolbar search box)", () => 
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -264,6 +278,9 @@ describe("GET /api/assets: multi-value status/subClassification/center filters",
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -322,6 +339,9 @@ describe("GET /api/assets: capLocation filter (Capitalized Location)", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 

@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
+import { requirePermission } from "../auth/middleware.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
@@ -433,7 +434,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
   // parity with the on-screen Register table (see columns.ts on the
   // client) — a filter-summary note, a totals row, then the grouped header (merged, bold, no fill color), then
   // one streamed row per matching asset.
-  app.get("/api/assets/export", async (req, reply) => {
+  app.get("/api/assets/export", { preHandler: requirePermission("register", "export") }, async (req, reply) => {
     const parsed = exportQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);

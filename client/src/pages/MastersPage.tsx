@@ -15,6 +15,7 @@ import {
   type MasterSubClassification
 } from "../api/client.js";
 import { useAuth } from "../lib/AuthContext.js";
+import { hasPermission } from "../lib/permissions.js";
 import { BookDatabaseIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 
@@ -634,7 +635,7 @@ export function MastersPage() {
           <BookDatabaseIcon fontSize={20} />
           Masters
         </h1>
-        {user?.role !== "viewer" && (
+        {hasPermission(user, "masters", "edit") && (
           <button
             type="button"
             className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"

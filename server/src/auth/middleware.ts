@@ -1,13 +1,13 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, verifySession } from "./session.js";
+import type { ActionFor, Module } from "./permissions.js";
 
-/** viewer: read/export only. editor: viewer's access + full FAR-module CRUD
- *  (Capitalization/Transfers/Disposals/Bulk Upload). admin: also user management, plus
- *  the Global-Admin-only delete/undo actions (assets.ts's DELETE /api/assets/:farId and
- *  .../addition/undo, .../disposal/undo; transfers.ts's DELETE /api/transfers/:id). */
+/** A creation-time template only (see auth/permissions.ts's ROLE_TEMPLATES) — grants
+ *  nothing by itself once a user exists. All real enforcement reads `AuthedUser.
+ *  permissions` (backed by the `user_permissions` table), never this field. Kept as a
+ *  column/label for at-a-glance display and as the default when creating a new user. */
 export type Role = "viewer" | "editor" | "admin";
-const EDITOR_ROLES: ReadonlySet<Role> = new Set(["editor", "admin"]);
 
 export interface AuthedUser {
   id: number;
@@ -15,6 +15,10 @@ export interface AuthedUser {
   email: string;
   role: Role;
   mustChangePassword: boolean;
+  /** `"module:action"` strings — see auth/permissions.ts's Permission type. A plain
+   *  Set for O(1) `requirePermission` lookups; the `/api/auth/me` response serializes
+   *  it back out as an array for the client. */
+  permissions: Set<string>;
 }
 
 declare module "fastify" {
@@ -71,12 +75,21 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
   const row = rows[0];
   if (!row || row.status !== "active") return null;
 
+  // A fresh read on every request, same as the row above — so a permission grant or
+  // revoke (via the future Permissions UI) takes effect on the user's very next
+  // request, not whenever a cached session happens to expire.
+  const { rows: permRows } = await db.query<{ module: string; action: string }>(
+    `SELECT module, action FROM user_permissions WHERE user_id = $1`,
+    [row.id]
+  );
+
   return {
     id: Number(row.id),
     username: row.username,
     email: row.email,
     role: row.role,
-    mustChangePassword: row.must_change_password
+    mustChangePassword: row.must_change_password,
+    permissions: new Set(permRows.map((p) => `${p.module}:${p.action}`))
   };
 }
 
@@ -101,20 +114,19 @@ export async function authGateHook(req: FastifyRequest, reply: FastifyReply): Pr
   }
 }
 
-/** Route-level preHandler for admin-only endpoints — layered on top of the global auth
- *  gate above, which has already populated `req.user` by the time this runs. */
-export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (req.user?.role !== "admin") {
-    reply.code(403).send({ error: "Admin access required.", code: "FORBIDDEN" });
-  }
-}
-
-/** Route-level preHandler for editor+ endpoints (every FAR-module write action —
- *  Capitalization, Transfers, Disposals, Bulk Upload — plus the Transfers history view,
- *  which viewers have no access to at all, not just its write side). A viewer is
- *  rejected; editor and admin both pass. */
-export async function requireEditor(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (!req.user || !EDITOR_ROLES.has(req.user.role)) {
-    reply.code(403).send({ error: "You don't have permission to make changes here.", code: "FORBIDDEN" });
-  }
+/** Route-level preHandler factory — the one and only access check every route in the
+ *  app uses (besides the global auth gate above, which has already populated `req.user`
+ *  by the time this runs). Layered on top of `req.user.permissions`, never `role` — see
+ *  auth/permissions.ts's PERMISSION_REGISTRY for the full module/action list and
+ *  ROLE_TEMPLATES for what a user gets by default. `<M extends Module>` ties `action` to
+ *  a real action for that specific module at the type level, so
+ *  `requirePermission("register", "delete")` (not a real Register action) is a compile
+ *  error, not a silent typo that always 403s at runtime. */
+export function requirePermission<M extends Module>(module: M, action: ActionFor<M>) {
+  const key = `${module}:${action}`;
+  return async function (req: FastifyRequest, reply: FastifyReply): Promise<void> {
+    if (!req.user || !req.user.permissions.has(key)) {
+      reply.code(403).send({ error: "You don't have permission to do this.", code: "FORBIDDEN" });
+    }
+  };
 }

@@ -4,7 +4,7 @@ import { getPool } from "../db/pool.js";
 import type { SettingsRow } from "../db/mappers.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
-import { requireEditor, requireAdmin } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 import { buildTransferConditionSql, transferConditionsQuerySchema } from "./transferColumnFilters.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
@@ -39,7 +39,7 @@ const historyQuerySchema = z.object({
 export default async function transfersRoutes(app: FastifyInstance) {
   // Center-first transfer: move one or more assets (already narrowed to a source
   // center in the UI) to a different center/location.
-  app.post("/api/transfers", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/transfers", { preHandler: requirePermission("transfers", "create") }, async (req, reply) => {
     const parsed = createTransferSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -164,7 +164,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
 
   // Transfers screen: a read-only history log, newest first. Not a separate workflow —
   // initiating a transfer still only happens via the center-first picker in Register.
-  app.get("/api/transfers", { preHandler: requireEditor }, async (req, reply) => {
+  app.get("/api/transfers", { preHandler: requirePermission("transfers", "view") }, async (req, reply) => {
     const parsed = historyQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -305,7 +305,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
   // denormalized CACHE of the latest transfer, so every affected far_id's cache is
   // recomputed after the delete (see refreshRevisedLocationCache below) — falling back to
   // whatever transfer is now latest, or to the asset's own `location` if none remain.
-  app.delete("/api/transfers/:id", { preHandler: requireAdmin }, async (req, reply) => {
+  app.delete("/api/transfers/:id", { preHandler: requirePermission("transfers", "delete") }, async (req, reply) => {
     const paramsParsed = z.object({ id: z.coerce.number().int().positive() }).safeParse(req.params);
     const bodyParsed = deleteReasonSchema.safeParse(req.body);
     if (!paramsParsed.success || !bodyParsed.success) {

@@ -4,7 +4,7 @@ import { getPool } from "../db/pool.js";
 import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
-import { requireEditor } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 
 const disposalRowSchema = z.object({
@@ -17,7 +17,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
   // Bulk Disposals: same full-disposal semantics as PATCH /api/assets/:farId/disposal
   // (deletions = the asset's entire capitalized cost, status forced to Disposed),
   // applied to every row in a CSV/XLSX instead of one asset at a time.
-  app.post("/api/assets/bulk-dispose", { preHandler: requireEditor }, async (req, reply) => {
+  app.post("/api/assets/bulk-dispose", { preHandler: requirePermission("bulkUpload", "disposals") }, async (req, reply) => {
     const file = await req.file();
     if (!file) {
       reply.code(400);

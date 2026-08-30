@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { requireEditor } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 
 const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "delete", "masters"] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -92,7 +92,7 @@ function decodeCursor(raw: string): Cursor | null {
 // see a delete/undo record, a deliberate, requested consequence of consolidating onto one
 // editor+ page rather than an oversight.
 export default async function activityLogRoutes(app: FastifyInstance) {
-  app.get("/api/audit-log/activity", { preHandler: requireEditor }, async (req, reply) => {
+  app.get("/api/audit-log/activity", { preHandler: requirePermission("activityLog", "view") }, async (req, reply) => {
     const parsed = activityLogQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
