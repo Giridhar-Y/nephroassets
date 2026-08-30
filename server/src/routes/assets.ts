@@ -4,6 +4,8 @@ import { getPool } from "../db/pool.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
+import { maxIsoDate } from "../calc/dates.js";
+import { round2, splitDepreciationByLocation } from "../reports/transferDepreciationSplit.js";
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
@@ -404,6 +406,22 @@ export default async function assetsRoutes(app: FastifyInstance) {
     const relevantTransfers = transferRows.filter((t) => t.transaction_date <= asAt).map(mapTransferRow);
     const result = computeAsset(asset, fy, relevantTransfers);
 
+    // Center-wise depreciation breakdown for the current period, reusing the exact same
+    // split the Asset Movement & Depreciation Schedule report uses per location-stay
+    // (see reports.ts's computeMovementSchedulePage) — same period bounds, same
+    // days-weighted allocation, just scoped to this one FAR ID instead of a full-table
+    // scan.
+    const periodStart = maxIsoDate([fy.fyStart, asset.dateAcquired]);
+    const periodEnd = result.c1.effectiveEndDate;
+    const locationSegments = splitDepreciationByLocation(
+      asset.location,
+      relevantTransfers,
+      periodStart,
+      periodEnd,
+      round2(result.c1.periodDepreciation),
+      round2(result.c2.periodDepreciation)
+    );
+
     const transfers = transferRows.map((t) => ({
       id: Number(t.id),
       transactionDate: t.transaction_date,
@@ -411,7 +429,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       cascadedFromParentFarId: t.cascaded_from_parent_far_id
     }));
 
-    return { asset, result, transfers, asAt };
+    return { asset, result, transfers, asAt, locationSegments };
   });
 
   // Capitalization: register a brand-new asset. Disposal fields are left at their

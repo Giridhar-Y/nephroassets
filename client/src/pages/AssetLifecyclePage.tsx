@@ -114,6 +114,32 @@ function buildTimeline(data: AssetDetailResponse): TimelineEvent[] {
   return events.sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/** Plain-text title/detail for one timeline event — shared by the on-screen
+ *  `TimelineRow` (icon + styled text) and the print report's timeline table (no icons,
+ *  just rows), so the two views can never drift on what an event actually says. */
+function timelineEventText(event: TimelineEvent): { title: string; detail: string } {
+  switch (event.type) {
+    case "capitalization":
+      return { title: "Capitalized", detail: `${event.location} · ${formatCurrency(event.cost)} opening cost` };
+    case "addition":
+      return { title: "Capital Addition", detail: `${formatCurrency(event.amount)} added to cost` };
+    case "transfer":
+      return {
+        title: "Transferred",
+        detail: `${event.from} → ${event.to}${event.cascadedFromParentFarId ? ` (cascaded from parent ${event.cascadedFromParentFarId})` : ""}`
+      };
+    case "disposal":
+      return {
+        title: "Disposed",
+        detail: `Sale Value ${formatCurrency(event.saleValue)} · WDV ${formatCurrency(event.wdv)} · ${
+          event.profitLoss >= 0 ? "Profit" : "Loss"
+        } ${formatCurrency(Math.abs(event.profitLoss))}${
+          event.cascadedFromParentFarId ? ` (cascaded from parent ${event.cascadedFromParentFarId})` : ""
+        }`
+      };
+  }
+}
+
 function TimelineRow({ event }: { event: TimelineEvent }) {
   const iconClass = "grid h-8 w-8 shrink-0 place-items-center rounded-full";
   switch (event.type) {
@@ -207,6 +233,203 @@ const DETAIL_FIELDS: Array<{ label: string; render: (d: AssetDetailResponse) => 
   { label: "Last Date of Transaction", render: (d) => formatDate(d.result.lastDateOfTransaction) }
 ];
 
+/** Depreciation-by-center table — shared by the on-screen "Depreciation by Center"
+ *  section and the print report, same rows and totals either way. */
+function CenterBreakdownTable({
+  segments,
+  hasComponent2
+}: {
+  segments: AssetDetailResponse["locationSegments"];
+  hasComponent2: boolean;
+}) {
+  const totalC1 = segments.reduce((sum, s) => sum + s.c1Depreciation, 0);
+  const totalC2 = segments.reduce((sum, s) => sum + s.c2Depreciation, 0);
+  const totalDep = segments.reduce((sum, s) => sum + s.depreciation, 0);
+
+  return (
+    <table className="w-full border-collapse text-sm">
+      <thead>
+        <tr className="border-b border-gray-300 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
+          <th className="py-2 pr-2">Center</th>
+          <th className="py-2 pr-2">Period</th>
+          <th className="py-2 pr-2 text-right">Days Held</th>
+          {hasComponent2 && <th className="py-2 pr-2 text-right">C1 Depreciation</th>}
+          {hasComponent2 && <th className="py-2 pr-2 text-right">C2 Depreciation</th>}
+          <th className="py-2 pl-2 text-right">Total Depreciation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {segments.map((s, i) => (
+          <tr key={i} className="border-b border-gray-100">
+            <td className="py-2 pr-2 font-medium text-ink">{s.location}</td>
+            <td className="py-2 pr-2 text-gray-500">
+              {formatDate(s.fromDate)} – {formatDate(s.toDate)}
+            </td>
+            <td className="py-2 pr-2 text-right text-gray-500">{s.daysHeld}</td>
+            {hasComponent2 && <td className="py-2 pr-2 text-right">{formatCurrency(s.c1Depreciation)}</td>}
+            {hasComponent2 && <td className="py-2 pr-2 text-right">{formatCurrency(s.c2Depreciation)}</td>}
+            <td className="py-2 pl-2 text-right font-semibold text-ink">{formatCurrency(s.depreciation)}</td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="font-semibold text-ink">
+          <td className="pt-2" colSpan={3}>
+            Total
+          </td>
+          {hasComponent2 && <td className="pt-2 pr-2 text-right">{formatCurrency(totalC1)}</td>}
+          {hasComponent2 && <td className="pt-2 pr-2 text-right">{formatCurrency(totalC2)}</td>}
+          <td className="pt-2 pl-2 text-right">{formatCurrency(totalDep)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+/** The dedicated print/PDF layout — a clean document (header, summary figures, center
+ *  breakdown, full timeline), not a CSS-print of the live dashboard. Rendered off-screen
+ *  (`hidden print:block`) and shown only for print/"Save as PDF", since that's a real
+ *  PDF-capable destination in every browser's print dialog — no server-side PDF
+ *  generation needed for a one-asset document like this. */
+function AssetPrintReport({
+  data,
+  timeline,
+  age,
+  grossBlock,
+  accDep,
+  nbv,
+  lifeRemainingPct,
+  hasComponent2,
+  disposalWdv,
+  disposalProfitLoss
+}: {
+  data: AssetDetailResponse;
+  timeline: TimelineEvent[];
+  age: { label: string; years: number };
+  grossBlock: number;
+  accDep: number;
+  nbv: number;
+  lifeRemainingPct: number | null;
+  hasComponent2: boolean;
+  disposalWdv: number;
+  disposalProfitLoss: number;
+}) {
+  const { asset, result } = data;
+  return (
+    <div className="hidden text-ink print:block">
+      <div className="flex items-center justify-between bg-ink px-6 py-4 text-white">
+        <div>
+          <div className="text-lg font-bold">{asset.farId}</div>
+          <div className="text-sm">{asset.assetDescription}</div>
+        </div>
+        <div className="text-right text-xs">
+          <div className="font-semibold">Fixed Asset Report</div>
+          <div>As of {formatDate(data.asAt)}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-4 border-b border-gray-300 px-6 py-4 text-sm">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Status</div>
+          <div className="mt-0.5">{asset.status}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Sub Classification</div>
+          <div className="mt-0.5">{asset.subClassification}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Current Center</div>
+          <div className="mt-0.5">{result.effectiveLocation}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Acquired</div>
+          <div className="mt-0.5">{formatDate(asset.dateAcquired)}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-4 border-b border-gray-300 px-6 py-4 text-sm">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Age</div>
+          <div className="mt-0.5 font-semibold">{age.label}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Gross Block</div>
+          <div className="mt-0.5 font-semibold">{formatCurrency(grossBlock)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Accumulated Depreciation</div>
+          <div className="mt-0.5 font-semibold">{formatCurrency(accDep)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Net Block (NBV)</div>
+          <div className="mt-0.5 font-semibold">{formatCurrency(nbv)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Useful Life Remaining</div>
+          <div className="mt-0.5 font-semibold">{lifeRemainingPct === null ? "Disposed" : `${lifeRemainingPct}%`}</div>
+        </div>
+      </div>
+
+      {asset.status === "Disposed" && asset.dateOfDisposal && (
+        <div className="grid grid-cols-4 gap-4 border-b border-gray-300 px-6 py-4 text-sm">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Disposal Date</div>
+            <div className="mt-0.5">{formatDate(asset.dateOfDisposal)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Sale Value</div>
+            <div className="mt-0.5">{formatCurrency(asset.saleValue)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">WDV at Disposal</div>
+            <div className="mt-0.5">{formatCurrency(disposalWdv)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Profit / (Loss)</div>
+            <div className="mt-0.5">
+              {disposalProfitLoss >= 0 ? "" : "("}
+              {formatCurrency(Math.abs(disposalProfitLoss))}
+              {disposalProfitLoss >= 0 ? "" : ")"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="break-inside-avoid px-6 py-4">
+        <h2 className="text-sm font-bold text-ink">Depreciation by Center</h2>
+        <div className="mt-2">
+          <CenterBreakdownTable segments={data.locationSegments} hasComponent2={hasComponent2} />
+        </div>
+      </div>
+
+      <div className="break-inside-avoid px-6 py-4">
+        <h2 className="text-sm font-bold text-ink">Lifecycle Timeline</h2>
+        <table className="mt-2 w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-gray-300 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-2">Date</th>
+              <th className="py-2 pr-2">Event</th>
+              <th className="py-2 pl-2">Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {timeline.map((event, i) => {
+              const { title, detail } = timelineEventText(event);
+              return (
+                <tr key={i} className="border-b border-gray-100 align-top">
+                  <td className="whitespace-nowrap py-2 pr-2 text-gray-500">{formatDate(event.date)}</td>
+                  <td className="py-2 pr-2 font-medium">{title}</td>
+                  <td className="py-2 pl-2 text-gray-600">{detail}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function AssetLifecyclePage() {
   const { farId } = useParams<{ farId: string }>();
   const { settings } = useSettings();
@@ -283,10 +506,12 @@ export function AssetLifecyclePage() {
       : Math.max(0, Math.min(100, Math.round((1 - age.years / Math.max(asset.usefulLifeC1Years, 1)) * 100)));
   const disposalProfitLoss = result.assetProfitLossOnDisposal ?? 0;
   const disposalWdv = (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
+  const hasComponent2 = subClassifications.find((s) => s.name === asset.subClassification)?.hasComponent2 ?? true;
 
   return (
-    <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6 print:px-0">
-      <div className="flex items-center justify-between print:hidden">
+    <>
+    <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6 print:hidden">
+      <div className="flex items-center justify-between">
         <Link to="/register" className="flex items-center gap-1 text-xs font-semibold text-accent hover:underline">
           <RegisterIcon fontSize={13} />
           Back to Register
@@ -304,7 +529,7 @@ export function AssetLifecyclePage() {
       <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold text-ink">
-            <LifecycleIcon fontSize={22} className="print:hidden" />
+            <LifecycleIcon fontSize={22} />
             {asset.farId}
             <StatusBadge status={asset.status} />
           </h1>
@@ -384,7 +609,15 @@ export function AssetLifecyclePage() {
         </div>
       </div>
 
-      <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm print:break-inside-avoid">
+      <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-ink">Depreciation by Center</h2>
+        <p className="mt-0.5 text-xs text-gray-400">This period's depreciation, split across every center this asset resided in.</p>
+        <div className="mt-4 overflow-x-auto">
+          <CenterBreakdownTable segments={data.locationSegments} hasComponent2={hasComponent2} />
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <button
           type="button"
           className="flex w-full items-center justify-between text-left"
@@ -395,9 +628,7 @@ export function AssetLifecyclePage() {
         </button>
         {detailsOpen && (
           <dl className="mt-4 grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-            {DETAIL_FIELDS.filter(
-              (f) => !f.c2 || (subClassifications.find((s) => s.name === data.asset.subClassification)?.hasComponent2 ?? true)
-            ).map((f) => (
+            {DETAIL_FIELDS.filter((f) => !f.c2 || hasComponent2).map((f) => (
               <div key={f.label} className="flex items-center justify-between border-b border-gray-100 pb-2 text-sm">
                 <dt className="text-gray-500">{f.label}</dt>
                 <dd className="font-medium text-ink">{f.render(data)}</dd>
@@ -407,5 +638,18 @@ export function AssetLifecyclePage() {
         )}
       </div>
     </div>
+    <AssetPrintReport
+      data={data}
+      timeline={timeline}
+      age={age}
+      grossBlock={grossBlock}
+      accDep={accDep}
+      nbv={nbv}
+      lifeRemainingPct={lifeRemainingPct}
+      hasComponent2={hasComponent2}
+      disposalWdv={disposalWdv}
+      disposalProfitLoss={disposalProfitLoss}
+    />
+    </>
   );
 }

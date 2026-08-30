@@ -125,7 +125,7 @@ export function Layout() {
   }, [collapsed]);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full print:block print:h-auto">
       <aside
         className={`flex shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] print:hidden ${
           collapsed ? "w-14" : "w-60"
@@ -182,11 +182,11 @@ export function Layout() {
           </button>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col print:block">
         <header className="flex shrink-0 items-center justify-end border-b border-gray-200 bg-white px-6 py-3 print:hidden">
           <AsAtControl />
         </header>
-        <main className="min-h-0 flex-1 overflow-hidden">
+        <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">
           <Outlet />
         </main>
       </div>

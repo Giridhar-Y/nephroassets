@@ -3,6 +3,7 @@ import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import transfersRoutes from "./transfers.js";
+import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -43,6 +44,7 @@ describe("GET /api/assets/:farId (Asset 360)", () => {
     await app.register(cookie);
     await app.register(assetsRoutes);
     await app.register(transfersRoutes);
+    await app.register(reportsRoutes);
     await app.ready();
 
     const db = await getPool();
@@ -50,6 +52,12 @@ describe("GET /api/assets/:farId (Asset 360)", () => {
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
        ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
       [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+    // POST /api/transfers rejects a toLocation that isn't an active Center (see
+    // transfers.ts) — every center this file's transfers move assets to must exist here,
+    // same as transfers.test.ts's own fixture.
+    await db.query(
+      `INSERT INTO centers (code) VALUES ('Center-A'), ('Center-B'), ('Center-C'), ('Center-Z') ON CONFLICT DO NOTHING`
     );
   });
 
@@ -120,5 +128,47 @@ describe("GET /api/assets/:farId (Asset 360)", () => {
     expect(body.asset.dateOfDisposal).toBe("2026-05-01");
     expect(body.asset.saleValue).toBe(500);
     expect(body.result.c1.wdvAtDisposal).not.toBeNull();
+  });
+
+  // The center-wise breakdown reuses splitDepreciationByLocation exactly like the Asset
+  // Movement & Depreciation Schedule report — this checks the two independently-computed
+  // API responses actually agree, not just that the shared function was called.
+  it("locationSegments reconciles exactly (to the paisa) with the Movement Schedule report's own rows for the same asset", async () => {
+    await insertAsset("A360-MOVER", { c1_opening_cost: 250000, useful_life_c1_years: 8 });
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["A360-MOVER"], toLocation: "Center-B", transactionDate: "2026-05-10" }
+    });
+    await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["A360-MOVER"], toLocation: "Center-C", transactionDate: "2026-07-01" }
+    });
+
+    const detailRes = await authedInject(app, { method: "GET", url: "/api/assets/A360-MOVER" });
+    expect(detailRes.statusCode).toBe(200);
+    const segments = detailRes.json().locationSegments;
+    expect(segments.length).toBe(3);
+
+    const conditions = encodeURIComponent(JSON.stringify([{ columnId: "farId", op: "equals", value: "A360-MOVER" }]));
+    const movementRes = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/transfer-depreciation/movement?limit=10&conditions=${conditions}`
+    });
+    expect(movementRes.statusCode).toBe(200);
+    const movementRows = movementRes.json().items;
+    expect(movementRows.length).toBe(segments.length);
+
+    const paise = (v: number) => Math.round(v * 100);
+    for (let i = 0; i < segments.length; i++) {
+      expect(segments[i].location).toBe(movementRows[i].location);
+      expect(segments[i].fromDate).toBe(movementRows[i].fromDate);
+      expect(segments[i].toDate).toBe(movementRows[i].toDate);
+      expect(segments[i].daysHeld).toBe(movementRows[i].daysHeld);
+      expect(paise(segments[i].c1Depreciation)).toBe(paise(movementRows[i].c1Depreciation));
+      expect(paise(segments[i].c2Depreciation)).toBe(paise(movementRows[i].c2Depreciation));
+      expect(paise(segments[i].depreciation)).toBe(paise(movementRows[i].depreciation));
+    }
   });
 });

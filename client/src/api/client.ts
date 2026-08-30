@@ -184,11 +184,25 @@ export interface AssetDetailTransfer {
   cascadedFromParentFarId: string | null;
 }
 
+export interface AssetLocationSegment {
+  location: string;
+  fromDate: string;
+  toDate: string;
+  daysHeld: number;
+  c1Depreciation: number;
+  c2Depreciation: number;
+  depreciation: number;
+}
+
 export interface AssetDetailResponse {
   asset: AssetInput;
   result: AssetCalculationResult;
   transfers: AssetDetailTransfer[];
   asAt: string;
+  /** This period's depreciation split across every center the asset resided in — same
+   *  calculation as the Asset Movement & Depreciation Schedule report, scoped to this
+   *  one FAR ID. */
+  locationSegments: AssetLocationSegment[];
 }
 
 // Asset 360: one asset's full record, its computed result, and complete transfer
