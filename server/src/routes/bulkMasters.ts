@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { requirePermission } from "../auth/middleware.js";
 import { bulkActive, loadWorksheet, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
 import {
   MasterError,
@@ -160,7 +161,7 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
 }
 
 export default async function bulkMastersRoutes(app: FastifyInstance) {
-  app.post("/api/masters/centers/bulk-upload", (req, reply) =>
+  app.post("/api/masters/centers/bulk-upload", { preHandler: requirePermission("masters", "edit") }, (req, reply) =>
     handleMasterBulk(req, reply, {
       schema: centerRowSchema,
       keyLabel: "Code",
@@ -174,7 +175,10 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
     })
   );
 
-  app.post("/api/masters/sub-classifications/bulk-upload", (req, reply) =>
+  app.post(
+    "/api/masters/sub-classifications/bulk-upload",
+    { preHandler: requirePermission("masters", "edit") },
+    (req, reply) =>
     handleMasterBulk(req, reply, {
       schema: subClassRowSchema,
       keyLabel: "Name",
@@ -205,7 +209,7 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
     })
   );
 
-  app.post("/api/masters/statuses/bulk-upload", (req, reply) =>
+  app.post("/api/masters/statuses/bulk-upload", { preHandler: requirePermission("masters", "edit") }, (req, reply) =>
     handleMasterBulk(req, reply, {
       schema: statusRowSchema,
       keyLabel: "Name",

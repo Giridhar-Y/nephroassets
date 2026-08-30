@@ -3,13 +3,17 @@ import {
   ApiError,
   createAdminUser,
   fetchAdminUsers,
+  fetchUserPermissions,
   resetAdminUserPassword,
+  saveUserPermissions,
   updateAdminUser,
   type AdminUser,
+  type PermissionGrant,
   type Role
 } from "../api/client.js";
 import { useAuth } from "../lib/AuthContext.js";
-import { AdminIcon, KeyIcon } from "../lib/icons.js";
+import { hasPermission, MODULE_LABELS, PERMISSION_REGISTRY, ROLE_TEMPLATES, actionLabel, type Module } from "../lib/permissions.js";
+import { AdminIcon, ChevronDownIcon, KeyIcon, LockIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 
 const INPUT_CLASS =
@@ -122,6 +126,193 @@ function TempPasswordBanner({
   );
 }
 
+const MODULES = Object.keys(PERMISSION_REGISTRY) as Module[];
+
+function permissionKey(p: PermissionGrant): string {
+  return `${p.module}:${p.action}`;
+}
+
+/** Per-user slide-over — collapsible module groups, a per-module "select all", a
+ *  "Reset to [role] template" bulk-apply, and one Save that replaces the user's entire
+ *  grant set in a single request (matches the server's own replace-all contract, not
+ *  incremental grant/revoke calls). Only reachable via the "Permissions" button, itself
+ *  gated on admin:managePermissions — not every Admin necessarily holds it. */
+function PermissionsPanel({
+  target,
+  isSelf,
+  onClose,
+  onSaved
+}: {
+  target: AdminUser;
+  isSelf: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { showToast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [granted, setGranted] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<Module>>(new Set());
+
+  useEffect(() => {
+    fetchUserPermissions(target.id)
+      .then((res) => setGranted(new Set(res.grants.map(permissionKey))))
+      .catch((err) => showToast(err instanceof ApiError ? err.message : "Could not load permissions.", "error"))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.id]);
+
+  function toggle(module: Module, action: string) {
+    const key = `${module}:${action}`;
+    setGranted((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleModule(module: Module, allOn: boolean) {
+    setGranted((prev) => {
+      const next = new Set(prev);
+      for (const action of PERMISSION_REGISTRY[module]) {
+        const key = `${module}:${action}`;
+        if (allOn) next.delete(key);
+        else next.add(key);
+      }
+      return next;
+    });
+  }
+
+  function toggleExpanded(module: Module) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(module)) next.delete(module);
+      else next.add(module);
+      return next;
+    });
+  }
+
+  function applyTemplate(role: Role) {
+    setGranted(new Set(ROLE_TEMPLATES[role].map(permissionKey)));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const grants: PermissionGrant[] = Array.from(granted).map((key) => {
+        const [module, action] = key.split(":");
+        return { module: module!, action: action! };
+      });
+      await saveUserPermissions(target.id, grants);
+      showToast(`${target.username}'s permissions updated.`);
+      onSaved();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : "Could not save permissions.", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
+      <div className="flex h-full w-full max-w-md flex-col bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
+            <LockIcon fontSize={18} />
+            Permissions — {target.username}
+          </h2>
+          <p className="mt-1 text-xs text-gray-500">
+            Role label: <RoleBadge role={target.role} /> — a starting template only; toggles below are this user's
+            actual access.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(["viewer", "editor", "admin"] as const).map((role) => (
+              <button
+                key={role}
+                type="button"
+                className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                onClick={() => applyTemplate(role)}
+              >
+                Reset to {ROLE_LABELS[role]} template
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto px-5 py-3">
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-9 animate-pulse rounded bg-gray-100" />
+              ))}
+            </div>
+          ) : (
+            MODULES.map((module) => {
+              const actions = PERMISSION_REGISTRY[module] as readonly string[];
+              const grantedCount = actions.filter((a) => granted.has(`${module}:${a}`)).length;
+              const allOn = grantedCount === actions.length;
+              const isOpen = expanded.has(module);
+              return (
+                <div key={module} className="border-b border-gray-100 py-2">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-2 py-1.5 text-left"
+                    onClick={() => toggleExpanded(module)}
+                  >
+                    <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                      <ChevronDownIcon fontSize={14} className={isOpen ? "" : "-rotate-90"} />
+                      {MODULE_LABELS[module]}
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      {grantedCount}/{actions.length}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="ml-5 mt-1 space-y-1.5">
+                      <label className="flex items-center gap-2 text-xs font-medium text-accent">
+                        <input type="checkbox" checked={allOn} onChange={() => toggleModule(module, allOn)} />
+                        Select all
+                      </label>
+                      {actions.map((action) => (
+                        <label key={action} className="flex items-center gap-2 text-sm text-gray-700">
+                          <input
+                            type="checkbox"
+                            checked={granted.has(`${module}:${action}`)}
+                            onChange={() => toggle(module, action)}
+                          />
+                          {actionLabel(action)}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3">
+          {isSelf && (
+            <p className="mr-auto text-xs text-gray-400">You can't remove your own Manage Permissions or Admin View.</p>
+          )}
+          <button type="button" className="text-sm font-medium text-gray-500 hover:underline" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+            onClick={handleSave}
+            disabled={saving || loading}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AdminPage() {
   const { user: me } = useAuth();
   const { showToast } = useToast();
@@ -138,6 +329,8 @@ export function AdminPage() {
   const [editRole, setEditRole] = useState<Role>("viewer");
 
   const [reveal, setReveal] = useState<{ username: string; password: string } | null>(null);
+  const [permissionsTarget, setPermissionsTarget] = useState<AdminUser | null>(null);
+  const canManagePermissions = hasPermission(me, "admin", "managePermissions");
 
   function load() {
     fetchAdminUsers()
@@ -348,6 +541,15 @@ export function AdminPage() {
                         >
                           {row.status === "active" ? "Disable" : "Re-enable"}
                         </button>
+                        {canManagePermissions && (
+                          <button
+                            type="button"
+                            className="font-medium text-gray-500 hover:underline"
+                            onClick={() => setPermissionsTarget(row)}
+                          >
+                            Permissions
+                          </button>
+                        )}
                       </td>
                     </>
                   )}
@@ -361,6 +563,15 @@ export function AdminPage() {
 
       {reveal && (
         <TempPasswordBanner username={reveal.username} password={reveal.password} onDismiss={() => setReveal(null)} />
+      )}
+
+      {permissionsTarget && (
+        <PermissionsPanel
+          target={permissionsTarget}
+          isSelf={permissionsTarget.id === me?.id}
+          onClose={() => setPermissionsTarget(null)}
+          onSaved={() => setPermissionsTarget(null)}
+        />
       )}
     </div>
   );

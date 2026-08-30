@@ -19,6 +19,7 @@ import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition } from "../lib/columnFilters.js";
 import { makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
+import { hasPermission } from "../lib/permissions.js";
 
 const PAGE_SIZE = 100;
 
@@ -90,8 +91,8 @@ function TransferLogTab() {
   const [error, setError] = useState<string | null>(null);
   // Transfer delete (Global Admin only) — holds the row pending confirmation.
   const [deleteTarget, setDeleteTarget] = useState<TransferHistoryItem | null>(null);
-  const isAdmin = user?.role === "admin";
-  const columnCount = isAdmin ? 6 : 5;
+  const canDelete = hasPermission(user, "transfers", "delete");
+  const columnCount = canDelete ? 6 : 5;
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -259,7 +260,7 @@ function TransferLogTab() {
                   </ColumnFilterPopover>
                 </div>
               </th>
-              {isAdmin && (
+              {canDelete && (
                 <th className="px-4 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600">Delete</th>
               )}
             </tr>
@@ -293,7 +294,7 @@ function TransferLogTab() {
                   <td className="px-4 py-2 text-gray-600">{formatDate(item.transactionDate)}</td>
                   <td className="px-4 py-2 text-gray-600">{item.fromLocation}</td>
                   <td className="px-4 py-2 text-gray-600">{item.location}</td>
-                  {isAdmin && (
+                  {canDelete && (
                     <td className="px-4 py-2">
                       <button
                         type="button"
@@ -360,7 +361,7 @@ export function TransfersPage() {
             <HistoryIcon fontSize={20} />
             Transfers
           </h1>
-          {user?.role !== "viewer" && (
+          {hasPermission(user, "bulkUpload", "transfers") && (
             <button
               type="button"
               className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"

@@ -70,13 +70,18 @@ export default async function authRoutes(app: FastifyInstance) {
     // Built directly from the row just read, not via resolveUser(req) — that reads the
     // session cookie off the *incoming* request, which is this login request itself and
     // so never carries the cookie we just decided to set on the way out.
+    const { rows: permRows } = await db.query<{ module: string; action: string }>(
+      `SELECT module, action FROM user_permissions WHERE user_id = $1`,
+      [row!.id]
+    );
     return {
       user: {
         id: Number(row!.id),
         username: row!.username,
         email: row!.email,
         role: row!.role,
-        mustChangePassword: row!.must_change_password
+        mustChangePassword: row!.must_change_password,
+        permissions: permRows.map((p) => `${p.module}:${p.action}`)
       }
     };
   });
@@ -90,7 +95,9 @@ export default async function authRoutes(app: FastifyInstance) {
   // (app.ts) already 401s this route itself when there's no valid session, so reaching
   // the handler at all means req.user is populated.
   app.get("/api/auth/me", async (req) => {
-    return { user: req.user };
+    // req.user.permissions is a Set — JSON.stringify on a Set serializes to "{}", not an
+    // array, so it has to be spread out explicitly here rather than returned as-is.
+    return { user: { ...req.user, permissions: Array.from(req.user!.permissions) } };
   });
 
   app.post("/api/auth/change-password", async (req, reply) => {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { mapSettingsRow, type SettingsRow } from "../db/mappers.js";
-import { requireAdmin } from "../auth/middleware.js";
+import { requirePermission } from "../auth/middleware.js";
 
 const updateSettingsSchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -16,7 +16,7 @@ const updateSettingsSchema = z.object({
 const daysInFySchema = z.object({ daysInFy: z.coerce.number().int().min(1).max(366) });
 
 export default async function settingsRoutes(app: FastifyInstance) {
-  app.get("/api/settings", async (_req, reply) => {
+  app.get("/api/settings", { preHandler: requirePermission("settings", "view") }, async (_req, reply) => {
     const db = await getPool();
     const { rows } = await db.query<SettingsRow>(
       `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
@@ -33,7 +33,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
   // that recompute every period's figures. AS_AT itself has its own lightweight,
   // non-admin route below (PATCH .../as-at) for the header's daily "Figures as of" picker,
   // which every role uses constantly — this route is NOT that picker's endpoint.
-  app.put("/api/settings", { preHandler: requireAdmin }, async (req, reply) => {
+  app.put("/api/settings", { preHandler: requirePermission("settings", "edit") }, async (req, reply) => {
     const parsed = updateSettingsSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -89,7 +89,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
   // as the only method, the depreciation cap, display-only rounding — isn't). Split out
   // from the plain PUT above so it gets its own admin gate, confirm-step preview, and
   // audit trail; the plain form no longer edits this field (client/SettingsPage.tsx).
-  app.patch("/api/settings/days-in-fy", { preHandler: requireAdmin }, async (req, reply) => {
+  app.patch("/api/settings/days-in-fy", { preHandler: requirePermission("settings", "edit") }, async (req, reply) => {
     const parsed = daysInFySchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -127,7 +127,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
   // in Register's own universe (date_acquired <= AS_AT), reusing far_calc_component the
   // same way reports.ts's aggregate reports already do at 250k-row scale, so this never
   // pulls per-row data into application code. Read-only — writes nothing.
-  app.get("/api/settings/days-in-fy/preview", { preHandler: requireAdmin }, async (req, reply) => {
+  app.get("/api/settings/days-in-fy/preview", { preHandler: requirePermission("settings", "edit") }, async (req, reply) => {
     const parsed = daysInFySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -184,7 +184,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/api/settings/audit-log", { preHandler: requireAdmin }, async (_req, reply) => {
+  app.get("/api/settings/audit-log", { preHandler: requirePermission("settings", "edit") }, async (_req, reply) => {
     const db = await getPool();
     const { rows } = await db.query<{
       id: string;

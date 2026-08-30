@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import assetsRoutes from "./assets.js";
 import { REGISTER_COLUMNS } from "./assetColumnFilters.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -27,6 +29,9 @@ describe("GET /api/assets: every registered filterable column executes without a
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -96,6 +101,9 @@ describe("GET /api/assets: Last Transaction Date filter (regression — was a 50
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 
@@ -167,6 +175,9 @@ describe("GET /api/assets: an unexpected DB-level query failure is reported grac
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsRoutes);
     await app.ready();
 

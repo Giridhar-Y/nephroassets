@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import assetsExportRoutes from "./assetsExport.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -56,6 +58,9 @@ describe("Register Export: GET /api/assets/export", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(assetsExportRoutes);
     await app.ready();
 

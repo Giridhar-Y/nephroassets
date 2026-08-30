@@ -20,6 +20,7 @@ import type { AssetCreateInput, AssetFilters } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AddCircleIcon, ErrorIcon, UploadIcon } from "../lib/icons.js";
+import { hasPermission } from "../lib/permissions.js";
 
 type Tab = "add" | "log";
 
@@ -207,7 +208,7 @@ export function CapitalizationPage() {
             <AddCircleIcon fontSize={20} />
             Capitalization
           </h1>
-          {user?.role !== "viewer" && (
+          {hasPermission(user, "bulkUpload", "capitalization") && (
             <button
               type="button"
               className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
@@ -533,7 +534,7 @@ export function CapitalizationPage() {
             emptyHint="Assets you capitalize from the Add New tab will show up here."
             headerFilters={logHeaderFilters}
             getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
-            onDeleteAsset={user?.role === "admin" ? (farId) => setDeleteTargetFarId(farId) : undefined}
+            onDeleteAsset={hasPermission(user, "capitalization", "delete") ? (farId) => setDeleteTargetFarId(farId) : undefined}
             deleteActionLabel="Delete (Global Admin)"
           />
         </div>

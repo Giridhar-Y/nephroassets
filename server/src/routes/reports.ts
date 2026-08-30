@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
+import { requirePermission } from "../auth/middleware.js";
 import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
 import type { AssetRow, SettingsRow, TransferRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
@@ -914,7 +915,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
   // Location Summary: count and total C1 Gross Block for assets whose Effective
   // Location matches the chosen center, computed with a single DB-level aggregate
   // (the asset list itself reuses GET /api/assets?center=...).
-  app.get("/api/reports/location-summary", async (req, reply) => {
+  app.get("/api/reports/location-summary", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = z
       .object({ location: z.string().min(1), asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })
       .safeParse(req.query);
@@ -950,7 +951,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/api/reports/audit-reconciliation", async (req, reply) => {
+  app.get("/api/reports/audit-reconciliation", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -975,7 +976,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
   // green family for C2, purple family for Combined). Applied as static per-cell
   // styling rather than live Excel conditional-formatting rules — this is a point-in-
   // time snapshot, not a workbook meant to be edited and recalculated.
-  app.get("/api/reports/audit-reconciliation/export", async (req, reply) => {
+  app.get("/api/reports/audit-reconciliation/export", { preHandler: requirePermission("reports", "export") }, async (req, reply) => {
     const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -998,7 +999,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
 
   // Depreciation Posting Summary: total Period Depreciation (C1 + C2, all assets) for
   // AS_AT — the journal entry amount — plus a per-Sub-Classification breakdown.
-  app.get("/api/reports/depreciation-posting", async (req, reply) => {
+  app.get("/api/reports/depreciation-posting", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = asAtQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       reply.code(400);
@@ -1047,7 +1048,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
 
   // Movement schedule: paginated, filtered — each asset in a page expands into one row
   // per location-stay (see computeMovementSchedulePage/the module comment above).
-  app.get("/api/reports/transfer-depreciation/movement", async (req, reply) => {
+  app.get("/api/reports/transfer-depreciation/movement", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = z
       .object({
         asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1086,7 +1087,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
   // total), but streamed in bounded batches — see streamAssetDepreciationBatches above —
   // so it stays memory-bounded regardless of table size. Output is bounded by
   // distinct-location count, not asset count. Backs the on-screen Location Totals panel.
-  app.get("/api/reports/transfer-depreciation/location-wise", async (req, reply) => {
+  app.get("/api/reports/transfer-depreciation/location-wise", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = z
       .object({
         asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1113,7 +1114,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
     return { asAt: fy.asAt, fyStart: fy.fyStart, locationWise };
   });
 
-  app.get("/api/reports/transfer-depreciation/export", async (req, reply) => {
+  app.get("/api/reports/transfer-depreciation/export", { preHandler: requirePermission("reports", "export") }, async (req, reply) => {
     const parsed = z
       .object({
         asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

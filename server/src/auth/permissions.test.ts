@@ -42,18 +42,16 @@ describe("ROLE_TEMPLATES", () => {
 });
 
 describe("seedPermissionsFromRole / backfillUserPermissions", () => {
-  // Every test below uses its own distinct usernames, so there's no need to (and,
-  // since this suite shares one Postgres instance sequentially across every test file
-  // — see vitest.config.ts's fileParallelism:false — no safety in trying to) blanket
-  // `DELETE FROM users`: other tables (e.g. master_activity_log.actor_user_id) reference
-  // users without ON DELETE CASCADE, and a shared test-harness user from an earlier file
-  // may already have rows there. user_permissions/user_audit_log have no such incoming
-  // references, so clearing those is safe.
-  beforeEach(async () => {
-    const db = await getPool();
-    await db.query(`DELETE FROM user_permissions`);
-    await db.query(`DELETE FROM user_audit_log`);
-  });
+  // Every test below uses its own distinct usernames, so there's no need to blanket
+  // `DELETE FROM users`/`user_permissions`/`user_audit_log` between tests — and, since
+  // this suite shares one Postgres instance sequentially across every test file (see
+  // vitest.config.ts's fileParallelism:false), blanket-deleting `user_permissions`
+  // specifically is actively harmful: it wipes the shared test-harness admin's grants
+  // too (authTestUtils.ts's getSharedAuthHeader() only seeds them once, on its first
+  // call across the whole suite run), and unlike before Phase 2's enforcement cutover,
+  // that table now has real behavioral significance for every other test file that
+  // authenticates as that shared admin. Learned this the hard way — see this file's own
+  // git history for the very blanket delete that broke ~126 unrelated tests.
 
   it.each(ROLES)("seeds exactly that role's template for a %s", async (role) => {
     const user = await createTestUser({ username: `perm-${role}`, role });
@@ -82,12 +80,16 @@ describe("seedPermissionsFromRole / backfillUserPermissions", () => {
   it("backfills every user who predates this table (zero permission rows) from their role", async () => {
     // Simulates real pre-migration data: users that exist with a role but no
     // user_permissions rows yet, exactly like every existing production user before
-    // this feature shipped.
+    // this feature shipped. createTestUser itself now auto-seeds on create (so every
+    // OTHER test in this suite behaves like a real app user) — undo that here, scoped
+    // to just these three ids, to get back to the "predates this table" state this test
+    // actually wants to exercise.
     const viewer = await createTestUser({ username: "legacy-viewer", role: "viewer" });
     const editor = await createTestUser({ username: "legacy-editor", role: "editor" });
     const admin = await createTestUser({ username: "legacy-admin", role: "admin" });
 
     const db = await getPool();
+    await db.query(`DELETE FROM user_permissions WHERE user_id = ANY($1)`, [[viewer.id, editor.id, admin.id]]);
     await backfillUserPermissions(db);
 
     for (const [user, role] of [
@@ -108,7 +110,10 @@ describe("seedPermissionsFromRole / backfillUserPermissions", () => {
   it("never touches a user who already has permission rows, even a customized set", async () => {
     const user = await createTestUser({ username: "customized-user", role: "viewer" });
     const db = await getPool();
-    // A hand-customized grant that doesn't match any role template at all.
+    // Replace createTestUser's own auto-seeded viewer template with a hand-customized
+    // grant that doesn't match any role template at all — this test wants a user whose
+    // ONLY permission is that custom one, not "viewer's template plus one extra."
+    await db.query(`DELETE FROM user_permissions WHERE user_id = $1`, [user.id]);
     await db.query(`INSERT INTO user_permissions (user_id, module, action) VALUES ($1, 'admin', 'managePermissions')`, [
       user.id
     ]);

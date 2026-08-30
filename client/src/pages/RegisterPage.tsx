@@ -18,6 +18,7 @@ import { toggleRegisterSelection, type SelectionState } from "../lib/registerSel
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
 import { isConditionComplete, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
 import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
+import { hasPermission } from "../lib/permissions.js";
 
 // Every Register column that gets a plain Excel-style custom-condition filter (operator
 // + value, no "distinct values" checklist) — the four columns that also get a checklist
@@ -267,23 +268,25 @@ export function RegisterPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {user?.role !== "viewer" && (
-            <>
-              <RecordMovementControl
-                selectedCount={selected.size}
-                onTransfer={() => setTransferOpen(true)}
-                onDispose={() => setDisposeOpen(true)}
-                onMerge={() => setMergeOpen(true)}
-              />
-              <button
-                type="button"
-                className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-                onClick={() => navigate("/bulk-upload?type=merge")}
-              >
-                <UploadIcon fontSize={14} />
-                Bulk Merge
-              </button>
-            </>
+          {(hasPermission(user, "transfers", "create") ||
+            hasPermission(user, "disposals", "create") ||
+            hasPermission(user, "register", "edit")) && (
+            <RecordMovementControl
+              selectedCount={selected.size}
+              onTransfer={() => setTransferOpen(true)}
+              onDispose={() => setDisposeOpen(true)}
+              onMerge={() => setMergeOpen(true)}
+            />
+          )}
+          {hasPermission(user, "bulkUpload", "merge") && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+              onClick={() => navigate("/bulk-upload?type=merge")}
+            >
+              <UploadIcon fontSize={14} />
+              Bulk Merge
+            </button>
           )}
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
@@ -313,7 +316,7 @@ export function RegisterPage() {
         onToggleAll={toggleAllLoaded}
         headerFilters={headerFilters}
         getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
-        onEditAsset={user?.role !== "viewer" ? (farId) => setEditingFarId(farId) : undefined}
+        onEditAsset={hasPermission(user, "register", "edit") ? (farId) => setEditingFarId(farId) : undefined}
         onResizeColumn={setColumnWidth}
         onReorderColumn={moveColumnTo}
         showGroupBand

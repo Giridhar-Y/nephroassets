@@ -160,17 +160,20 @@ CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
 -- as a creation-time template selector and an at-a-glance label, but grants NOTHING by
 -- itself once a user exists. This table is the one and only source of truth for what a
 -- user can actually do — deny-by-default, no row means no access, same posture the app
--- already has everywhere else. Not yet read by any requireX preHandler (see
--- auth/permissions.ts's own comment) — Phase 1 only backfills and dual-writes this data
--- so it can be verified against real production data before anything starts enforcing
--- it. `granted_by` is NULL for the automatic role-template backfill/seed, and set to the
--- acting admin's id for anything granted through the future permissions UI.
+-- already has everywhere else. Read by every route's `requirePermission` preHandler
+-- (auth/middleware.ts). `granted_by` is NULL for the automatic role-template backfill/
+-- seed, and set to the acting Super Admin's id for anything granted through the
+-- Permissions UI — ON DELETE SET NULL (not the default RESTRICT, and deliberately not
+-- CASCADE either) since this app never hard-deletes a user in production anyway, but a
+-- test fixture's blanket `DELETE FROM users` cleanup shouldn't be blocked by an
+-- attribution column on a still-very-much-alive grant — losing who granted something is
+-- fine, silently deleting the grant itself because its granter was removed is not.
 CREATE TABLE user_permissions (
   user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   module       TEXT NOT NULL,
   action       TEXT NOT NULL,
   granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  granted_by   BIGINT REFERENCES users(id),
+  granted_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
   PRIMARY KEY (user_id, module, action)
 );
 CREATE INDEX idx_user_permissions_user ON user_permissions (user_id);

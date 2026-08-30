@@ -3,6 +3,7 @@ import { getPool } from "../db/pool.js";
 import { SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
 import { hashPassword } from "../auth/password.js";
 import type { Role } from "../auth/middleware.js";
+import { seedPermissionsFromRole } from "../auth/permissions.js";
 
 const TEST_ADMIN_USERNAME = "test-harness-admin";
 const TEST_ADMIN_ID_PLACEHOLDER = -1; // overwritten by ensureTestAdminUser's real id
@@ -28,6 +29,12 @@ export async function getSharedAuthHeader(): Promise<string> {
     [TEST_ADMIN_USERNAME, "test-harness@example.invalid", passwordHash]
   );
   const id = rows[0] ? Number(rows[0].id) : TEST_ADMIN_ID_PLACEHOLDER;
+  // Enforcement reads user_permissions, not `role` — every existing test file built
+  // around "this cookie is a full admin" needs this row seeded once. ON CONFLICT DO
+  // NOTHING inside seedPermissionsFromRole makes re-running this across every test file
+  // that calls getSharedAuthHeader() (the row itself persists for the whole suite run,
+  // see vitest.config.ts's fileParallelism:false) a safe no-op after the first.
+  await seedPermissionsFromRole(db, id, "admin", null);
   const token = signSession({ sub: id, username: TEST_ADMIN_USERNAME });
   cachedAuthHeader = `${SESSION_COOKIE_NAME}=${token}`;
   return cachedAuthHeader;
@@ -75,5 +82,10 @@ export async function createTestUser(overrides: {
       overrides.mustChangePassword ?? false
     ]
   );
-  return { id: Number(rows[0]!.id), username: overrides.username, password };
+  const id = Number(rows[0]!.id);
+  // Same reasoning as getSharedAuthHeader above — enforcement reads user_permissions,
+  // not this row's `role` column, so a test creating "an editor" or "a viewer" needs
+  // that role's template actually seeded to behave like one.
+  await seedPermissionsFromRole(db, id, overrides.role ?? "editor", null);
+  return { id, username: overrides.username, password };
 }

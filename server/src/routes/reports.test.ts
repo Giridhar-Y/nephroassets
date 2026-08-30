@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
 import { bulkInsertAssets, bulkInsertTransfers } from "../loadtest/bulkInsert.js";
 import { computeAsset } from "../calc/engine.js";
@@ -212,6 +214,9 @@ describe("Audit Reconciliation report", () => {
     });
 
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(reportsRoutes);
     await app.ready();
   });
@@ -604,6 +609,9 @@ describe("Asset Movement & Depreciation Schedule", () => {
     }
 
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(reportsRoutes);
     await app.ready();
   });
@@ -952,6 +960,9 @@ describe("Asset Movement & Depreciation Schedule export — reconciliation at sc
     await bulkInsertTransfers(db, transfers, 1000);
 
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(reportsRoutes);
     await app.ready();
   });
