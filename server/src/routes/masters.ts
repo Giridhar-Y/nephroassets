@@ -3,6 +3,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
+import { logMasterActivity } from "./masterActivityLog.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -400,8 +401,15 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid center.", details: parsed.error.flatten() };
     }
+    const db = await getPool();
     try {
-      return await createCenter(await getPool(), parsed.data);
+      const result = await createCenter(db, parsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "center_create",
+        details: { ...parsed.data, source: "single" }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }
@@ -414,8 +422,20 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
     }
+    const db = await getPool();
     try {
-      return await updateCenterById(await getPool(), paramsParsed.data.id, bodyParsed.data);
+      const result = await updateCenterById(db, paramsParsed.data.id, bodyParsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "center_update",
+        details: {
+          ...bodyParsed.data,
+          assetsUpdated: result.assetsUpdated,
+          transfersUpdated: result.transfersUpdated,
+          source: "single"
+        }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }
@@ -431,8 +451,15 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid sub classification.", details: parsed.error.flatten() };
     }
+    const db = await getPool();
     try {
-      return await createSubClassification(await getPool(), parsed.data);
+      const result = await createSubClassification(db, parsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "sub_classification_create",
+        details: { ...parsed.data, source: "single" }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }
@@ -445,8 +472,15 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
     }
+    const db = await getPool();
     try {
-      return await updateSubClassificationById(await getPool(), paramsParsed.data.id, bodyParsed.data);
+      const result = await updateSubClassificationById(db, paramsParsed.data.id, bodyParsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "sub_classification_update",
+        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, source: "single" }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }
@@ -462,8 +496,15 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid status.", details: parsed.error.flatten() };
     }
+    const db = await getPool();
     try {
-      return await createStatus(await getPool(), parsed.data);
+      const result = await createStatus(db, parsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "status_create",
+        details: { ...parsed.data, source: "single" }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }
@@ -476,8 +517,15 @@ export default async function mastersRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Invalid request.", details: bodyParsed.error?.flatten() };
     }
+    const db = await getPool();
     try {
-      return await updateStatusById(await getPool(), paramsParsed.data.id, bodyParsed.data);
+      const result = await updateStatusById(db, paramsParsed.data.id, bodyParsed.data);
+      await logMasterActivity(db, {
+        actorUserId: req.user!.id,
+        action: "status_update",
+        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, source: "single" }
+      });
+      return result;
     } catch (err) {
       return handleMasterError(err, reply);
     }

@@ -1,8 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mastersRoutes from "./masters.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authGateHook } from "../auth/middleware.js";
 
 async function insertAsset(farId: string, overrides: Record<string, unknown> = {}) {
   const db = await getPool();
@@ -27,6 +29,9 @@ describe("Masters", () => {
 
   beforeAll(async () => {
     app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
     await app.register(mastersRoutes);
     await app.ready();
   });
@@ -37,6 +42,7 @@ describe("Masters", () => {
 
   beforeEach(async () => {
     const db = await getPool();
+    await db.query(`DELETE FROM master_activity_log`);
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
     await db.query(`DELETE FROM centers`);

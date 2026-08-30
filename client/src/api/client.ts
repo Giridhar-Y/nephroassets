@@ -311,49 +311,14 @@ export function deleteTransfer(
   return request(`/api/transfers/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
 }
 
-export type DeleteAuditAction = "capitalization_delete" | "addition_undo" | "disposal_undo" | "transfer_delete";
-
-export interface DeleteAuditLogEntry {
-  id: number;
-  action: DeleteAuditAction;
-  farId: string;
-  transferId: number | null;
-  reason: string;
-  details: Record<string, unknown> | null;
-  createdAt: string;
-  actorUsername: string | null;
-}
-
-export interface FetchDeleteAuditLogParams {
-  farId?: string;
-  action?: DeleteAuditAction;
-  dateFrom?: string;
-  dateTo?: string;
-  cursor?: number | null;
-  limit?: number;
-}
-
-// Read-only view of every Global-Admin delete/undo action — see the server route's own
-// comment for exactly what it covers.
-export function fetchDeleteAuditLog(
-  params: FetchDeleteAuditLogParams = {}
-): Promise<{ items: DeleteAuditLogEntry[]; nextCursor: number | null }> {
-  const search = new URLSearchParams();
-  if (params.farId) search.set("farId", params.farId);
-  if (params.action) search.set("action", params.action);
-  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
-  if (params.dateTo) search.set("dateTo", params.dateTo);
-  if (params.cursor) search.set("cursor", String(params.cursor));
-  if (params.limit) search.set("limit", String(params.limit));
-  return request(`/api/audit-log/deletes?${search}`);
-}
-
-export type ActivityAction = "capitalization_create" | "addition_create" | "transfer_create" | "disposal_create";
+export type ActivityCategory = "capitalization" | "addition" | "transfer" | "disposal" | "delete" | "masters";
 
 export interface ActivityLogEntry {
   id: number;
-  action: ActivityAction;
-  farId: string;
+  source: "activity" | "delete" | "masters";
+  action: string;
+  category: ActivityCategory;
+  farId: string | null;
   details: Record<string, unknown> | null;
   createdAt: string;
   actorUsername: string | null;
@@ -361,25 +326,27 @@ export interface ActivityLogEntry {
 
 export interface FetchActivityLogParams {
   farId?: string;
-  action?: ActivityAction;
+  category?: ActivityCategory;
   dateFrom?: string;
   dateTo?: string;
-  cursor?: number | null;
+  cursor?: string | null;
   limit?: number;
 }
 
-// Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event
-// (single-item and Bulk Upload/Bulk Transfer/Bulk Dispose alike) — see the server
-// route's own comment for exactly what it covers.
+// Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event, every
+// Global-Admin delete/undo action, and every Masters create/rename/deactivate/
+// reactivate — single-item and bulk-uploaded alike — see the server route's own comment
+// for exactly what it covers. One consolidated feed (this used to be two separate pages,
+// this one plus a standalone admin-only Delete Log).
 export function fetchActivityLog(
   params: FetchActivityLogParams = {}
-): Promise<{ items: ActivityLogEntry[]; nextCursor: number | null }> {
+): Promise<{ items: ActivityLogEntry[]; nextCursor: string | null }> {
   const search = new URLSearchParams();
   if (params.farId) search.set("farId", params.farId);
-  if (params.action) search.set("action", params.action);
+  if (params.category) search.set("category", params.category);
   if (params.dateFrom) search.set("dateFrom", params.dateFrom);
   if (params.dateTo) search.set("dateTo", params.dateTo);
-  if (params.cursor) search.set("cursor", String(params.cursor));
+  if (params.cursor) search.set("cursor", params.cursor);
   if (params.limit) search.set("limit", String(params.limit));
   return request(`/api/audit-log/activity?${search}`);
 }

@@ -272,6 +272,25 @@ CREATE TABLE asset_activity_log (
 CREATE INDEX idx_asset_activity_log_far_id ON asset_activity_log (far_id, created_at DESC);
 CREATE INDEX idx_asset_activity_log_created_at ON asset_activity_log (created_at DESC);
 
+-- Every Masters (Centers/Sub Classifications/Statuses) create/rename/deactivate/
+-- reactivate — masters.ts's single-item routes and bulkMasters.ts's shared
+-- handleMasterBulk commit loop. Not asset-scoped (no far_id column at all — these are
+-- rows in centers/sub_classifications/statuses, not assets), so it's read by
+-- routes/activityLog.ts as a third source alongside asset_activity_log and
+-- asset_delete_audit_log, surfaced there as the "Masters" Activity Log category.
+-- `details` carries the entered/changed fields (code/name/description/active/etc, plus
+-- any assetsUpdated/transfersUpdated cascade count from a rename) and
+-- { source: "single" | "bulk", sourceFilename? }, same convention as
+-- asset_activity_log.
+CREATE TABLE master_activity_log (
+  id              BIGSERIAL PRIMARY KEY,
+  actor_user_id   BIGINT REFERENCES users(id),
+  action          TEXT NOT NULL CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update')),
+  details         JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

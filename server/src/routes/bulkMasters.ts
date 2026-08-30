@@ -15,6 +15,7 @@ import {
   updateStatusById,
   updateSubClassificationById
 } from "./masters.js";
+import { logMasterActivity, type MasterActivityAction } from "./masterActivityLog.js";
 
 const centerRowSchema = z.object({ code: z.string().min(1), description: z.string().optional(), active: bulkActive });
 // defaultUsefulLifeC1Years/C2Years mirror the single-entry Masters form (masters.ts's
@@ -46,6 +47,9 @@ interface MasterBulkConfig<Data extends { active?: boolean }, Row extends { id: 
   hasPatch: (data: Data) => boolean;
   create: (db: pg.Pool, data: Data) => Promise<unknown>;
   update: (db: pg.Pool, id: number, data: Data) => Promise<unknown>;
+  // Which master_activity_log action pair this list logs under (see
+  // routes/masterActivityLog.ts) — one shared commit loop below covers all three lists.
+  activityActions: { create: MasterActivityAction; update: MasterActivityAction };
 }
 
 // Shared by all three Masters lists (Centers/Sub Classifications/Statuses): parse the
@@ -128,13 +132,23 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
   for (const { row, data, existing, key } of classified) {
     try {
       if (!existing) {
-        await config.create(db, data);
+        const result = await config.create(db, data);
         added++;
+        await logMasterActivity(db, {
+          actorUserId: req.user!.id,
+          action: config.activityActions.create,
+          details: { ...(result as Record<string, unknown>), source: "bulk", sourceFilename: file.filename }
+        });
       } else if (config.hasPatch(data)) {
-        await config.update(db, existing.id, data);
+        const result = await config.update(db, existing.id, data);
         updated++;
+        await logMasterActivity(db, {
+          actorUserId: req.user!.id,
+          action: config.activityActions.update,
+          details: { ...(result as Record<string, unknown>), source: "bulk", sourceFilename: file.filename }
+        });
       } else {
-        updated++; // matched, nothing to change — still counts as a confirmed update
+        updated++; // matched, nothing to change — still counts as a confirmed update, but nothing to log
       }
       processed++;
     } catch (err) {
@@ -155,7 +169,8 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       fetchAll: fetchCentersWithUsage,
       hasPatch: (d) => d.description !== undefined || d.active !== undefined,
       create: (db, d) => createCenter(db, d),
-      update: (db, id, d) => updateCenterById(db, id, { description: d.description, active: d.active })
+      update: (db, id, d) => updateCenterById(db, id, { description: d.description, active: d.active }),
+      activityActions: { create: "center_create", update: "center_update" }
     })
   );
 
@@ -185,7 +200,8 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
           defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
           hasComponent2: d.hasComponent2,
           active: d.active
-        })
+        }),
+      activityActions: { create: "sub_classification_create", update: "sub_classification_update" }
     })
   );
 
@@ -199,7 +215,8 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       isSystemManaged: (r) => r.systemManaged,
       hasPatch: (d) => d.active !== undefined,
       create: (db, d) => createStatus(db, { name: d.name, active: d.active }),
-      update: (db, id, d) => updateStatusById(db, id, { active: d.active })
+      update: (db, id, d) => updateStatusById(db, id, { active: d.active }),
+      activityActions: { create: "status_create", update: "status_update" }
     })
   );
 }
