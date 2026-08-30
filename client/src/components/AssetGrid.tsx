@@ -179,6 +179,12 @@ export interface AssetGridProps {
    *  chevron per group — Register only (39 columns is where a reader actually needs the
    *  extra orientation; smaller curated views elsewhere don't). */
   showGroupBand?: boolean;
+  /** Controls the full-screen toggle from outside instead of AssetGrid floating its own
+   *  button over the grid (which overlaps the column header — see the caller's toolbar
+   *  for where it goes instead). Provide both together, or neither to keep the built-in
+   *  floating button (every page but Register, unchanged). */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 export function AssetGrid({
@@ -202,10 +208,15 @@ export function AssetGrid({
   deleteActionLabel = "Delete",
   onResizeColumn,
   onReorderColumn,
-  showGroupBand = false
+  showGroupBand = false,
+  expanded: expandedProp,
+  onExpandedChange
 }: AssetGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState(false);
+  const isControlledExpand = expandedProp !== undefined;
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = isControlledExpand ? expandedProp : internalExpanded;
+  const setExpanded = isControlledExpand ? onExpandedChange! : setInternalExpanded;
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<ColumnGroupId>>(new Set());
 
@@ -566,7 +577,7 @@ export function AssetGrid({
       type="button"
       aria-label={expanded ? "Exit full screen" : "Expand table to full screen"}
       title={expanded ? "Exit full screen (Esc)" : "Expand to full screen"}
-      onClick={() => setExpanded((e) => !e)}
+      onClick={() => setExpanded(!expanded)}
       className="absolute right-2 top-2 z-30 grid h-7 w-7 place-items-center rounded-md border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-accent hover:text-accent"
     >
       {expanded ? <CollapseExpandIcon fontSize={15} /> : <ExpandIcon fontSize={15} />}
@@ -585,7 +596,7 @@ export function AssetGrid({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {expandButton}
+      {!isControlledExpand && expandButton}
       {content}
     </div>
   );

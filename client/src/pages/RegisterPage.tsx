@@ -1,5 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "../lib/AuthContext.js";
 import { useFilters } from "../lib/FiltersContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
@@ -13,8 +12,9 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { ExportIcon, SearchIcon, UploadIcon } from "../lib/icons.js";
+import { CollapseExpandIcon, ExpandIcon, ExportIcon, SearchIcon } from "../lib/icons.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
+import { groupParentChildRows } from "../lib/registerGrouping.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
 import { isConditionComplete, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
 import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
@@ -67,7 +67,6 @@ const CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterTy
 ];
 
 export function RegisterPage() {
-  const navigate = useNavigate();
   const { user } = useAuth();
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
@@ -95,6 +94,12 @@ export function RegisterPage() {
   const [disposeOpen, setDisposeOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [editingFarId, setEditingFarId] = useState<string | null>(null);
+  const [gridExpanded, setGridExpanded] = useState(false);
+
+  // Parent and children sorted adjacent to each other without disturbing the chosen
+  // column sort otherwise — see registerGrouping.ts. Recomputed only when the loaded
+  // page itself changes, not on every render.
+  const groupedItems = useMemo(() => groupParentChildRows(items), [items]);
 
   const clearSelection = () => setSelectionState({ selected: new Set(), autoSelected: new Set() });
 
@@ -278,16 +283,6 @@ export function RegisterPage() {
               onMerge={() => setMergeOpen(true)}
             />
           )}
-          {hasPermission(user, "bulkUpload", "merge") && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-              onClick={() => navigate("/bulk-upload?type=merge")}
-            >
-              <UploadIcon fontSize={14} />
-              Bulk Merge
-            </button>
-          )}
           <a
             href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
             aria-disabled={!asAt}
@@ -299,11 +294,22 @@ export function RegisterPage() {
             Export to Excel
           </a>
           <ColumnPicker prefs={columnPrefs} />
+          <button
+            type="button"
+            aria-label={gridExpanded ? "Exit full screen" : "Expand table to full screen"}
+            title={gridExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+            onClick={() => setGridExpanded((e) => !e)}
+            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-2 py-1.5 text-gray-600 hover:bg-gray-50"
+          >
+            {gridExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
+          </button>
         </div>
       </div>
 
       <AssetGrid
-        items={items}
+        items={groupedItems}
+        expanded={gridExpanded}
+        onExpandedChange={setGridExpanded}
         columns={visibleColumns}
         loading={loading}
         error={error}
