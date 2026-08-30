@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { hashPassword } from "../auth/password.js";
 import { requireAdmin, type Role } from "../auth/middleware.js";
+import { seedPermissionsFromRole } from "../auth/permissions.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -56,7 +57,7 @@ function mapUserRow(r: {
 }
 
 async function logAudit(
-  db: pg.Pool,
+  db: Pick<pg.Pool | pg.PoolClient, "query">,
   actorUserId: number,
   action: string,
   targetUserId: number,
@@ -90,19 +91,29 @@ export async function createUser(
   data: { username: string; email: string; password: string; role: Role }
 ): Promise<AdminUserRow> {
   const passwordHash = await hashPassword(data.password);
+  const client = await db.connect();
   try {
-    const { rows } = await db.query(
+    await client.query("BEGIN");
+    const { rows } = await client.query(
       `INSERT INTO users (username, email, password_hash, role, must_change_password)
        VALUES ($1, $2, $3, $4, TRUE)
        RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
       [data.username, data.email, passwordHash, data.role]
     );
     const user = mapUserRow(rows[0]);
-    await logAudit(db, actorUserId, "create", user.id, { username: user.username, email: user.email, role: user.role });
+    // Same-transaction as the INSERT above — a new user should never exist even
+    // momentarily without the permission set their role implies (Phase 1 of the
+    // per-user permissions move, see auth/permissions.ts).
+    await seedPermissionsFromRole(client, user.id, data.role, actorUserId);
+    await logAudit(client, actorUserId, "create", user.id, { username: user.username, email: user.email, role: user.role });
+    await client.query("COMMIT");
     return user;
   } catch (err) {
+    await client.query("ROLLBACK");
     if (isUniqueViolation(err)) throw new UserError(409, `A user with that username or email already exists.`);
     throw err;
+  } finally {
+    client.release();
   }
 }
 

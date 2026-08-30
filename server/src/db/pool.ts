@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import { backfillUserPermissions } from "../auth/permissions.js";
 
 // Return DATE columns as raw "YYYY-MM-DD" strings instead of pg's default JS Date
 // (which applies local-timezone conversion and can shift the day). The calc engine
@@ -324,5 +325,20 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
+
+    -- Phase 1 of per-user/per-module permissions — see schema.sql's comment for the full
+    -- reasoning and auth/permissions.ts for the module/action registry this is backfilled
+    -- from. IF NOT EXISTS makes this a no-op on every boot after the first.
+    CREATE TABLE IF NOT EXISTS user_permissions (
+      user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      module       TEXT NOT NULL,
+      action       TEXT NOT NULL,
+      granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      granted_by   BIGINT REFERENCES users(id),
+      PRIMARY KEY (user_id, module, action)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions (user_id);
   `);
+
+  await backfillUserPermissions(db);
 }

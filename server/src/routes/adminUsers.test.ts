@@ -6,6 +6,7 @@ import authRoutes from "./auth.js";
 import { getPool } from "../db/pool.js";
 import { authGateHook } from "../auth/middleware.js";
 import { authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
+import { ROLE_TEMPLATES } from "../auth/permissions.js";
 
 describe("Admin: user management", () => {
   let app: FastifyInstance;
@@ -29,6 +30,7 @@ describe("Admin: user management", () => {
 
   beforeEach(async () => {
     const db = await getPool();
+    await db.query(`DELETE FROM user_permissions`);
     await db.query(`DELETE FROM user_audit_log`);
     await db.query(`DELETE FROM login_attempts`);
     await db.query(`DELETE FROM users`);
@@ -85,6 +87,29 @@ describe("Admin: user management", () => {
     // actor_user_id/target_user_id are BIGINT — node-postgres returns them as strings.
     expect(Number(rows[0].actor_user_id)).toBe(adminId);
     expect(Number(rows[0].target_user_id)).toBe(created.id);
+  });
+
+  it("seeds the new user's permissions from their role's template, atomically with creation", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: { username: "perm-seeded", email: "perm-seeded@example.com", password: "temp-password-123", role: "editor" }
+    });
+    expect(res.statusCode).toBe(200);
+    const created = res.json();
+
+    const db = await getPool();
+    const { rows } = await db.query<{ module: string; action: string; granted_by: string }>(
+      `SELECT module, action, granted_by FROM user_permissions WHERE user_id = $1`,
+      [created.id]
+    );
+    const got = new Set(rows.map((r) => `${r.module}:${r.action}`));
+    const want = new Set(ROLE_TEMPLATES.editor.map((p) => `${p.module}:${p.action}`));
+    expect(got).toEqual(want);
+    // granted_by is the acting admin, not null — distinguishes an explicit create-time
+    // seed from the automatic legacy-data backfill (see permissions.test.ts).
+    expect(rows.every((r) => Number(r.granted_by) === adminId)).toBe(true);
   });
 
   it("defaults a new user to the viewer role when none is specified", async () => {
