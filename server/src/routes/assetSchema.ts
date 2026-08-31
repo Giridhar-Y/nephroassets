@@ -142,16 +142,23 @@ export function assetCreateValues(input: AssetCreateInput): unknown[] {
 // Its date columns are DD-MM-YYYY (see bulkDate in bulkParse.ts) rather than the ISO
 // `isoDate` above, which stays tied to the Capitalization form's native <input
 // type="date"> — the two paths intentionally use different date schemas.
-export const bulkAssetRowSchema = assetCreateShape
-  .extend({
-    dateAcquired: bulkDate,
-    dateOfAddition: bulkDate.optional().nullable().default(null),
-    dateOfDisposal: bulkDate.optional().nullable().default(null),
-    deletionsC1: z.coerce.number().min(0).default(0),
-    deletionsC2: z.coerce.number().min(0).default(0),
-    saleValue: z.coerce.number().min(0).default(0)
-  })
-  .superRefine((data, ctx) => {
+const bulkAssetRowShape = assetCreateShape.extend({
+  dateAcquired: bulkDate,
+  dateOfAddition: bulkDate.optional().nullable().default(null),
+  dateOfDisposal: bulkDate.optional().nullable().default(null),
+  deletionsC1: z.coerce.number().min(0).default(0),
+  deletionsC2: z.coerce.number().min(0).default(0),
+  saleValue: z.coerce.number().min(0).default(0)
+});
+
+// The full set of column names this endpoint recognizes (spreadsheet header names) —
+// derived from the schema's own shape rather than hand-duplicated, so it can never drift
+// out of sync with bulkAssetRowSchema below. Used by bulkUpload.ts to reject a file
+// containing any other column up front, instead of Zod silently stripping an
+// unrecognized key per row.
+export const BULK_ASSET_ROW_COLUMNS = Object.keys(bulkAssetRowShape.shape);
+
+export const bulkAssetRowSchema = bulkAssetRowShape.superRefine((data, ctx) => {
     checkAdditionsPairing(data, ctx);
     checkAccDepWithinCost(data, ctx);
     // Same reasoning as checkAdditionsPairing: the calc engine (engine.ts) treats an

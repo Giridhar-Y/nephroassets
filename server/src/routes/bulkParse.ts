@@ -84,6 +84,24 @@ export async function loadWorksheet(buffer: Buffer, filename: string): Promise<E
   return worksheet;
 }
 
+/** File-level check (not per-row): rejects the whole upload if its header row contains a
+ *  column name outside `knownColumns` — a typo or a genuinely foreign field would
+ *  otherwise be silently stripped by parseWorksheetRows's schema.safeParse (Zod drops
+ *  unrecognized keys by default), leaving the uploader with no indication their data
+ *  didn't do what they thought. */
+export function validateKnownColumns(worksheet: ExcelJS.Worksheet, knownColumns: readonly string[]): string | null {
+  const known = new Set(knownColumns);
+  const unknown: string[] = [];
+  worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell) => {
+    const header = toCellString(cell.value);
+    if (header && !known.has(header)) unknown.push(header);
+  });
+  if (unknown.length === 0) return null;
+  return `Unrecognized column${unknown.length > 1 ? "s" : ""}: ${unknown.map((h) => `"${h}"`).join(", ")}. Remove ${
+    unknown.length > 1 ? "them" : "it"
+  } from the file, or check for a typo against the template.`;
+}
+
 export interface RowError {
   row: number;
   farId: string | null;

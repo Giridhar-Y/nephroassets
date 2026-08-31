@@ -7,6 +7,7 @@ import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload, emptyMultipartPayload } from "./bulkTestHelpers.js";
+import { createTestUser, authHeaderFor } from "../testHelpers/authTestUtils.js";
 
 const HEADER =
   "farId,subClassification,assetDescription,status,dateAcquired,location,usefulLifeC1Years,usefulLifeC2Years,c1OpeningCost,c2OpeningCost";
@@ -409,5 +410,194 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
     expect(rows[0].asset_description).toBe("Bulk Asset One");
     const { rows: notCreated } = await db.query(`SELECT far_id FROM assets WHERE far_id = 'BULK-4'`);
     expect(notCreated).toHaveLength(0);
+  });
+
+  describe("Unrecognized columns", () => {
+    it("rejects the whole file up front when the header has a column outside the known set", async () => {
+      const csv = [HEADER + ",totallyMadeUpColumn", "BULK-BADCOL,Test-Sub,Bad Column,Active,2020-01-01,Center-A,5,5,1000,1000,whatever"].join(
+        "\n"
+      );
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(400);
+      const body = res.json();
+      expect(body.error).toMatch(/Unrecognized column: "totallyMadeUpColumn"/);
+
+      // Nothing from the file was written — this is a whole-file rejection, not a
+      // per-row one.
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id = 'BULK-BADCOL'`);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("names every unrecognized column when there's more than one", async () => {
+      const csv = [HEADER + ",foo,bar", "BULK-BADCOLS,Test-Sub,Bad Columns,Active,2020-01-01,Center-A,5,5,1000,1000,1,2"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/Unrecognized columns: "foo", "bar"/);
+    });
+
+    it("still accepts every real optional column together (no false positive against the full known set)", async () => {
+      const fullHeader =
+        "farId,subClassification,assetDescription,status,dateAcquired,location,usefulLifeC1Years,usefulLifeC2Years,serialNo,qty,c1OpeningCost,c2OpeningCost,additionsC1,additionsC2,dateOfAddition,accDepC1Opening,accDepC2Opening,dateOfDisposal,deletionsC1,deletionsC2,saleValue";
+      const csv = [
+        fullHeader,
+        "BULK-FULLCOLS,Test-Sub,All Columns,Disposed,2020-01-01,Center-A,5,5,SN-1,1,1000,1000,500,500,01-06-2020,200,200,01-01-2021,1500,1500,100"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().processed).toBe(1);
+    });
+  });
+
+  describe("Disposal fields restricted to new FAR IDs", () => {
+    async function disposeExisting(farId: string, dateOfDisposal = "2020-06-01") {
+      const db = await getPool();
+      await db.query(
+        `UPDATE assets SET status = 'Disposed', date_of_disposal = $2, deletions_c1 = c1_opening_cost, deletions_c2 = c2_opening_cost WHERE far_id = $1`,
+        [farId, dateOfDisposal]
+      );
+    }
+
+    it("a brand-new FAR ID may still set dateOfDisposal/deletions/saleValue (the historical-import case)", async () => {
+      const withDisposalHeader = HEADER + ",dateOfDisposal,deletionsC1,deletionsC2,saleValue";
+      const csv = [
+        withDisposalHeader,
+        "BULK-HIST-IMPORT,Test-Sub,Historical Import,Disposed,2018-01-01,Center-A,5,5,1000,1000,01-06-2020,1000,1000,500"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.added).toBe(1);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT status, date_of_disposal FROM assets WHERE far_id = 'BULK-HIST-IMPORT'`);
+      expect(rows[0].status).toBe("Disposed");
+    });
+
+    it("THE SILENT-UN-DISPOSAL CASE: re-uploading an already-disposed FAR ID without disposal columns does not revive it", async () => {
+      // First, capitalize it, then dispose it exactly the way the dedicated Disposal
+      // flow would (status + date_of_disposal + deletions all set together).
+      const csv = [HEADER, "BULK-ALREADY-DISPOSED,Test-Sub,Will Be Disposed,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      await disposeExisting("BULK-ALREADY-DISPOSED");
+
+      // An innocent re-upload correcting an unrelated field (asset description), using
+      // the plain template with no disposal columns at all — status defaults back to
+      // "Active" here, which is exactly the scenario that used to silently revive it.
+      const correction = [
+        HEADER,
+        "BULK-ALREADY-DISPOSED,Test-Sub,Fixed Description,Active,2020-01-01,Center-A,5,5,1000,1000"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(correction) });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].message).toMatch(/has already been disposed — its particulars can no longer be changed/);
+
+      // The asset in the database is completely untouched — still disposed, description
+      // unchanged, deletions/status intact.
+      const db = await getPool();
+      const { rows } = await db.query(
+        `SELECT status, date_of_disposal, asset_description, deletions_c1 FROM assets WHERE far_id = 'BULK-ALREADY-DISPOSED'`
+      );
+      expect(rows[0].status).toBe("Disposed");
+      expect(rows[0].date_of_disposal).not.toBeNull();
+      expect(rows[0].asset_description).toBe("Will Be Disposed");
+      expect(rows[0].deletions_c1).toBe("1000");
+    });
+
+    it("preview mode also rejects a correction row against an already-disposed asset, not just commit", async () => {
+      const csv = [HEADER, "BULK-DISPOSED-PREVIEW,Test-Sub,Will Be Disposed,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      await disposeExisting("BULK-DISPOSED-PREVIEW");
+
+      const correction = [HEADER, "BULK-DISPOSED-PREVIEW,Test-Sub,Fixed Description,Active,2020-01-01,Center-A,5,5,1000,1000"].join(
+        "\n"
+      );
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-upload?preview=true",
+        ...csvPayload(correction)
+      });
+      const body = res.json();
+      expect(body.summary).toEqual({ new: 0, update: 0, error: 1 });
+      expect(body.rows[0].message).toMatch(/has already been disposed/);
+    });
+
+    it("an existing, not-yet-disposed asset is blocked from setting dateOfDisposal — must go through Bulk Disposals instead", async () => {
+      const csv = [HEADER, "BULK-EXISTING-LIVE,Test-Sub,Still Active,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+
+      const withDisposalHeader = HEADER + ",dateOfDisposal";
+      const attempt = [
+        withDisposalHeader,
+        "BULK-EXISTING-LIVE,Test-Sub,Still Active,Disposed,2020-01-01,Center-A,5,5,1000,1000,01-06-2020"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(attempt) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/must go through Bulk Disposals/);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT status, date_of_disposal FROM assets WHERE far_id = 'BULK-EXISTING-LIVE'`);
+      expect(rows[0].status).toBe("Active");
+      expect(rows[0].date_of_disposal).toBeNull();
+    });
+
+    it("an existing, not-yet-disposed asset is also blocked on deletions/saleValue alone, without dateOfDisposal", async () => {
+      const csv = [HEADER, "BULK-EXISTING-LIVE-2,Test-Sub,Still Active,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+
+      const withDeletionsHeader = HEADER + ",saleValue";
+      const attempt = [
+        withDeletionsHeader,
+        "BULK-EXISTING-LIVE-2,Test-Sub,Still Active,Active,2020-01-01,Center-A,5,5,1000,1000,250"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(attempt) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/must go through Bulk Disposals/);
+    });
+
+    it("an existing, not-yet-disposed asset can still be corrected normally when the row doesn't touch disposal fields at all", async () => {
+      const csv = [HEADER, "BULK-EXISTING-OK,Test-Sub,Original Description,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+
+      const correction = [HEADER, "BULK-EXISTING-OK,Test-Sub,Corrected Description,Active,2020-01-01,Center-A,5,5,1500,1500"].join(
+        "\n"
+      );
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(correction) });
+      expect(res.json().processed).toBe(1);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT asset_description, c1_opening_cost FROM assets WHERE far_id = 'BULK-EXISTING-OK'`);
+      expect(rows[0].asset_description).toBe("Corrected Description");
+      expect(rows[0].c1_opening_cost).toBe("1500");
+    });
+
+    it("an out-of-scope center-scoped user gets a 'not found' error, not an 'already disposed' one that would leak the asset's existence", async () => {
+      await getPool().then((db) => db.query(`INSERT INTO centers (code) VALUES ('Center-B') ON CONFLICT DO NOTHING`));
+      const csv = [HEADER, "BULK-OUTOFSCOPE-DISPOSED,Test-Sub,Hidden Asset,Active,2020-01-01,Center-A,5,5,1000,1000"].join("\n");
+      await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      await disposeExisting("BULK-OUTOFSCOPE-DISPOSED");
+
+      const scopedUser = await createTestUser({ username: "bulk-scoped-user", role: "editor", centerAccess: ["Center-B"] });
+      const correction = [
+        HEADER,
+        "BULK-OUTOFSCOPE-DISPOSED,Test-Sub,Attempted Correction,Active,2020-01-01,Center-A,5,5,1000,1000"
+      ].join("\n");
+      const payload = csvPayload(correction);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/assets/bulk-upload",
+        ...payload,
+        headers: { ...payload.headers, cookie: authHeaderFor(scopedUser.id, scopedUser.username) }
+      });
+      const body = res.json();
+      expect(body.errors[0].message).toBe(`No asset found with FAR ID "BULK-OUTOFSCOPE-DISPOSED".`);
+      expect(body.errors[0].message).not.toMatch(/has already been disposed/i);
+    });
   });
 });

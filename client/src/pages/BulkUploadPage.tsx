@@ -60,7 +60,7 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "FAR ID",
     path: BULK_UPLOAD_PATHS.assets,
     templateName: "assets",
-    note: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row."
+    note: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row. dateOfDisposal/deletionsC1/deletionsC2/saleValue are only accepted on a brand-new FAR ID, for importing an asset that was already disposed before it entered this system — to dispose an existing asset, use Bulk Disposals or the single-item Disposal action instead; a row setting these on an existing FAR ID is rejected as an Error row."
   },
   disposals: {
     label: "Disposals",

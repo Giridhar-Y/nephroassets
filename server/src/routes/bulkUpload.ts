@@ -1,7 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { getPool } from "../db/pool.js";
-import { ASSET_UPSERT_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
-import { loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
+import { ASSET_UPSERT_COLUMNS, BULK_ASSET_ROW_COLUMNS, bulkAssetRowSchema, bulkAssetRowValues, type BulkAssetRowInput } from "./assetSchema.js";
+import {
+  loadActiveMasterMaps,
+  loadWorksheet,
+  lookupCanonical,
+  mergePreviewRows,
+  parseWorksheetRows,
+  validateKnownColumns,
+  type RowError
+} from "./bulkParse.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
@@ -144,6 +152,65 @@ async function rejectDeletedFarIds(
   return { validRows: stillValid, errors: allErrors };
 }
 
+// Disposal is a distinct business event elsewhere in this app (bulk-dispose/single
+// Disposal cascade to children, log a `disposal_create` action, reject a child disposing
+// directly) that this endpoint's plain upsert doesn't apply — so a row targeting an
+// EXISTING asset may never touch disposal state, in either direction:
+//  - An asset that's ALREADY disposed can't be touched by this upload AT ALL, mirroring
+//    PATCH /api/assets/:farId's own "has been disposed — its particulars can no longer be
+//    edited" guard (assets.ts). Without this, a row that simply omits the disposal
+//    columns (an innocent correction to an unrelated field, or a stale re-export) would
+//    silently UN-DISPOSE it via the unconditional ON CONFLICT UPDATE below — status
+//    reverts, deletions/sale value zero out, with none of disposeWithChildren's
+//    protections.
+//  - An asset that ISN'T yet disposed is blocked only if the row itself sets disposal
+//    data — that must go through Bulk Disposals (or the single Disposal action) instead.
+// A brand-new FAR ID is unaffected either way — setting disposal fields there is the
+// deliberate historical-import case bulkAssetRowSchema's own comment describes (a
+// spreadsheet that already includes assets disposed before they entered this system).
+async function rejectDisposalFieldsOnExistingAssets(
+  validRows: Array<{ row: number; data: BulkAssetRowInput }>,
+  errors: RowError[]
+): Promise<{ validRows: Array<{ row: number; data: BulkAssetRowInput }>; errors: RowError[] }> {
+  if (validRows.length === 0) return { validRows, errors };
+  const db = await getPool();
+  const farIds = validRows.map(({ data }) => data.farId);
+  const { rows: existingRows } = await db.query<{ far_id: string; date_of_disposal: string | null }>(
+    `SELECT far_id, date_of_disposal FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+    [farIds]
+  );
+  const disposalDateByFarId = new Map(existingRows.map((r) => [r.far_id, r.date_of_disposal]));
+
+  const stillValid: Array<{ row: number; data: BulkAssetRowInput }> = [];
+  const allErrors = [...errors];
+  for (const { row, data } of validRows) {
+    if (!disposalDateByFarId.has(data.farId)) {
+      stillValid.push({ row, data });
+      continue;
+    }
+    if (disposalDateByFarId.get(data.farId) !== null) {
+      allErrors.push({
+        row,
+        farId: data.farId,
+        message: `Asset "${data.farId}" has already been disposed — its particulars can no longer be changed via this upload.`
+      });
+      continue;
+    }
+    const setsDisposalData =
+      data.dateOfDisposal !== null || data.deletionsC1 !== 0 || data.deletionsC2 !== 0 || data.saleValue !== 0;
+    if (setsDisposalData) {
+      allErrors.push({
+        row,
+        farId: data.farId,
+        message: `Asset "${data.farId}" already exists — disposing it must go through Bulk Disposals (or the single-item Disposal action), not this upload. Clear dateOfDisposal/deletionsC1/deletionsC2/saleValue for this row.`
+      });
+      continue;
+    }
+    stillValid.push({ row, data });
+  }
+  return { validRows: stillValid, errors: allErrors };
+}
+
 export default async function bulkUploadRoutes(app: FastifyInstance) {
   // Bulk Uploads: parse a CSV/XLSX of assets (columns named after the shared AssetInput
   // fields, e.g. farId, subClassification, c1OpeningCost…), validate every row, and
@@ -165,6 +232,12 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
 
+    const unknownColumnsError = validateKnownColumns(worksheet, BULK_ASSET_ROW_COLUMNS);
+    if (unknownColumnsError) {
+      reply.code(400);
+      return { error: unknownColumnsError };
+    }
+
     let validRows, errors;
     try {
       ({ validRows, errors } = parseWorksheetRows(worksheet, bulkAssetRowSchema));
@@ -176,6 +249,11 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     ({ validRows, errors } = await rejectDeletedFarIds(validRows, errors));
     ({ validRows, errors } = await validateAgainstMasters(validRows, errors));
     ({ validRows, errors } = await rejectOutOfScopeRows(validRows, errors, req.user!));
+    // Runs last: an out-of-scope existing asset must already have been hidden as "not
+    // found" by rejectOutOfScopeRows above — otherwise this check's "already disposed"
+    // message would leak that a disposed asset exists at this FAR ID to a center-scoped
+    // user who shouldn't be able to see it at all.
+    ({ validRows, errors } = await rejectDisposalFieldsOnExistingAssets(validRows, errors));
 
     // Preview mode: classify each valid row as new (FAR ID not on file) or update (FAR ID
     // already exists), without writing anything — Confirm Upload re-submits the same file
