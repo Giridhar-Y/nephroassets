@@ -9,13 +9,11 @@ import {
 } from "../api/client.js";
 import { formatDate } from "../lib/format.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
 import { useToast } from "../components/Toast.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
-import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition } from "../lib/columnFilters.js";
 import { makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
@@ -28,47 +26,32 @@ type Tab = "new" | "log";
 function NewTransferTab({ onDone }: { onDone: () => void }) {
   const { settings } = useSettings();
   const asAt = settings?.asAt ?? "";
-  const [selected, setSelected] = useState<AssetListItem | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
   return (
     <div className="flex-1 overflow-auto px-6 py-6">
       <div className="max-w-md rounded-xl bg-white p-6 shadow-sm">
-        <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">FAR ID</label>
-        <div className="mt-1">
-          <FarIdAutocomplete asAt={asAt} onSelect={setSelected} />
-        </div>
-
-        {selected && (
-          <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm">
-            <p className="font-medium text-ink">{selected.asset.farId}</p>
-            <p className="mt-1 text-gray-600">{selected.asset.assetDescription}</p>
-            <p className="mt-1 text-xs text-gray-500">
-              Current Location: <span className="font-medium text-gray-700">{selected.result.effectiveLocation}</span>
-            </p>
-          </div>
-        )}
+        <p className="text-sm text-gray-600">Move one or more assets to a different center in a single action.</p>
 
         <button
           type="button"
-          className="mt-6 flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-4 flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           onClick={() => setModalOpen(true)}
-          disabled={!selected}
+          disabled={!asAt}
         >
           <TransferIcon fontSize={15} />
-          Transfer This Asset
+          New Transfer
         </button>
       </div>
 
-      {modalOpen && selected && asAt && (
+      {modalOpen && asAt && (
         <TransferModal
-          assets={[selected]}
+          assets={[]}
+          asAt={asAt}
           defaultDate={asAt}
-          excludeLocation={selected.result.effectiveLocation}
           onClose={() => setModalOpen(false)}
           onDone={() => {
             setModalOpen(false);
-            setSelected(null);
             onDone();
           }}
         />
@@ -372,7 +355,7 @@ export function TransfersPage() {
             </button>
           )}
         </div>
-        <p className="mt-1 text-sm text-gray-500">Move one asset to a different center, or browse the full history.</p>
+        <p className="mt-1 text-sm text-gray-500">Move one or more assets to a different center, or browse the full history.</p>
 
         <div className="mt-4 flex gap-2">
           <button

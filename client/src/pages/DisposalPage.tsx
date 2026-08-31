@@ -3,15 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { AssetGrid } from "../components/AssetGrid.js";
-import { FarIdAutocomplete } from "../components/FarIdAutocomplete.js";
 import { DisposalModal } from "../components/DisposalModal.js";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal.js";
 import { useToast } from "../components/Toast.js";
 import { ALL_COLUMNS, resolveColumns } from "../lib/columns.js";
-import { formatCurrency } from "../lib/format.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { undoDisposal } from "../api/client.js";
-import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, UploadIcon } from "../lib/icons.js";
@@ -55,51 +52,32 @@ const LOG_CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilt
 function NewDisposalTab({ onDone }: { onDone: () => void }) {
   const { settings } = useSettings();
   const asAt = settings?.asAt ?? "";
-  const [selected, setSelected] = useState<AssetListItem | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
-
-  const currentNbv = selected ? selected.result.c1.nbv + selected.result.c2.nbv : null;
 
   return (
     <div className="flex-1 overflow-auto px-6 py-6">
       <div className="max-w-md rounded-xl bg-white p-6 shadow-sm">
-        <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">FAR ID</label>
-        <div className="mt-1">
-          <FarIdAutocomplete asAt={asAt} onSelect={setSelected} />
-        </div>
-
-        {selected && (
-          <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm">
-            <p className="font-medium text-ink">{selected.asset.farId}</p>
-            <p className="mt-1 text-gray-600">{selected.asset.assetDescription}</p>
-            <p className="mt-1 text-xs text-gray-500">
-              Current Location: <span className="font-medium text-gray-700">{selected.result.effectiveLocation}</span>
-            </p>
-            <p className="mt-0.5 text-xs text-gray-500">
-              Current NBV: <span className="font-medium text-gray-700">{formatCurrency(currentNbv!)}</span>
-            </p>
-          </div>
-        )}
+        <p className="text-sm text-gray-600">Dispose one or more assets in a single action.</p>
 
         <button
           type="button"
-          className="mt-6 flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-4 flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           onClick={() => setModalOpen(true)}
-          disabled={!selected}
+          disabled={!asAt}
         >
           <DeleteIcon fontSize={15} />
-          Dispose This Asset
+          New Disposal
         </button>
       </div>
 
-      {modalOpen && selected && asAt && (
+      {modalOpen && asAt && (
         <DisposalModal
-          assets={[selected]}
+          assets={[]}
+          asAt={asAt}
           defaultDate={asAt}
           onClose={() => setModalOpen(false)}
           onDone={() => {
             setModalOpen(false);
-            setSelected(null);
             onDone();
           }}
         />
@@ -191,7 +169,7 @@ export function DisposalPage() {
             </button>
           )}
         </div>
-        <p className="mt-1 text-sm text-gray-500">Dispose one asset, or browse everything that's been disposed.</p>
+        <p className="mt-1 text-sm text-gray-500">Dispose one or more assets, or browse everything that's been disposed.</p>
 
         <div className="mt-4 flex gap-2">
           <button

@@ -2,31 +2,34 @@ import { useEffect, useState } from "react";
 import { createTransfer, fetchCenters } from "../api/client.js";
 import { formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
+import { describeAssetRelationship } from "../lib/assetRelationship.js";
+import { AssetSelectionEditor } from "./AssetSelectionEditor.js";
 import { ErrorIcon, TransferIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 
 type Step = "form" | "confirm";
 
 export function TransferModal({
-  assets,
+  assets: initialAssets,
+  asAt,
   defaultDate,
-  excludeLocation,
   onClose,
   onDone
 }: {
+  /** Starting selection — non-empty from Register's Record Movement (checkbox selection
+   *  already made on the grid), empty from the dedicated Transfers page's New Transfer
+   *  button. Either way it's fully editable from here via AssetSelectionEditor. */
   assets: AssetListItem[];
+  asAt: string;
   defaultDate: string;
-  /** Drops one center from the destination dropdown — used by the single-asset New
-   *  Transfer form to exclude the asset's own current location. Register's multi-select
-   *  flow never passes this (assets there can already be at different locations, so
-   *  there's no one location to exclude). */
-  excludeLocation?: string;
   onClose: () => void;
   onDone: () => void;
 }) {
   const { showToast } = useToast();
   const [step, setStep] = useState<Step>("form");
   const [centers, setCenters] = useState<string[]>([]);
+  const [assets, setAssets] = useState<AssetListItem[]>(initialAssets);
+  const [autoAdded, setAutoAdded] = useState<Set<string>>(new Set());
   const [toLocation, setToLocation] = useState("");
   const [transactionDate, setTransactionDate] = useState(defaultDate);
   const [submitting, setSubmitting] = useState(false);
@@ -52,6 +55,10 @@ export function TransferModal({
   }, [step]);
 
   function handleReview() {
+    if (assets.length === 0) {
+      setError("Add at least one asset.");
+      return;
+    }
     if (!toLocation) {
       setError("Choose a destination center.");
       return;
@@ -87,16 +94,28 @@ export function TransferModal({
       }}
     >
       <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-sm"}`}
+        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-md"}`}
         onClick={(e) => e.stopPropagation()}
       >
         {step === "form" && (
           <>
             <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
               <TransferIcon fontSize={18} />
-              Transfer {assets.length} asset(s)
+              {assets.length === 0 ? "New Transfer" : `Transfer ${assets.length} asset${assets.length === 1 ? "" : "s"}`}
             </h2>
-            <p className="mt-1 text-sm text-gray-500">Move the selected assets to a different center.</p>
+            <p className="mt-1 text-sm text-gray-500">Search to add assets, then move them to a different center.</p>
+
+            <div className="mt-4">
+              <AssetSelectionEditor
+                asAt={asAt}
+                assets={assets}
+                autoAdded={autoAdded}
+                onChange={(next, nextAuto) => {
+                  setAssets(next);
+                  setAutoAdded(nextAuto);
+                }}
+              />
+            </div>
 
             <div className="mt-4 flex flex-col gap-1">
               <label htmlFor="transfer-destination" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
@@ -109,13 +128,11 @@ export function TransferModal({
                 onChange={(e) => setToLocation(e.target.value)}
               >
                 <option value="">Select a center…</option>
-                {centers
-                  .filter((c) => c !== excludeLocation)
-                  .map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
+                {centers.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -150,8 +167,9 @@ export function TransferModal({
               </button>
               <button
                 type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
+                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={handleReview}
+                disabled={assets.length === 0}
               >
                 Transfer
               </button>
@@ -175,6 +193,7 @@ export function TransferModal({
                 <thead className="sticky top-0 bg-gray-50">
                   <tr>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">FAR ID</th>
+                    <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Relationship</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Asset Description</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">Current Location</th>
                     <th className="px-3 py-1.5 text-left font-semibold text-gray-600">New Location</th>
@@ -184,6 +203,7 @@ export function TransferModal({
                   {assets.map((item) => (
                     <tr key={item.asset.farId} className="border-t border-gray-100">
                       <td className="px-3 py-1.5 font-medium text-ink">{item.asset.farId}</td>
+                      <td className="px-3 py-1.5 text-gray-500">{describeAssetRelationship(item, assets) ?? "—"}</td>
                       <td className="px-3 py-1.5 text-gray-600">{item.asset.assetDescription}</td>
                       <td className="px-3 py-1.5 text-gray-600">{item.result.effectiveLocation}</td>
                       <td className="px-3 py-1.5 text-gray-600">{toLocation}</td>

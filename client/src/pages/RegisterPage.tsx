@@ -331,6 +331,7 @@ export function RegisterPage() {
       {transferOpen && asAt && (
         <TransferModal
           assets={items.filter((i) => selected.has(i.asset.farId))}
+          asAt={asAt}
           defaultDate={asAt}
           onClose={() => setTransferOpen(false)}
           onDone={() => {
@@ -344,6 +345,7 @@ export function RegisterPage() {
       {disposeOpen && asAt && (
         <DisposalModal
           assets={items.filter((i) => selected.has(i.asset.farId))}
+          asAt={asAt}
           defaultDate={asAt}
           onClose={() => setDisposeOpen(false)}
           onDone={() => {
