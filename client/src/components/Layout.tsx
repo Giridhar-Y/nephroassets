@@ -3,6 +3,8 @@ import { useEffect, useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission, type Module } from "../lib/permissions.js";
+import { formatDate } from "../lib/format.js";
+import { useToast } from "./Toast.js";
 import { LogoSymbol, Wordmark } from "./Logo.js";
 import {
   RegisterIcon,
@@ -64,6 +66,7 @@ const ADMIN_NAV_ITEM: NavItem = { to: "/admin", label: "Admin", icon: AdminIcon,
 
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();
+  const { showToast } = useToast();
   const [pending, setPending] = useState(false);
 
   if (loading) {
@@ -102,6 +105,12 @@ function AsAtControl() {
           setPending(true);
           try {
             await setAsAt(value);
+            // Recalculates every figure on every visible row — worth a toast, not just
+            // the inline "Recalculating…" text below, since the table itself is
+            // typically scrolled out of view from this control at the top of the page.
+            showToast(`Figures recalculated as of ${formatDate(value)}.`);
+          } catch {
+            showToast("Couldn't change Figures As Of. Please try again.", "error");
           } finally {
             setPending(false);
           }

@@ -318,6 +318,7 @@ export function RegisterPage() {
         onExpandedChange={setGridExpanded}
         columns={visibleColumns}
         loading={loading}
+        loadingMore={loadingMore}
         error={error}
         hasMore={!!nextCursor}
         onLoadMore={loadMore}

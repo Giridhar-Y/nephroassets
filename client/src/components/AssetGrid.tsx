@@ -146,6 +146,10 @@ export interface AssetGridProps {
   error: string | null;
   hasMore: boolean;
   onLoadMore: () => void;
+  /** True while a background page fetch triggered by scrolling near the bottom (or the
+   *  manual "Load more" fallback) is in flight — shows a small spinner row under the
+   *  loaded rows instead of leaving the auto-fetch invisible. */
+  loadingMore?: boolean;
   onRetry: () => void;
   emptyTitle?: string;
   emptyHint?: string;
@@ -195,6 +199,7 @@ export function AssetGrid({
   error,
   hasMore,
   onLoadMore,
+  loadingMore = false,
   onRetry,
   emptyTitle = "No assets match these filters.",
   emptyHint = "Try widening the filters above.",
@@ -568,6 +573,12 @@ export function AssetGrid({
                   </div>
                 );
               })}
+            </div>
+          )}
+          {loadingMore && (
+            <div className="flex items-center justify-center gap-2 border-t border-gray-100 py-3 text-xs font-medium text-gray-500">
+              <RetryIcon fontSize={14} className="animate-spin text-accent" />
+              Loading more…
             </div>
           )}
         </div>

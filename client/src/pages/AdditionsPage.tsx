@@ -116,7 +116,7 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const filters = useMemo(() => ({ hasAddition: true, conditions }), [conditions]);
   const setCondition = makeSetCondition(conditions, setConditions);
-  const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
+  const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
   // Addition undo (Global Admin only) — holds the FAR ID pending confirmation.
   const [undoTargetFarId, setUndoTargetFarId] = useState<string | null>(null);
 
@@ -135,6 +135,7 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
         items={items}
         columns={COLUMNS}
         loading={loading}
+        loadingMore={loadingMore}
         error={error}
         hasMore={!!nextCursor}
         onLoadMore={loadMore}

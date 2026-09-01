@@ -66,7 +66,7 @@ export function LocationSummaryPage() {
   }, [location, settingsKey]);
 
   const listFilters = useMemo(() => (location ? { center: [location] } : {}), [location]);
-  const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(location ? settings : null, listFilters);
+  const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(location ? settings : null, listFilters);
 
   return (
     <div className="flex h-full flex-col">
@@ -131,6 +131,7 @@ export function LocationSummaryPage() {
           items={items}
           columns={COLUMNS}
           loading={loading}
+          loadingMore={loadingMore}
           error={error}
           hasMore={!!nextCursor}
           onLoadMore={loadMore}

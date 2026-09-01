@@ -128,6 +128,7 @@ export function CapitalizationPage() {
     items: logItems,
     nextCursor: logNextCursor,
     loading: logLoading,
+    loadingMore: logLoadingMore,
     error: logError,
     reload: reloadLog,
     loadMore: loadMoreLog
@@ -522,6 +523,7 @@ export function CapitalizationPage() {
             items={logItems}
             columns={LOG_COLUMNS}
             loading={logLoading}
+            loadingMore={logLoadingMore}
             error={logError}
             hasMore={!!logNextCursor}
             onLoadMore={loadMoreLog}

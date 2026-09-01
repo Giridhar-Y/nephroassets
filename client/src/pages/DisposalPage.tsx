@@ -97,7 +97,7 @@ function DisposalLogTab() {
   const [conditions, setConditions] = useState<ColumnCondition[]>([]);
   const filters = useMemo(() => ({ status: ["Disposed"], conditions }), [conditions]);
   const setCondition = makeSetCondition(conditions, setConditions);
-  const { items, nextCursor, loading, error, reload, loadMore } = useAssetList(settings, filters);
+  const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
   const COLUMNS = resolveColumns(RAW_COLUMNS, { asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const headerFilters = buildConditionHeaderFilters(LOG_CONDITION_COLUMNS, conditions, setCondition);
   // Disposal undo (Global Admin only) — holds the FAR ID pending confirmation.
@@ -109,6 +109,7 @@ function DisposalLogTab() {
         items={items}
         columns={COLUMNS}
         loading={loading}
+        loadingMore={loadingMore}
         error={error}
         hasMore={!!nextCursor}
         onLoadMore={loadMore}
