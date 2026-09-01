@@ -1,5 +1,6 @@
 import { Navigate, Route, HashRouter, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout.js";
+import { DashboardPage } from "./pages/DashboardPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
 import { LocationSummaryPage } from "./pages/LocationSummaryPage.js";
 import { AuditReconciliationPage } from "./pages/AuditReconciliationPage.js";
@@ -45,6 +46,16 @@ export default function App() {
                 }
               >
                 <Route index element={<Navigate to="/register" replace />} />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <DashboardPage />
+                      </SettingsGate>
+                    </RequirePermission>
+                  }
+                />
                 <Route
                   path="/register"
                   element={

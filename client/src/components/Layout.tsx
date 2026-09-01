@@ -10,6 +10,7 @@ import { InstallAppButton } from "./InstallAppButton.js";
 import { IosInstallHint } from "./IosInstallHint.js";
 import { OfflineBanner } from "./OfflineBanner.js";
 import {
+  DashboardIcon,
   RegisterIcon,
   SettingsIcon,
   SignOutIcon,
@@ -46,6 +47,7 @@ interface NavItem {
 // requires (see App.tsx's RequirePermission usage) — nav visibility and route
 // reachability always agree because they read the same permission set.
 const NAV_ITEMS: NavItem[] = [
+  { to: "/dashboard", label: "Dashboard", icon: DashboardIcon, module: "reports", action: "view" },
   { to: "/register", label: "Register", icon: RegisterIcon, module: "register", action: "view" },
   { to: "/assets", label: "Asset History", icon: LifecycleIcon, module: "assetHistory", action: "view" },
   { to: "/transfers", label: "Transfers", icon: HistoryIcon, module: "transfers", action: "view" },

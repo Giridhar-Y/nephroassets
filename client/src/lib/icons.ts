@@ -47,5 +47,6 @@ export {
   LineHorizontal3Regular as DensityIcon,
   PhoneDesktopAddRegular as InstallIcon,
   ShareIosRegular as ShareIcon,
-  WifiOffRegular as OfflineIcon
+  WifiOffRegular as OfflineIcon,
+  DataBarVerticalRegular as DashboardIcon
 } from "@fluentui/react-icons";
