@@ -518,11 +518,20 @@ export function AssetGrid({
                 // scrolling row content bleed through the sticky FAR ID cell underneath it.
                 const rowBg = isSelected ? "bg-accent-light" : virtualRow.index % 2 === 1 ? "bg-gray-50" : "bg-white";
                 // A selected row is already tinted (accent-light) — hover adds nothing
-                // there. Unselected rows get a very low-opacity Calming Blue wash; this is
-                // a transient hover-only overlay, not the row's persistent background, so
-                // the sticky-cell opacity concern above doesn't apply the same way.
+                // there. Unselected rows get a very low-opacity Calming Blue wash on hover.
                 const hoverTint = isSelected ? "" : "hover:bg-brand-blue/5";
-                const groupHoverTint = isSelected ? "" : "group-hover:bg-brand-blue/5";
+                // Pinned cells (checkbox, FAR ID) repaint on hover too, but NOT with that
+                // same alpha wash — they're `position: sticky`, painted on top of whatever
+                // column has scrolled underneath, and a translucent background lets that
+                // column's text bleed through and overlap the FAR ID text (found scrolled
+                // 130px+ horizontally, which is easy to reach with 39 columns and persists
+                // across filtering). #F5F9FC is brand-blue/5 pre-mixed against white —
+                // same visual tint, but a flat opaque color that can't let anything behind
+                // it show. One flat color for every row regardless of the zebra-stripe/
+                // selected base underneath, deliberately — simpler than three near-
+                // identical pre-mixed variants for a hover state nobody compares side by
+                // side.
+                const pinnedHoverTint = isSelected ? "" : "group-hover:bg-[#F5F9FC]";
                 return (
                   <div
                     key={item.asset.farId}
@@ -532,7 +541,7 @@ export function AssetGrid({
                     style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {selectable && (
-                      <div className={`sticky left-0 z-10 flex w-10 shrink-0 items-center justify-center transition-colors duration-150 ${rowBg} ${groupHoverTint}`}>
+                      <div className={`sticky left-0 z-10 flex w-10 shrink-0 items-center justify-center transition-colors duration-150 ${rowBg} ${pinnedHoverTint}`}>
                         <input
                           type="checkbox"
                           className="accent-accent"
@@ -570,7 +579,7 @@ export function AssetGrid({
                           className={`flex shrink-0 items-center truncate px-3 ${divider} ${
                             col.align === "right" ? "justify-end tabular-nums" : ""
                           } ${isNegative ? "text-accent" : ""} ${
-                            pinnedOffset !== undefined ? `sticky z-10 transition-colors duration-150 ${rowBg} ${groupHoverTint}` : ""
+                            pinnedOffset !== undefined ? `sticky z-10 transition-colors duration-150 ${rowBg} ${pinnedHoverTint}` : ""
                           }`}
                           style={{ width: col.width, left: pinnedOffset }}
                           title={rendered}
