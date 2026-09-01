@@ -25,6 +25,8 @@ import { hasPermission } from "../lib/permissions.js";
 import { PermissionMatrix } from "../components/PermissionMatrix.js";
 import { BookDatabaseIcon, LockIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
+import { Button } from "../components/ui/Button.js";
 
 type Tab = "centers" | "subClassifications" | "statuses" | "roles";
 
@@ -894,27 +896,22 @@ export function MastersPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <BookDatabaseIcon fontSize={20} />
-          Masters
-        </h1>
-        {hasPermission(user, "masters", "edit") && TABS.find((t) => t.id === tab)?.bulkLabel && (
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            onClick={() => navigate(`/bulk-upload?type=masters&list=${tab}`)}
-          >
-            <UploadIcon fontSize={14} />
-            Bulk Import {TABS.find((t) => t.id === tab)?.bulkLabel}
-          </button>
-        )}
-      </div>
-      <p className="mt-1 max-w-2xl text-sm text-gray-500">
-        Manage the lists that Centers, Sub Classifications, Statuses, and Roles are picked from everywhere else in the
+      <PageHeader
+        icon={BookDatabaseIcon}
+        title="Masters"
+        bordered={false}
+        subtitle="Manage the lists that Centers, Sub Classifications, Statuses, and Roles are picked from everywhere else in the
         app — Capitalization, Bulk Upload, Transfers, the Register's filters, and the Admin page's Create User form.
-        Deactivating a value hides it from future picks without touching assets or users that already use it.
-      </p>
+        Deactivating a value hides it from future picks without touching assets or users that already use it."
+        actions={
+          hasPermission(user, "masters", "edit") && TABS.find((t) => t.id === tab)?.bulkLabel && (
+            <Button variant="secondary" size="sm" onClick={() => navigate(`/bulk-upload?type=masters&list=${tab}`)}>
+              <UploadIcon fontSize={14} />
+              Bulk Import {TABS.find((t) => t.id === tab)?.bulkLabel}
+            </Button>
+          )
+        }
+      />
 
       <div className="mt-4 flex gap-2">
         {TABS.map((t) => (

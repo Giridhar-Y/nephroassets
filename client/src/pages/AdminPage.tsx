@@ -18,6 +18,8 @@ import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission } from "../lib/permissions.js";
 import { PermissionMatrix } from "../components/PermissionMatrix.js";
 import { AdminIcon, KeyIcon, LockIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
+import { Badge } from "../components/ui/Badge.js";
 import { useToast } from "../components/Toast.js";
 
 const INPUT_CLASS =
@@ -44,15 +46,7 @@ function roleDisplayName(name: string): string {
 }
 
 function StatusBadge({ status }: { status: AdminUser["status"] }) {
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-        status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-500"
-      }`}
-    >
-      {status === "active" ? "Active" : "Disabled"}
-    </span>
-  );
+  return <Badge tone={status === "active" ? "success" : "neutral"}>{status === "active" ? "Active" : "Disabled"}</Badge>;
 }
 
 function RoleBadge({ role }: { role: Role }) {
@@ -418,14 +412,13 @@ export function AdminPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <AdminIcon fontSize={20} />
-        Admin
-      </h1>
-      <p className="mt-1 max-w-2xl text-sm text-gray-500">
-        Manage who can sign in to NephroAssets. Every create, disable, re-enable, role change, and password reset is
-        logged.
-      </p>
+      <PageHeader
+        icon={AdminIcon}
+        title="Admin"
+        bordered={false}
+        subtitle="Manage who can sign in to NephroAssets. Every create, disable, re-enable, role change, and password reset is
+        logged."
+      />
 
       <div className="mt-6 max-w-5xl rounded-xl bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">

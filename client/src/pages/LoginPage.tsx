@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.js";
 import { ErrorIcon } from "../lib/icons.js";
-import { Logo } from "../components/Logo.js";
+import { LogoSymbol, Wordmark } from "../components/Logo.js";
 import { PasswordInput } from "../components/PasswordInput.js";
 
 export function LoginPage() {
@@ -30,11 +30,13 @@ export function LoginPage() {
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden bg-[#FAFAFA]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(24,24,27,0.06),transparent_60%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(1,72,111,0.06),transparent_60%)]" />
       <div className="relative w-full max-w-sm rounded-xl bg-white p-10 shadow-sm">
         <div className="flex items-center gap-2">
-          <Logo size={24} />
-          <h1 className="text-lg font-bold tracking-tight text-ink">NephroAssets</h1>
+          <LogoSymbol size={24} />
+          <h1>
+            <Wordmark className="font-heading text-lg font-bold tracking-tight" />
+          </h1>
         </div>
         <p className="mt-1 text-sm text-gray-500">Sign in to your account.</p>
 

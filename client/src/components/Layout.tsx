@@ -3,7 +3,7 @@ import { useEffect, useState, type ComponentType } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission, type Module } from "../lib/permissions.js";
-import { Logo } from "./Logo.js";
+import { LogoSymbol, Wordmark } from "./Logo.js";
 import {
   RegisterIcon,
   SettingsIcon,
@@ -67,31 +67,31 @@ function AsAtControl() {
   const [pending, setPending] = useState(false);
 
   if (loading) {
-    return <div className="h-9 w-64 animate-pulse rounded-md bg-gray-100" />;
+    return <div className="h-9 w-64 animate-pulse rounded-md bg-white/10" />;
   }
 
   if (notConfigured || !settings) {
     return (
-      <Link to="/settings" className="text-sm font-medium text-accent hover:underline">
+      <Link to="/settings" className="text-sm font-medium text-white underline decoration-white/40 underline-offset-2 hover:decoration-white">
         Set up your financial year →
       </Link>
     );
   }
 
   if (error) {
-    return <span className="text-sm text-red-600">Couldn't load settings.</span>;
+    return <span className="text-sm text-brand-rose">Couldn't load settings.</span>;
   }
 
   return (
     <label className="flex items-center gap-2 text-sm">
-      <span className="flex items-center gap-1.5 font-medium text-gray-600">
+      <span className="flex items-center gap-1.5 font-medium text-white/80">
         <CalendarIcon fontSize={16} />
         Figures as of:
       </span>
       <input
         type="date"
         data-testid="asat-input"
-        className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+        className="rounded-md border border-white/20 bg-white/10 px-2 py-1.5 text-sm text-white [color-scheme:dark] focus:border-white/50 focus:outline-none focus:ring-1 focus:ring-white/50"
         value={settings.asAt}
         min={settings.fyStart}
         max={settings.fyEnd}
@@ -107,7 +107,7 @@ function AsAtControl() {
           }
         }}
       />
-      {pending && <span className="text-xs text-gray-400">Recalculating…</span>}
+      {pending && <span className="text-xs text-white/60">Recalculating…</span>}
     </label>
   );
 }
@@ -134,8 +134,8 @@ export function Layout() {
         <div className={`flex items-center py-5 ${collapsed ? "justify-center px-2" : "justify-between px-5"}`}>
           {!collapsed && (
             <span className="flex items-center gap-2">
-              <Logo size={24} />
-              <span className="text-lg font-bold tracking-tight text-ink">NephroAssets</span>
+              <LogoSymbol size={26} />
+              <Wordmark className="font-heading text-lg font-bold tracking-tight" />
             </span>
           )}
           <button
@@ -183,7 +183,7 @@ export function Layout() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col print:block">
-        <header className="flex shrink-0 items-center justify-end border-b border-gray-200 bg-white px-6 py-3 print:hidden">
+        <header className="flex shrink-0 items-center justify-end bg-ink px-6 py-3 print:hidden">
           <AsAtControl />
         </header>
         <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">

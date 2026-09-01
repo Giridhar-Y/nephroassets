@@ -7,6 +7,7 @@ import { Tooltip } from "../components/Tooltip.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { DepreciationIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 export function DepreciationPostingPage() {
   const { settings } = useSettings();
@@ -51,13 +52,12 @@ export function DepreciationPostingPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <h1 className="text-base font-semibold text-ink">Depreciation Posting Summary</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          The total depreciation for this period, across every asset and both cost components — the amount to post
-          as a journal entry.
-        </p>
-
+      <PageHeader
+        icon={DepreciationIcon}
+        title="Depreciation Posting Summary"
+        subtitle="The total depreciation for this period, across every asset and both cost components — the amount to post
+          as a journal entry."
+      >
         {depDate && (
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
             <div className="flex flex-col gap-1">
@@ -81,7 +81,7 @@ export function DepreciationPostingPage() {
             )}
           </div>
         )}
-      </div>
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
         {error && (

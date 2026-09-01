@@ -4,6 +4,7 @@ import { fetchAssets } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import type { AssetListItem } from "../lib/types.js";
 import { LifecycleIcon, SearchIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 export function AssetSearchPage() {
   const { settings } = useSettings();
@@ -31,14 +32,13 @@ export function AssetSearchPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <LifecycleIcon fontSize={20} />
-        Asset History
-      </h1>
-      <p className="mt-1 max-w-xl text-sm text-gray-500">
-        Search for a FAR ID to see that asset's complete lifecycle — capitalization, transfers, and disposal — in
-        one screen.
-      </p>
+      <PageHeader
+        icon={LifecycleIcon}
+        title="Asset History"
+        bordered={false}
+        subtitle="Search for a FAR ID to see that asset's complete lifecycle — capitalization, transfers, and disposal — in
+        one screen."
+      />
 
       <div className="mt-6 max-w-md">
         <div className="relative">

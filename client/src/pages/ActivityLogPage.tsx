@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { fetchActivityLog, type ActivityCategory, type ActivityLogEntry } from "../api/client.js";
 import { formatDateTime } from "../lib/format.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 const PAGE_SIZE = 50;
 
@@ -126,16 +127,12 @@ export function ActivityLogPage() {
 
   return (
     <div className="flex h-full flex-col bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <AuditLogIcon fontSize={20} />
-          Activity Log
-        </h1>
-        <p className="mt-1 max-w-xl text-sm text-gray-500">
-          Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
-          bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped.
-        </p>
-
+      <PageHeader
+        icon={AuditLogIcon}
+        title="Activity Log"
+        subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
+          bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
+      >
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label htmlFor="al-far-id" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
@@ -202,7 +199,7 @@ export function ActivityLogPage() {
             </button>
           )}
         </div>
-      </div>
+      </PageHeader>
 
       {error && (
         <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">

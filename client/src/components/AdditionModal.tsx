@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { recordAddition } from "../api/client.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { AdditionIcon, ErrorIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
+import { Modal } from "./ui/Modal.js";
+import { Button } from "./ui/Button.js";
 
 type Step = "form" | "confirm";
 
@@ -39,15 +41,6 @@ export function AdditionModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (step !== "confirm") return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setStep("form");
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [step]);
-
   function handleReview() {
     if (additionsC1 === 0 && additionsC2 === 0) {
       setError("Enter an amount for Additions C1 or C2.");
@@ -79,17 +72,16 @@ export function AdditionModal({
     }
   }
 
+  // Dismissing the confirmation step (Esc, click outside) returns to the form with
+  // entered values intact — it must never silently submit or discard anything. Neither
+  // does anything while still on the form step (no accidental full close either).
+  const dismissConfirm = () => {
+    if (step === "confirm") setStep("form");
+  };
+
   return (
-    <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/30"
-      onClick={() => {
-        if (step === "confirm") setStep("form");
-      }}
-    >
-      <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-sm"}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} onEscape={dismissConfirm} onBackdropClick={dismissConfirm} widthClassName={step === "confirm" ? "max-w-lg" : "max-w-sm"}>
+      <>
         {step === "form" && (
           <>
             <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
@@ -181,20 +173,10 @@ export function AdditionModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={onClose}
-              >
+              <Button variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-                onClick={handleReview}
-              >
-                Record Addition
-              </button>
+              </Button>
+              <Button onClick={handleReview}>Record Addition</Button>
             </div>
           </>
         )}
@@ -247,26 +229,16 @@ export function AdditionModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={() => setStep("form")}
-                disabled={submitting}
-              >
+              <Button variant="ghost" onClick={() => setStep("form")} disabled={submitting}>
                 Go back
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-                onClick={handleConfirm}
-                disabled={submitting}
-              >
+              </Button>
+              <Button onClick={handleConfirm} disabled={submitting}>
                 {submitting ? "Saving…" : "Confirm & Record"}
-              </button>
+              </Button>
             </div>
           </>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

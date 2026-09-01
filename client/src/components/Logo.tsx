@@ -1,17 +1,25 @@
-// Brand mark: an "N"/"M" monogram with an isometric cube inlaid at its center — the
-// cube reads as the app's subject (a Fixed Asset Register), the letterform as its name.
-// Solid #18181B (the app's `ink` token). Traced (via OpenCV contour extraction, not
-// hand-drawn) from the source artwork at client/src/assets/logo.png, so the 5 polygons
-// below are exact — don't hand-edit the coordinates, re-trace from the source if the
-// mark ever changes.
-export function Logo({ size = 28, className }: { size?: number; className?: string }) {
+import wordmarkUrl from "../assets/brand/logo_primary.svg";
+import symbolUrl from "../assets/brand/logo_symbol.svg";
+
+// Official NephroPlus marks (nephroplus-brand skill, assets/logos/logo_primary.svg) — the
+// wordmark, and a symbol-only crop of the same source paths for small/collapsed contexts
+// (skill rule: symbol alone only below ~8mm). Never recolor/redraw — light backgrounds only,
+// per the skill's logo-quirks note that this asset bundle has no usable reversed/white mark.
+export function Logo({ size = 24, className }: { size?: number; className?: string }) {
+  return <img src={wordmarkUrl} alt="NephroPlus" height={size} className={className} style={{ height: size, width: "auto" }} />;
+}
+
+export function LogoSymbol({ size = 24, className }: { size?: number; className?: string }) {
+  return <img src={symbolUrl} alt="NephroPlus" height={size} className={className} style={{ height: size, width: "auto" }} />;
+}
+
+// The app's own typed name (not the NephroPlus logo above) — split two-tone the same
+// way the official logo splits "nephro"/"plus": Deep Blue then Crimson.
+export function Wordmark({ className = "" }: { className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 819 819" className={className} aria-hidden="true">
-      <polygon points="1,0 0,818 163,818 163,258 312,168 158,1" fill="#18181B" />
-      <polygon points="656,0 656,560 507,650 658,819 819,819 819,1" fill="#18181B" />
-      <polygon points="408,159 221,271 410,383 598,271" fill="#18181B" />
-      <polygon points="205,309 205,538 388,647 388,418" fill="#18181B" />
-      <polygon points="614,309 431,418 431,647 614,537" fill="#18181B" />
-    </svg>
+    <span className={className}>
+      <span className="text-ink">Nephro</span>
+      <span className="text-accent">Assets</span>
+    </span>
   );
 }

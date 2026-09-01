@@ -10,7 +10,8 @@ import { formatCurrency } from "../lib/format.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
-import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon } from "../lib/icons.js";
+import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -69,9 +70,14 @@ export function AuditReconciliationPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-base font-semibold text-ink">Audit Reconciliation</h1>
+      <PageHeader
+        icon={ReconciliationIcon}
+        title="Audit Reconciliation"
+        subtitle="For every sub classification and cost component (C1, C2, and Combined), this checks that the numbers roll
+          forward correctly: Opening + Additions − Deletions should equal Closing cost, Opening Depreciation + This
+          Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
+          Closing Depreciation should equal Closing NBV."
+        actions={
           <a
             href={period ? getAuditReconciliationExportUrl(period) : undefined}
             aria-disabled={!period}
@@ -82,14 +88,8 @@ export function AuditReconciliationPage() {
             <ExportIcon fontSize={14} />
             Export to Excel
           </a>
-        </div>
-        <p className="mt-1 text-sm text-gray-500">
-          For every sub classification and cost component (C1, C2, and Combined), this checks that the numbers roll
-          forward correctly: Opening + Additions − Deletions should equal Closing cost, Opening Depreciation + This
-          Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
-          Closing Depreciation should equal Closing NBV.
-        </p>
-
+        }
+      >
         {period && (
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
             <div className="flex flex-col gap-1">
@@ -141,7 +141,7 @@ export function AuditReconciliationPage() {
             )}
           </div>
         )}
-      </div>
+      </PageHeader>
 
       {error && (
         <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">

@@ -54,10 +54,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={t.id}
             role="status"
             className={`flex items-center gap-2 rounded-md py-2.5 pl-4 pr-3 text-sm font-medium shadow-lg ${
-              t.variant === "error" ? "bg-red-600 text-white" : "bg-ink text-white"
+              t.variant === "error" ? "bg-accent text-white" : "bg-ink text-white"
             }`}
           >
-            {t.variant === "error" ? <ErrorIcon fontSize={16} /> : <PassIcon fontSize={16} className="text-green-400" />}
+            {t.variant === "error" ? <ErrorIcon fontSize={16} /> : <PassIcon fontSize={16} className="text-brand-teal" />}
             <span>{t.message}</span>
             {t.action && (
               <button

@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { updateAsset, type AssetEditInput, type SubClassificationOption } from "../api/client.js";
 import { formatCurrency } from "../lib/format.js";
 import type { AssetListItem } from "../lib/types.js";
 import { EditIcon, ErrorIcon, PassIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
+import { Modal } from "./ui/Modal.js";
+import { Button } from "./ui/Button.js";
 
 type Step = "form" | "confirm" | "success";
 
@@ -43,15 +45,6 @@ export function EditAssetModal({
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (step !== "confirm") return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setStep("form");
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [step]);
 
   function update(patch: Partial<AssetEditInput>) {
     setForm((prev) => ({ ...prev, ...patch }));
@@ -131,17 +124,16 @@ export function EditAssetModal({
     { label: "Parent FAR ID", from: asset.parentFarId ?? "—", to: form.parentFarId ?? "—" }
   ].filter((c) => c.from !== c.to);
 
+  // Dismissing the confirmation step (Esc, click outside) returns to the form with
+  // entered values intact — it must never silently submit or discard anything. Neither
+  // does anything while still on the form step (no accidental full close either).
+  const dismissConfirm = () => {
+    if (step === "confirm") setStep("form");
+  };
+
   return (
-    <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/30"
-      onClick={() => {
-        if (step === "confirm") setStep("form");
-      }}
-    >
-      <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "form" ? "max-w-sm" : "max-w-lg"}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} onEscape={dismissConfirm} onBackdropClick={dismissConfirm} widthClassName={step === "form" ? "max-w-sm" : "max-w-lg"}>
+      <>
         {step === "form" && (
           <>
             <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
@@ -313,20 +305,10 @@ export function EditAssetModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={onClose}
-              >
+              <Button variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-                onClick={handleReview}
-              >
-                Save Changes
-              </button>
+              </Button>
+              <Button onClick={handleReview}>Save Changes</Button>
             </div>
           </>
         )}
@@ -372,22 +354,12 @@ export function EditAssetModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={() => setStep("form")}
-                disabled={submitting}
-              >
+              <Button variant="ghost" onClick={() => setStep("form")} disabled={submitting}>
                 Go back
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-                onClick={handleConfirm}
-                disabled={submitting || changes.length === 0}
-              >
+              </Button>
+              <Button onClick={handleConfirm} disabled={submitting || changes.length === 0}>
                 {submitting ? "Saving…" : "Confirm & Save"}
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -395,20 +367,16 @@ export function EditAssetModal({
         {step === "success" && (
           <div className="flex flex-col items-center py-4 text-center">
             <PassIcon fontSize={40} className="text-green-600" />
-            <h2 className="mt-3 text-base font-semibold text-ink">Asset Updated</h2>
+            <h2 className="mt-3 font-heading text-base font-semibold text-ink">Asset Updated</h2>
             <p className="mt-1 text-sm text-gray-500">
               {form.farId} was updated successfully — {changes.length} field{changes.length === 1 ? "" : "s"} changed.
             </p>
-            <button
-              type="button"
-              className="mt-6 rounded-md bg-accent px-5 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-              onClick={handleDone}
-            >
+            <Button className="mt-6" onClick={handleDone}>
               Done
-            </button>
+            </Button>
           </div>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

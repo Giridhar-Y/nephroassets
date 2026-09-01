@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { DepreciationIcon, LocationIcon, ReconciliationIcon, ReportsIcon, TransferIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 import type { ComponentType } from "react";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
@@ -33,11 +34,7 @@ const REPORTS: Array<{ to: string; label: string; description: string; icon: Com
 export function ReportsPage() {
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <ReportsIcon fontSize={20} />
-        Reports
-      </h1>
-      <p className="mt-1 max-w-xl text-sm text-gray-500">Choose a report to view.</p>
+      <PageHeader icon={ReportsIcon} title="Reports" bordered={false} subtitle="Choose a report to view." />
 
       <div className="mt-6 grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">
         {REPORTS.map((report) => (

@@ -13,6 +13,8 @@ import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js"
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, UploadIcon } from "../lib/icons.js";
 import { hasPermission } from "../lib/permissions.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
+import { Button } from "../components/ui/Button.js";
 
 type Tab = "new" | "log";
 
@@ -152,25 +154,19 @@ export function DisposalPage() {
 
   return (
     <div className="flex h-full flex-col bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-            <DeleteIcon fontSize={20} />
-            Disposals
-          </h1>
-          {hasPermission(user, "bulkUpload", "disposals") && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-              onClick={() => navigate("/bulk-upload?type=disposals")}
-            >
+      <PageHeader
+        icon={DeleteIcon}
+        title="Disposals"
+        subtitle="Dispose one or more assets, or browse everything that's been disposed."
+        actions={
+          hasPermission(user, "bulkUpload", "disposals") && (
+            <Button variant="secondary" size="sm" onClick={() => navigate("/bulk-upload?type=disposals")}>
               <UploadIcon fontSize={14} />
               Bulk Disposal
-            </button>
-          )}
-        </div>
-        <p className="mt-1 text-sm text-gray-500">Dispose one or more assets, or browse everything that's been disposed.</p>
-
+            </Button>
+          )
+        }
+      >
         <div className="mt-4 flex gap-2">
           <button
             type="button"
@@ -191,7 +187,7 @@ export function DisposalPage() {
             Disposal Log
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {tab === "new" && (
         <NewDisposalTab

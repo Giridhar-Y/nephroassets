@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { mergeAssets } from "../api/client.js";
 import type { AssetListItem } from "../lib/types.js";
 import { ErrorIcon, MergeIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
+import { Modal } from "./ui/Modal.js";
+import { Button } from "./ui/Button.js";
 
 type Step = "form" | "confirm";
 
@@ -25,15 +27,6 @@ export function MergeModal({
   const [parentFarId, setParentFarId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (step !== "confirm") return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setStep("form");
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [step]);
 
   const parent = assets.find((a) => a.asset.farId === parentFarId) ?? null;
   const children = assets.filter((a) => a.asset.farId !== parentFarId);
@@ -66,17 +59,16 @@ export function MergeModal({
     }
   }
 
+  // Dismissing the confirmation step (Esc, click outside) returns to the form with
+  // entered values intact — it must never silently submit or discard anything. Neither
+  // does anything while still on the form step (no accidental full close either).
+  const dismissConfirm = () => {
+    if (step === "confirm") setStep("form");
+  };
+
   return (
-    <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/30"
-      onClick={() => {
-        if (step === "confirm") setStep("form");
-      }}
-    >
-      <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-sm"}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} onEscape={dismissConfirm} onBackdropClick={dismissConfirm} widthClassName={step === "confirm" ? "max-w-lg" : "max-w-sm"}>
+      <>
         {step === "form" && (
           <>
             <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
@@ -124,20 +116,10 @@ export function MergeModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={onClose}
-              >
+              <Button variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-                onClick={handleReview}
-              >
-                Merge
-              </button>
+              </Button>
+              <Button onClick={handleReview}>Merge</Button>
             </div>
           </>
         )}
@@ -187,26 +169,16 @@ export function MergeModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={() => setStep("form")}
-                disabled={submitting}
-              >
+              <Button variant="ghost" onClick={() => setStep("form")} disabled={submitting}>
                 Go back
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-                onClick={handleConfirm}
-                disabled={submitting}
-              >
+              </Button>
+              <Button onClick={handleConfirm} disabled={submitting}>
                 {submitting ? "Merging…" : "Confirm & Merge"}
-              </button>
+              </Button>
             </div>
           </>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

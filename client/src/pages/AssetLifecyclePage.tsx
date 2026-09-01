@@ -17,22 +17,7 @@ import {
   RegisterIcon,
   TransferIcon
 } from "../lib/icons.js";
-
-const STATUS_BADGE_CLASSES: Record<string, string> = {
-  Active: "bg-green-100 text-green-800",
-  Disposed: "bg-red-100 text-red-800",
-  "Under Repair": "bg-amber-100 text-amber-800"
-};
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span
-      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_BADGE_CLASSES[status] ?? "bg-gray-100 text-gray-700"}`}
-    >
-      {status}
-    </span>
-  );
-}
+import { StatusBadge } from "../components/ui/Badge.js";
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -528,7 +513,7 @@ export function AssetLifecyclePage() {
 
       <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="flex items-center gap-2 text-xl font-bold text-ink">
+          <h1 className="flex items-center gap-2 font-heading text-xl font-bold text-ink">
             <LifecycleIcon fontSize={22} />
             {asset.farId}
             <StatusBadge status={asset.status} />

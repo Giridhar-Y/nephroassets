@@ -18,6 +18,8 @@ import type { ColumnCondition } from "../lib/columnFilters.js";
 import { makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { DeleteIcon, EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon, UploadIcon } from "../lib/icons.js";
 import { hasPermission } from "../lib/permissions.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
+import { Button } from "../components/ui/Button.js";
 
 const PAGE_SIZE = 100;
 
@@ -338,25 +340,19 @@ export function TransfersPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 bg-white px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-            <HistoryIcon fontSize={20} />
-            Transfers
-          </h1>
-          {hasPermission(user, "bulkUpload", "transfers") && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-              onClick={() => navigate("/bulk-upload?type=transfers")}
-            >
+      <PageHeader
+        icon={HistoryIcon}
+        title="Transfers"
+        subtitle="Move one or more assets to a different center, or browse the full history."
+        actions={
+          hasPermission(user, "bulkUpload", "transfers") && (
+            <Button variant="secondary" size="sm" onClick={() => navigate("/bulk-upload?type=transfers")}>
               <UploadIcon fontSize={14} />
               Bulk Transfer
-            </button>
-          )}
-        </div>
-        <p className="mt-1 text-sm text-gray-500">Move one or more assets to a different center, or browse the full history.</p>
-
+            </Button>
+          )
+        }
+      >
         <div className="mt-4 flex gap-2">
           <button
             type="button"
@@ -377,7 +373,7 @@ export function TransfersPage() {
             Transfer Log
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {tab === "new" && (
         <NewTransferTab

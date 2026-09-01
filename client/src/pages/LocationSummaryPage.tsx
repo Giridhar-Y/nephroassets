@@ -10,6 +10,7 @@ import { formatCurrency, formatDate } from "../lib/format.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { ErrorIcon, LocationIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 // A focused subset for this single-location summary view — Register's full 39-column
 // default would overwhelm what's meant to be a quick "what's here" list.
@@ -69,8 +70,8 @@ export function LocationSummaryPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-gray-200 bg-white px-6 py-4">
-        <div className="flex flex-col gap-1">
+      <PageHeader icon={LocationIcon} title="Location Summary" subtitle="Asset count and total Gross Block for any one center.">
+        <div className="mt-4 flex flex-col gap-1">
           <label htmlFor="location-summary-picker" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
             Location
           </label>
@@ -117,7 +118,7 @@ export function LocationSummaryPage() {
             {summaryError}
           </p>
         )}
-      </div>
+      </PageHeader>
 
       {!location ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">

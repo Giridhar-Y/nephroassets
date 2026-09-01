@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { DeleteIcon, ErrorIcon } from "../lib/icons.js";
+import { Modal } from "./ui/Modal.js";
+import { Button } from "./ui/Button.js";
 
 // Shared by every Global-Admin-only delete/undo action (Capitalization delete, Addition
 // undo, Disposal undo, Transfer delete) — a required reason plus type-the-identifier-to-
@@ -42,11 +44,11 @@ export function DeleteConfirmModal({
   }
 
   return (
-    // z-[60]: AssetGrid's own "expand table to full screen" mode uses z-50 (see
+    // stacked (z-[60]): AssetGrid's own "expand table to full screen" mode uses z-50 (see
     // AssetGrid.tsx) — every Log tab this modal opens from can be in that state when an
-    // admin clicks Delete, so this must sit above it, not at EditAssetModal's z-30.
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30" onClick={onClose}>
-      <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+    // admin clicks Delete, so this must sit above it, not at the default z-30.
+    <Modal onClose={onClose} widthClassName="max-w-sm" stacked>
+      <>
         <h2 className="flex items-center gap-2 text-base font-semibold text-red-600">
           <DeleteIcon fontSize={18} />
           {title}
@@ -89,23 +91,14 @@ export function DeleteConfirmModal({
         )}
 
         <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-            onClick={onClose}
-          >
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-            onClick={handleConfirm}
-            disabled={!canConfirm || submitting}
-          >
+          </Button>
+          <Button variant="destructive" onClick={handleConfirm} disabled={!canConfirm || submitting}>
             {submitting ? "Working…" : confirmButtonLabel}
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

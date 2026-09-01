@@ -16,6 +16,7 @@ import type { FySettings } from "../lib/types.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { EmptyIcon, ErrorIcon, ExportIcon, LocationIcon, TransferIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 const SCHEDULE_GRID_COLS = "grid-cols-[120px_1fr_130px_100px_100px_80px_100px_100px_110px]";
 const ROW_HEIGHT = 40;
@@ -329,18 +330,12 @@ export function TransferDepreciationReportPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-              <TransferIcon fontSize={20} />
-              Asset Movement &amp; Depreciation Schedule
-            </h1>
-            <p className="mt-1 max-w-xl text-sm text-gray-500">
-              Every asset, one row per location it physically sat in during the period — an asset that never moved
-              still gets exactly one row.
-            </p>
-          </div>
+      <PageHeader
+        icon={TransferIcon}
+        title="Asset Movement & Depreciation Schedule"
+        subtitle="Every asset, one row per location it physically sat in during the period — an asset that never moved
+              still gets exactly one row."
+        actions={
           <a
             href={exportUrl}
             className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 ${
@@ -350,7 +345,8 @@ export function TransferDepreciationReportPage() {
             <ExportIcon fontSize={15} />
             Export to Excel
           </a>
-        </div>
+        }
+      >
 
         {asAt && (
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
@@ -382,7 +378,7 @@ export function TransferDepreciationReportPage() {
             </span>
           </div>
         )}
-      </div>
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
         {!asAt ? (

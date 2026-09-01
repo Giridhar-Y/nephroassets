@@ -21,6 +21,8 @@ import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js"
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AddCircleIcon, ErrorIcon, UploadIcon } from "../lib/icons.js";
 import { hasPermission } from "../lib/permissions.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
+import { Button } from "../components/ui/Button.js";
 
 type Tab = "add" | "log";
 
@@ -202,29 +204,23 @@ export function CapitalizationPage() {
 
   return (
     <div className="flex h-full flex-col bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-            <AddCircleIcon fontSize={20} />
-            Capitalization
-          </h1>
-          {hasPermission(user, "bulkUpload", "capitalization") && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-              onClick={() => navigate("/bulk-upload?type=assets")}
-            >
+      <PageHeader
+        icon={AddCircleIcon}
+        title="Capitalization"
+        subtitle={
+          tab === "add"
+            ? "Register a brand-new asset into the Fixed Asset Register."
+            : "Every asset that has been capitalized, newest first."
+        }
+        actions={
+          hasPermission(user, "bulkUpload", "capitalization") && (
+            <Button variant="secondary" size="sm" onClick={() => navigate("/bulk-upload?type=assets")}>
               <UploadIcon fontSize={14} />
               Bulk Upload
-            </button>
-          )}
-        </div>
-        <p className="mt-1 max-w-xl text-sm text-gray-500">
-          {tab === "add"
-            ? "Register a brand-new asset into the Fixed Asset Register."
-            : "Every asset that has been capitalized, newest first."}
-        </p>
-
+            </Button>
+          )
+        }
+      >
         <div className="mt-4 flex gap-2">
           <button
             type="button"
@@ -245,7 +241,7 @@ export function CapitalizationPage() {
             Capitalization Log
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {tab === "add" && (
         <div className="flex-1 overflow-auto px-6 py-6">

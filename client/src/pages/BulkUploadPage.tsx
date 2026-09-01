@@ -11,6 +11,7 @@ import {
 } from "../api/client.js";
 import { AddCircleIcon, ErrorIcon, ExportIcon, PassIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 
 type UploadType = "assets" | "disposals" | "transfers" | "merge" | "masters";
 type MasterListType = "centers" | "subClassifications" | "statuses";
@@ -350,14 +351,13 @@ export function BulkUploadPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <UploadIcon fontSize={20} />
-        Bulk Upload
-      </h1>
-      <p className="mt-1 max-w-xl text-sm text-gray-500">
-        Import a CSV or Excel file to add or update many assets, capitalizations, disposals, transfers, parent/child
-        merges, or master list entries at once.
-      </p>
+      <PageHeader
+        icon={UploadIcon}
+        title="Bulk Upload"
+        bordered={false}
+        subtitle="Import a CSV or Excel file to add or update many assets, capitalizations, disposals, transfers, parent/child
+        merges, or master list entries at once."
+      />
 
       <div className="mt-4 flex gap-2">
         {UPLOAD_TYPES.map((t) => (

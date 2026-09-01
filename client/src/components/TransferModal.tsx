@@ -6,6 +6,8 @@ import { describeAssetRelationship } from "../lib/assetRelationship.js";
 import { AssetSelectionEditor } from "./AssetSelectionEditor.js";
 import { ErrorIcon, TransferIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
+import { Modal } from "./ui/Modal.js";
+import { Button } from "./ui/Button.js";
 
 type Step = "form" | "confirm";
 
@@ -43,17 +45,6 @@ export function TransferModal({
     fetchCenters().then(setCenters).catch(() => {});
   }, []);
 
-  // Dismissing the confirmation step (Esc, click outside) returns to the form with
-  // entered values intact — it must never silently submit or discard anything.
-  useEffect(() => {
-    if (step !== "confirm") return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setStep("form");
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [step]);
-
   function handleReview() {
     if (assets.length === 0) {
       setError("Add at least one asset.");
@@ -86,17 +77,16 @@ export function TransferModal({
     }
   }
 
+  // Dismissing the confirmation step (Esc, click outside) returns to the form with
+  // entered values intact — it must never silently submit or discard anything. Neither
+  // does anything while still on the form step (no accidental full close either).
+  const dismissConfirm = () => {
+    if (step === "confirm") setStep("form");
+  };
+
   return (
-    <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/30"
-      onClick={() => {
-        if (step === "confirm") setStep("form");
-      }}
-    >
-      <div
-        className={`w-full rounded-xl bg-white p-6 shadow-xl ${step === "confirm" ? "max-w-lg" : "max-w-md"}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} onEscape={dismissConfirm} onBackdropClick={dismissConfirm} widthClassName={step === "confirm" ? "max-w-lg" : "max-w-md"}>
+      <>
         {step === "form" && (
           <>
             <h2 className="flex items-center gap-2 text-base font-semibold text-ink">
@@ -158,21 +148,12 @@ export function TransferModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={onClose}
-              >
+              <Button variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={handleReview}
-                disabled={assets.length === 0}
-              >
+              </Button>
+              <Button onClick={handleReview} disabled={assets.length === 0}>
                 Transfer
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -223,26 +204,16 @@ export function TransferModal({
             )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={() => setStep("form")}
-                disabled={submitting}
-              >
+              <Button variant="ghost" onClick={() => setStep("form")} disabled={submitting}>
                 Go back
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-                onClick={handleConfirm}
-                disabled={submitting}
-              >
+              </Button>
+              <Button onClick={handleConfirm} disabled={submitting}>
                 {submitting ? "Transferring…" : "Confirm & Transfer"}
-              </button>
+              </Button>
             </div>
           </>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

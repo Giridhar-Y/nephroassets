@@ -14,6 +14,7 @@ import {
 } from "../api/client.js";
 import type { FySettings } from "../lib/types.js";
 import { DepreciationIcon, ErrorIcon, HistoryIcon, SettingsIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 import { hasPermission } from "../lib/permissions.js";
 
 function todayIso(): string {
@@ -82,14 +83,13 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
-      <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-        <SettingsIcon fontSize={20} />
-        Settings
-      </h1>
-      <p className="mt-1 max-w-xl text-sm text-gray-500">
-        These control every figure in NephroAssets: the cut-off date used for depreciation, and the financial year
-        it falls within.
-      </p>
+      <PageHeader
+        icon={SettingsIcon}
+        title="Settings"
+        bordered={false}
+        subtitle="These control every figure in NephroAssets: the cut-off date used for depreciation, and the financial year
+        it falls within."
+      />
       {notConfigured && hasPermission(user, "settings", "edit") && (
         <p className="mt-3 max-w-xl rounded-md bg-accent-light px-3 py-2 text-sm text-accent-hover">
           Welcome! Set up your financial year below to get started.

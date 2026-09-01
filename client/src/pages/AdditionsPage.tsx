@@ -13,6 +13,7 @@ import type { AssetListItem } from "../lib/types.js";
 import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js";
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
+import { PageHeader } from "../components/ui/PageHeader.js";
 import { fetchSubClassifications, undoAddition, type SubClassificationOption } from "../api/client.js";
 import { hasPermission } from "../lib/permissions.js";
 
@@ -176,13 +177,11 @@ export function AdditionsPage() {
 
   return (
     <div className="flex h-full flex-col bg-white">
-      <div className="border-b border-gray-200 px-6 py-4">
-        <h1 className="flex items-center gap-2 text-base font-semibold text-ink">
-          <AdditionIcon fontSize={20} />
-          Additions
-        </h1>
-        <p className="mt-1 text-sm text-gray-500">Record a mid-year addition on an already-capitalized asset, or browse what's been recorded.</p>
-
+      <PageHeader
+        icon={AdditionIcon}
+        title="Additions"
+        subtitle="Record a mid-year addition on an already-capitalized asset, or browse what's been recorded."
+      >
         <div className="mt-4 flex gap-2">
           <button
             type="button"
@@ -203,7 +202,7 @@ export function AdditionsPage() {
             Addition Log
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {tab === "new" && (
         <NewAdditionTab
