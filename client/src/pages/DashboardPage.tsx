@@ -8,7 +8,7 @@ import {
 } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
-import { formatCurrency } from "../lib/format.js";
+import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
 import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
@@ -59,6 +59,62 @@ function KpiTile({ label, value, children }: { label: string; value: string; chi
       <div className="mt-1 text-2xl font-semibold text-ink">{value}</div>
       {children}
     </Card>
+  );
+}
+
+// Shared by the Depreciation run-rate sparkline (2 points: FY Start -> FYTD, an honest
+// straight-line "how far in" indicator, not fabricated intermediate data) and the Net
+// Block trend chart (the endpoint's real 6 quarter points, with a native <title> tooltip
+// per point). currentColor-based so a wrapping text-* class sets the line/fill color.
+function LineChart({
+  points,
+  height = 60,
+  showDots = false
+}: {
+  points: { label: string; value: number }[];
+  height?: number;
+  showDots?: boolean;
+}) {
+  if (points.length < 2) return null;
+  const width = 100;
+  const values = points.map((p) => p.value);
+  const min = Math.min(0, ...values);
+  const max = Math.max(1, ...values);
+  const range = max - min || 1;
+  const stepX = width / (points.length - 1);
+  const coords = points.map((p, i) => ({
+    x: i * stepX,
+    y: height - ((p.value - min) / range) * height,
+    point: p
+  }));
+  const linePath = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(" ");
+  const areaPath = `${linePath} L ${coords[coords.length - 1]!.x.toFixed(1)} ${height} L 0 ${height} Z`;
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }} preserveAspectRatio="none">
+      <path d={areaPath} fill="currentColor" opacity={0.1} />
+      <path d={linePath} fill="none" stroke="currentColor" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+      {showDots &&
+        coords.map((c, i) => (
+          <circle key={i} cx={c.x} cy={c.y} r={2.5} fill="currentColor">
+            <title>{`${c.point.label}: ${formatCurrency(c.point.value)}`}</title>
+          </circle>
+        ))}
+    </svg>
+  );
+}
+
+function DivergingBar({ gains, losses }: { gains: number; losses: number }) {
+  // losses is already <= 0 (server sums profit_loss WHERE < 0) — magnitude only, here.
+  const max = Math.max(gains, Math.abs(losses), 1);
+  return (
+    <div className="mt-2 flex h-3 w-full divide-x divide-white overflow-hidden rounded-full bg-gray-100">
+      <div className="flex w-1/2 justify-end">
+        <div className="h-3 bg-accent" style={{ width: `${(Math.abs(losses) / max) * 100}%` }} />
+      </div>
+      <div className="flex w-1/2 justify-start">
+        <div className="h-3 bg-green-500" style={{ width: `${(gains / max) * 100}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -199,6 +255,53 @@ export function DashboardPage() {
                 rows={foldTop5(summary.locationBreakdown.map((r) => ({ label: r.location, value: r.nbv })))}
               />
             </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Card className="p-5">
+                <h2 className="text-sm font-semibold text-ink">Depreciation Run-Rate (FYTD)</h2>
+                <div className="mt-1 text-2xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
+                <div className="mt-2 text-brand-blue">
+                  <LineChart
+                    points={[
+                      { label: "FY Start", value: 0 },
+                      { label: "Now", value: summary.depreciationFytd }
+                    ]}
+                    height={24}
+                  />
+                </div>
+              </Card>
+
+              <Card className="p-5">
+                <h2 className="text-sm font-semibold text-ink">Disposal P&L (FYTD)</h2>
+                <div className="mt-2 flex justify-between text-xs text-gray-500">
+                  <span>Losses {formatCurrency(summary.disposalPL.losses)}</span>
+                  <span>Gains {formatCurrency(summary.disposalPL.gains)}</span>
+                </div>
+                <DivergingBar gains={summary.disposalPL.gains} losses={summary.disposalPL.losses} />
+                <div className="mt-3 flex items-baseline justify-between">
+                  <span className="text-xs text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
+                  <span className="text-lg font-semibold text-ink">
+                    Net {formatCurrency(summary.disposalPL.gains + summary.disposalPL.losses)}
+                  </span>
+                </div>
+              </Card>
+            </div>
+
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-ink">Net Block Trend (6 trailing quarters)</h2>
+              <div className="mt-3 text-brand-blue">
+                <LineChart
+                  points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
+                  height={70}
+                  showDots
+                />
+              </div>
+              <div className="mt-1 flex justify-between text-[10px] text-gray-400">
+                {summary.nbvTrend.map((t) => (
+                  <span key={t.asAt}>{formatDateDDMMYYYY(t.asAt)}</span>
+                ))}
+              </div>
+            </Card>
           </div>
         ) : null}
       </div>
