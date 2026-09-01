@@ -40,7 +40,9 @@ setup("authenticate", async ({ page }) => {
 
   await page.goto("/#/login");
   await page.getByLabel("Username").fill(E2E_USERNAME);
-  await page.getByLabel("Password").fill(E2E_PASSWORD);
+  // exact: true — a substring match on "Password" also catches the show/hide toggle
+  // button's aria-label ("Show password"), which isn't the field itself.
+  await page.getByLabel("Password", { exact: true }).fill(E2E_PASSWORD);
   await page.getByRole("button", { name: "Sign In" }).click();
   await expect(page).not.toHaveURL(/#\/login/);
   await page.context().storageState({ path: authFile });
