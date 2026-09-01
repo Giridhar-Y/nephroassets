@@ -371,11 +371,7 @@ function AssetPrintReport({
           </div>
           <div>
             <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Profit / (Loss)</div>
-            <div className="mt-0.5">
-              {disposalProfitLoss >= 0 ? "" : "("}
-              {formatCurrency(Math.abs(disposalProfitLoss))}
-              {disposalProfitLoss >= 0 ? "" : ")"}
-            </div>
+            <div className={`mt-0.5 ${disposalProfitLoss < 0 ? "text-accent" : ""}`}>{formatCurrency(disposalProfitLoss)}</div>
           </div>
         </div>
       )}
@@ -575,10 +571,8 @@ export function AssetLifecyclePage() {
               <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
                 <Tooltip text={FIELD_INFO.profitLoss.tooltip}>Profit / (Loss)</Tooltip>
               </div>
-              <div className={`mt-1 text-sm font-semibold ${disposalProfitLoss >= 0 ? "text-green-700" : "text-red-600"}`}>
-                {disposalProfitLoss >= 0 ? "" : "("}
-                {formatCurrency(Math.abs(disposalProfitLoss))}
-                {disposalProfitLoss >= 0 ? "" : ")"}
+              <div className={`mt-1 text-sm font-semibold ${disposalProfitLoss >= 0 ? "text-green-700" : "text-accent"}`}>
+                {formatCurrency(disposalProfitLoss)}
               </div>
             </div>
           </div>

@@ -12,9 +12,11 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { CollapseExpandIcon, ExpandIcon, SearchIcon } from "../lib/icons.js";
+import { CollapseExpandIcon, DensityIcon, ExpandIcon, SearchIcon } from "../lib/icons.js";
+import { useDensity } from "../hooks/useDensity.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { formatCompactIndianCount } from "../lib/format.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
@@ -107,7 +109,8 @@ export function RegisterPage() {
     fetchStatuses().then(setStatuses).catch(() => {});
   }, []);
 
-  const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
+  const { items, nextCursor, total, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
+  const [density, setDensity] = useDensity();
   const [selectionState, setSelectionState] = useState<SelectionState>({
     selected: new Set(),
     autoSelected: new Set()
@@ -301,17 +304,9 @@ export function RegisterPage() {
         <div className="flex items-center gap-3 text-xs text-gray-500">
           {loading
             ? "Loading…"
-            : `${items.length} asset${items.length === 1 ? "" : "s"} loaded${nextCursor ? " (more available)" : ""}`}
-          {!loading && nextCursor && (
-            <button
-              type="button"
-              className="font-medium text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={loadMore}
-              disabled={loadingMore}
-            >
-              {loadingMore ? "Loading…" : "Load more"}
-            </button>
-          )}
+            : total !== null && total > items.length
+              ? `${formatCompactIndianCount(items.length)} / ${formatCompactIndianCount(total)} loaded`
+              : `${formatCompactIndianCount(items.length)} loaded`}
           {hasActiveFilters && (
             <>
               <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
@@ -336,15 +331,26 @@ export function RegisterPage() {
           )}
           <ExportButton url={asAt ? getExportUrl({ asAt, ...filters }) : undefined} />
           <ColumnPicker prefs={columnPrefs} />
-          <button
-            type="button"
-            aria-label={gridExpanded ? "Exit full screen" : "Expand table to full screen"}
-            title={gridExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
-            onClick={() => setGridExpanded((e) => !e)}
-            className="flex items-center gap-1.5 rounded-md border border-gray-300 px-2 py-1.5 text-gray-600 hover:bg-gray-50"
-          >
-            {gridExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
-          </button>
+          <div className="flex items-center gap-1 rounded-md border border-gray-300 p-0.5 text-gray-600">
+            <button
+              type="button"
+              aria-label={density === "compact" ? "Switch to comfortable row height" : "Switch to compact row height"}
+              title={density === "compact" ? "Comfortable rows" : "Compact rows"}
+              onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")}
+              className={`flex items-center rounded px-1.5 py-1 hover:bg-gray-50 ${density === "compact" ? "bg-accent-light text-accent-hover" : ""}`}
+            >
+              <DensityIcon fontSize={14} />
+            </button>
+            <button
+              type="button"
+              aria-label={gridExpanded ? "Exit full screen" : "Expand table to full screen"}
+              title={gridExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+              onClick={() => setGridExpanded((e) => !e)}
+              className="flex items-center rounded px-1.5 py-1 hover:bg-gray-50"
+            >
+              {gridExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -354,6 +360,8 @@ export function RegisterPage() {
         items={groupedItems}
         expanded={gridExpanded}
         onExpandedChange={setGridExpanded}
+        density={density}
+        onDensityChange={setDensity}
         columns={visibleColumns}
         loading={loading}
         loadingMore={loadingMore}

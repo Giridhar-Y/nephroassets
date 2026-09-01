@@ -150,6 +150,7 @@ export interface FetchAssetsParams extends AssetFilters {
   sortDir?: "asc" | "desc";
   cursor?: string | null;
   limit?: number;
+  includeTotal?: boolean;
 }
 
 // Every other array-valued filter (center, status, ...) is a plain string[], which

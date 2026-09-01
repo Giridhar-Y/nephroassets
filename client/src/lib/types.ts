@@ -78,6 +78,9 @@ export interface AssetListResponse {
   items: AssetListItem[];
   nextCursor: string | null;
   asAt: string;
+  /** Total rows matching the current filters (ignoring pagination) — only present when
+   *  the request asked for it via `includeTotal`, see fetchAssets. */
+  total?: number;
 }
 
 export interface AssetCreateInput {

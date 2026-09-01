@@ -1,11 +1,36 @@
+// currencySign: "accounting" — the one built-in Intl option for exactly this: a negative
+// value renders in parentheses, "(₹1,000)", instead of a leading minus. Every other rule
+// (grouping, precision) is untouched, so every existing positive-value call site is
+// unaffected — this only changes how a negative one is signed.
 const currencyFormatter = new Intl.NumberFormat("en-IN", {
   style: "currency",
   currency: "INR",
+  currencySign: "accounting",
   maximumFractionDigits: 0
 });
 
 export function formatCurrency(value: number): string {
   return currencyFormatter.format(value);
+}
+
+/** True when a formatCurrency (or similarly accounting-signed) string represents a
+ *  negative value — i.e. it's wrapped in parentheses. Lets a generic cell renderer that
+ *  only has the formatted text (not the original number) apply the brand's negative-value
+ *  color without re-deriving the sign itself. */
+export function isNegativeFormattedCurrency(formatted: string): boolean {
+  return formatted.startsWith("(");
+}
+
+// "150", "2.5K", "15K", "2.5L" — Indian numbering shorthand for a compact loaded/total
+// counter (Register's toolbar). K at 1,000, L at 1,00,000 (a lakh), Cr at 1,00,00,000 (a
+// crore) — matching how these figures are actually read/written in this app's own
+// domain, not the Western "M"/"B" a generic compact formatter would reach for. One
+// decimal place, trimmed when it's a whole number.
+export function formatCompactIndianCount(n: number): string {
+  const [divisor, suffix] = n >= 1_00_00_000 ? [1_00_00_000, "Cr"] : n >= 1_00_000 ? [1_00_000, "L"] : n >= 1_000 ? [1_000, "K"] : [1, ""];
+  if (divisor === 1) return String(n);
+  const value = Math.round((n / divisor) * 10) / 10;
+  return `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(1)}${suffix}`;
 }
 
 export function formatDate(value: string | null): string {

@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import { COLUMN_GROUPS, type ColumnDef, type ColumnGroupId } from "../lib/columns.js";
+import { isNegativeFormattedCurrency } from "../lib/format.js";
+import { useDensity, type Density } from "../hooks/useDensity.js";
 import { Tooltip } from "./Tooltip.js";
 import { StatusBadge } from "./ui/Badge.js";
 import {
@@ -20,8 +22,6 @@ import {
   ViewIcon
 } from "../lib/icons.js";
 
-type Density = "comfortable" | "compact";
-const DENSITY_KEY = "nephroassets.density";
 const ROW_HEIGHTS: Record<Density, number> = { comfortable: 40, compact: 32 };
 const HEADER_HEIGHTS: Record<Density, number> = { comfortable: 36, compact: 30 };
 const GROUP_BAND_HEIGHTS: Record<Density, number> = { comfortable: 26, compact: 22 };
@@ -207,6 +207,12 @@ export interface AssetGridProps {
    *  floating button (every page but Register, unchanged). */
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  /** Same controlled/uncontrolled pattern as expanded/onExpandedChange above, for the
+   *  same reason — Register renders its own density toggle in the toolbar next to its
+   *  own Expand button instead of AssetGrid's default floating one. Provide both together,
+   *  or neither to keep the built-in floating toggle (every page but Register). */
+  density?: Density;
+  onDensityChange?: (density: Density) => void;
 }
 
 export function AssetGrid({
@@ -233,7 +239,9 @@ export function AssetGrid({
   onReorderColumn,
   showGroupBand = false,
   expanded: expandedProp,
-  onExpandedChange
+  onExpandedChange,
+  density: densityProp,
+  onDensityChange
 }: AssetGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const isControlledExpand = expandedProp !== undefined;
@@ -243,23 +251,10 @@ export function AssetGrid({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<ColumnGroupId>>(new Set());
 
-  // Row density — a shared preference (one localStorage key) rather than per-page, since
-  // every page here shows the same kind of asset table. Comfortable by default; compact
-  // trades whitespace for more visible rows on demand.
-  const [density, setDensity] = useState<Density>(() => {
-    try {
-      return localStorage.getItem(DENSITY_KEY) === "compact" ? "compact" : "comfortable";
-    } catch {
-      return "comfortable";
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(DENSITY_KEY, density);
-    } catch {
-      // Private-browsing/storage-disabled — density just won't persist across reloads.
-    }
-  }, [density]);
+  const isControlledDensity = densityProp !== undefined;
+  const [internalDensity, setInternalDensity] = useDensity();
+  const density = isControlledDensity ? densityProp : internalDensity;
+  const setDensity = isControlledDensity ? onDensityChange! : setInternalDensity;
   const rowHeight = ROW_HEIGHTS[density];
   const headerHeight = HEADER_HEIGHTS[density];
   const groupBandHeight = GROUP_BAND_HEIGHTS[density];
@@ -543,15 +538,22 @@ export function AssetGrid({
                       }
                       const col = slot.col;
                       const pinnedOffset = pinnedLeft.get(col.id);
+                      const rendered = col.render(item);
+                      // Accounting-style negatives (formatCurrency's currencySign:
+                      // "accounting") already show as "(₹1,234)" — colour those Crimson,
+                      // the brand's one red, wherever a right-aligned figure happens to be
+                      // negative. Cheap to detect from the formatted text alone; no need
+                      // to know which columns can even go negative.
+                      const isNegative = col.align === "right" && isNegativeFormattedCurrency(rendered);
                       return (
                         <div
                           key={col.id}
                           data-testid={`cell-${col.id}`}
                           className={`flex shrink-0 items-center truncate px-3 ${divider} ${
                             col.align === "right" ? "justify-end tabular-nums" : ""
-                          } ${pinnedOffset !== undefined ? `sticky z-10 ${rowBg}` : ""}`}
+                          } ${isNegative ? "text-accent" : ""} ${pinnedOffset !== undefined ? `sticky z-10 ${rowBg}` : ""}`}
                           style={{ width: col.width, left: pinnedOffset }}
-                          title={col.render(item)}
+                          title={rendered}
                         >
                           {col.id === "farId" ? (
                             // Visual-only parent/child identification: a child row indents
@@ -574,7 +576,7 @@ export function AssetGrid({
                           ) : col.id === "status" ? (
                             <StatusBadge status={item.asset.status} />
                           ) : (
-                            col.render(item)
+                            rendered
                           )}
                         </div>
                       );
@@ -645,15 +647,16 @@ export function AssetGrid({
     </button>
   );
 
-  // Always rendered (unlike expandButton, which Register suppresses in favor of its own
-  // toolbar button) — offset left of the expand button when both are floating together,
-  // flush right when it's the only floating control (Register's controlled-expand case).
+  // Same controlled/uncontrolled suppression as expandButton — Register renders its own
+  // toggle in the toolbar next to its own Expand button instead. When both float
+  // together (every other page, and the fullscreen portal below), offset left of Expand;
+  // flush right if it's ever the only floating control on its own.
   const densityButton = (
     <button
       type="button"
       aria-label={density === "compact" ? "Switch to comfortable row height" : "Switch to compact row height"}
       title={density === "compact" ? "Comfortable rows" : "Compact rows"}
-      onClick={() => setDensity((d) => (d === "compact" ? "comfortable" : "compact"))}
+      onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")}
       className={`absolute top-2 z-30 grid h-7 w-7 place-items-center rounded-md border bg-white shadow-sm hover:border-accent hover:text-accent ${
         expanded || !isControlledExpand ? "right-11" : "right-2"
       } ${density === "compact" ? "border-accent text-accent" : "border-gray-300 text-gray-500"}`}
@@ -666,7 +669,7 @@ export function AssetGrid({
     return createPortal(
       <div className="fixed inset-0 z-50 flex flex-col bg-white p-4">
         {expandButton}
-        {densityButton}
+        {!isControlledDensity && densityButton}
         {content}
       </div>,
       document.body
@@ -676,7 +679,7 @@ export function AssetGrid({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {!isControlledExpand && expandButton}
-      {densityButton}
+      {!isControlledDensity && densityButton}
       {content}
     </div>
   );

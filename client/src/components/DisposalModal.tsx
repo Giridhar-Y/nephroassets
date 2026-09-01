@@ -203,18 +203,10 @@ export function DisposalModal({
                         <td className="px-3 py-1.5 text-right text-gray-600">{formatCurrency(saleValue)}</td>
                         <td
                           className={`px-3 py-1.5 text-right font-medium ${
-                            profitLoss === undefined ? "text-gray-400" : profitLoss >= 0 ? "text-green-700" : "text-red-600"
+                            profitLoss === undefined ? "text-gray-400" : profitLoss >= 0 ? "text-green-700" : "text-accent"
                           }`}
                         >
-                          {profitLoss === undefined ? (
-                            previewing ? "…" : "—"
-                          ) : (
-                            <>
-                              {profitLoss >= 0 ? "" : "("}
-                              {formatCurrency(Math.abs(profitLoss))}
-                              {profitLoss >= 0 ? "" : ")"}
-                            </>
-                          )}
+                          {profitLoss === undefined ? (previewing ? "…" : "—") : formatCurrency(profitLoss)}
                         </td>
                       </tr>
                     );

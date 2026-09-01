@@ -132,6 +132,11 @@ const querySchema = z.object({
   sortDir: z.enum(["asc", "desc"]).default("asc"),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  // Register's "N loaded / total" counter — the client asks for this only on a fresh
+  // filter load, not on every scroll-triggered "load more" page, since it's an extra
+  // COUNT(*) query (over the calc CTE too, when a computed-column condition is active)
+  // that only needs recomputing when the filters themselves change.
+  includeTotal: z.string().optional(),
   // Excel-style per-column custom filter conditions (Register's column-header
   // filters) — see assetColumnFilters.ts. AND'd with every filter above, and with each
   // other, same as every existing condition in this route.
@@ -266,6 +271,11 @@ export default async function assetsRoutes(app: FastifyInstance) {
       );
     }
 
+    // Snapshot before the cursor condition below joins in — the total must count every
+    // row matching the filters, not just the ones after the current scroll position.
+    const filterConditions = [...conditions];
+    const filterParams = [...params];
+
     const cursor = decodeCursor(q.cursor);
     if (cursor) {
       const [cursorSortValue, cursorFarId] = cursor;
@@ -363,7 +373,48 @@ export default async function assetsRoutes(app: FastifyInstance) {
         ? encodeCursor(String((last as unknown as Record<string, unknown>)[sortColumn]), last.far_id)
         : null;
 
-    return { items, nextCursor, asAt };
+    let total: number | undefined;
+    if (q.includeTotal === "true") {
+      const totalWhereClause = filterConditions.length > 0 ? `WHERE ${filterConditions.join(" AND ")}` : "";
+      if (q.conditions.length === 0) {
+        // Cheap path — no Excel-style computed-column condition is active, so the count
+        // can run directly against the table without paying for the calc CTE at all.
+        const { rows: countRows } = await db.query<{ count: string }>(
+          `SELECT COUNT(*)::bigint AS count FROM assets ${totalWhereClause}`,
+          filterParams
+        );
+        total = Number(countRows[0]!.count);
+      } else {
+        // A computed condition (e.g. NBV, Acc Dep) needs the same calc CTE the main query
+        // uses — same pattern as assetsExport.ts's own totals query: a fresh params array,
+        // not the shared one, since its own calc-CTE params would otherwise collide with
+        // indices already used above.
+        const totalParams = [...filterParams];
+        const totalCalcExtras = buildCalcCteExtras(totalParams, asAt, {
+          fyStart: fySettings.fy_start,
+          fyEnd: fySettings.fy_end,
+          daysInFy: fySettings.days_in_fy
+        });
+        const totalComputedConditions = q.conditions.map((cond) => {
+          const built = buildConditionSql(cond, totalParams, { fyStart: fySettings.fy_start, fyEnd: fySettings.fy_end });
+          return "error" in built ? "" : built.sql;
+        });
+        const totalComputedWhereClause =
+          totalComputedConditions.length > 0 ? `WHERE ${totalComputedConditions.join(" AND ")}` : "";
+        const totalSql = `WITH calc_base AS (
+             SELECT assets.*, ${totalCalcExtras}
+             FROM assets ${totalWhereClause}
+           ), calc AS (
+             SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+             FROM calc_base
+           )
+           SELECT COUNT(*)::bigint AS count FROM calc ${totalComputedWhereClause}`;
+        const { rows: countRows } = await db.query<{ count: string }>(totalSql, totalParams);
+        total = Number(countRows[0]!.count);
+      }
+    }
+
+    return { items, nextCursor, asAt, total };
   });
 
   // Asset 360: one asset's full record plus its complete transfer history (not just

@@ -15,6 +15,7 @@ export interface AssetListSort {
 export function useAssetList(fy: FySettings | null, filters: AssetFilters, sort?: AssetListSort) {
   const [items, setItems] = useState<AssetListItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +29,12 @@ export function useAssetList(fy: FySettings | null, filters: AssetFilters, sort?
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchAssets({ asAt: fy.asAt, ...filters, ...sort, limit: PAGE_SIZE });
+      // includeTotal only on this first-page fetch, not on loadMore below — it's an
+      // extra COUNT(*) query server-side, only worth paying for once per filter change.
+      const res = await fetchAssets({ asAt: fy.asAt, ...filters, ...sort, limit: PAGE_SIZE, includeTotal: true });
       setItems(res.items);
       setNextCursor(res.nextCursor);
+      setTotal(res.total ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load assets.");
     } finally {
@@ -58,5 +62,5 @@ export function useAssetList(fy: FySettings | null, filters: AssetFilters, sort?
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsKey, filters, sort, nextCursor, loadingMore]);
 
-  return { items, nextCursor, loading, loadingMore, error, reload: loadFirstPage, loadMore };
+  return { items, nextCursor, total, loading, loadingMore, error, reload: loadFirstPage, loadMore };
 }

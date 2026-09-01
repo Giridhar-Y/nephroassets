@@ -169,7 +169,7 @@ export function Layout() {
                 } ${isActive ? "bg-accent-light text-accent-hover" : "text-gray-600 hover:bg-gray-50"}`
               }
             >
-              <item.icon fontSize={18} />
+              <item.icon fontSize={collapsed ? 20 : 18} />
               {!collapsed && item.label}
             </NavLink>
           ))}
@@ -186,7 +186,7 @@ export function Layout() {
               navigate("/login", { replace: true });
             }}
           >
-            <SignOutIcon fontSize={18} />
+            <SignOutIcon fontSize={collapsed ? 20 : 18} />
             {!collapsed && "Sign Out"}
           </button>
         </div>
