@@ -1,9 +1,80 @@
-import { useCallback, useEffect, useState } from "react";
-import { fetchCenters, fetchDashboardSummary, fetchSubClassifications, type DashboardSummary } from "../api/client.js";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  fetchCenters,
+  fetchDashboardSummary,
+  fetchSubClassifications,
+  type DashboardStatusCount,
+  type DashboardSummary
+} from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
+import { formatCurrency } from "../lib/format.js";
 import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { Card } from "../components/ui/Card.js";
+import { StatusBadge } from "../components/ui/Badge.js";
+
+// Top 5 by value + one "Other" row summing the rest — the server returns every row (it
+// doesn't know how many the client wants to show), this is purely a display fold.
+function foldTop5(rows: { label: string; value: number }[]): { label: string; value: number }[] {
+  const sorted = [...rows].sort((a, b) => b.value - a.value);
+  const top = sorted.slice(0, 5);
+  const rest = sorted.slice(5);
+  return rest.length > 0 ? [...top, { label: "Other", value: rest.reduce((sum, r) => sum + r.value, 0) }] : top;
+}
+
+function BarPanel({ title, rows }: { title: string; rows: { label: string; value: number }[] }) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <Card className="p-5">
+      <h2 className="text-sm font-semibold text-ink">{title}</h2>
+      {rows.length === 0 ? (
+        <p className="mt-3 text-sm text-gray-400">Nothing in scope.</p>
+      ) : (
+        <div className="mt-3 space-y-2.5">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <div className="flex items-baseline justify-between gap-2 text-xs">
+                <span className="truncate text-gray-600">{row.label}</span>
+                <span className="shrink-0 font-medium tabular-nums text-ink">{formatCurrency(row.value)}</span>
+              </div>
+              <div className="mt-1 h-2 rounded-full bg-gray-100">
+                <div
+                  className="h-2 rounded-full bg-brand-blue"
+                  style={{ width: `${Math.max(2, (row.value / max) * 100)}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function KpiTile({ label, value, children }: { label: string; value: string; children?: ReactNode }) {
+  return (
+    <Card className="px-5 py-4">
+      <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
+      <div className="mt-1 text-2xl font-semibold text-ink">{value}</div>
+      {children}
+    </Card>
+  );
+}
+
+function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
+  if (statusCounts.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {statusCounts.map((s) => (
+        <span key={s.status} className="inline-flex items-center gap-1">
+          <StatusBadge status={s.status} />
+          <span className="text-xs font-medium text-gray-500">{s.count}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function DashboardPage() {
   const { settings } = useSettings();
@@ -106,9 +177,29 @@ export function DashboardPage() {
             ))}
           </div>
         ) : summary ? (
-          <p className="text-sm text-gray-500">
-            {summary.totals.assetCount} assets in scope as of {summary.asAt}.
-          </p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-4 gap-4">
+              <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} />
+              <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} />
+              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)} />
+              <KpiTile label="Asset Count" value={String(summary.totals.assetCount)}>
+                <StatusMix statusCounts={summary.statusCounts} />
+              </KpiTile>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <BarPanel
+                title="By Sub Classification (Gross Block)"
+                rows={foldTop5(
+                  summary.subClassificationBreakdown.map((r) => ({ label: r.subClassification, value: r.grossBlock }))
+                )}
+              />
+              <BarPanel
+                title="By Location (Net Block)"
+                rows={foldTop5(summary.locationBreakdown.map((r) => ({ label: r.location, value: r.nbv })))}
+              />
+            </div>
+          </div>
         ) : null}
       </div>
     </div>
