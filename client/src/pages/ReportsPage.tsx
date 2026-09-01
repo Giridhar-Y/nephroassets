@@ -41,7 +41,7 @@ export function ReportsPage() {
           <Link
             key={report.to}
             to={report.to}
-            className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors hover:border-accent hover:bg-accent-light"
+            className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all duration-150 hover:border-accent hover:bg-accent-light hover:shadow-md"
           >
             <report.icon fontSize={22} className="text-accent" />
             <h2 className="mt-3 text-sm font-semibold text-ink">{report.label}</h2>

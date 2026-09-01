@@ -16,14 +16,14 @@ export function FilterChips({ chips }: { chips: FilterChip[] }) {
       {chips.map((chip) => (
         <span
           key={chip.key}
-          className="inline-flex items-center gap-1 rounded-full bg-accent-light py-1 pl-2.5 pr-1.5 text-xs font-medium text-accent-hover"
+          className="inline-flex items-center gap-1 rounded-full bg-accent-light py-1 pl-2.5 pr-1.5 text-xs font-medium text-accent-hover [animation:chip-in_180ms_ease-out]"
         >
           {chip.label}
           <button
             type="button"
             aria-label={`Remove filter: ${chip.label}`}
             onClick={chip.onRemove}
-            className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full hover:bg-black/10"
+            className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full transition-colors duration-150 hover:bg-black/10"
           >
             <DismissIcon fontSize={10} />
           </button>

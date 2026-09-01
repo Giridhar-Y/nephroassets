@@ -250,6 +250,9 @@ export function AssetGrid({
   const setExpanded = isControlledExpand ? onExpandedChange! : setInternalExpanded;
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<ColumnGroupId>>(new Set());
+  // Lifts the sticky header row(s) visually above the scrolling content once there's
+  // something to lift above — a shadow, not another border, so it reads as elevation.
+  const [scrolled, setScrolled] = useState(false);
 
   const isControlledDensity = densityProp !== undefined;
   const [internalDensity, setInternalDensity] = useDensity();
@@ -350,10 +353,17 @@ export function AssetGrid({
           </button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto" ref={parentRef}>
+      <div
+        className="min-h-0 flex-1 overflow-auto"
+        ref={parentRef}
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+      >
         <div style={{ minWidth: slots.reduce((sum, s) => sum + slotWidth(s), checkboxWidth + actionWidth) }}>
           {showGroupBand && (
-            <div className="sticky top-0 z-10 flex border-b border-gray-300 bg-white" style={{ height: groupBandHeight }}>
+            <div
+              className={`sticky top-0 z-10 flex border-b border-gray-300 bg-white transition-shadow duration-150 ${scrolled ? "shadow-md" : ""}`}
+              style={{ height: groupBandHeight }}
+            >
               {selectable && <div className="sticky left-0 z-20 h-full w-10 shrink-0 bg-white" style={{ left: 0 }} />}
               {bandSegments.map((seg, i) => {
                 const group = COLUMN_GROUPS.find((g) => g.id === seg.groupId)!;
@@ -396,7 +406,9 @@ export function AssetGrid({
             </div>
           )}
           <div
-            className="sticky z-10 flex border-b-2 border-gray-300 bg-gray-50"
+            className={`sticky z-10 flex border-b-2 border-gray-300 bg-gray-50 transition-shadow duration-150 ${
+              scrolled && !showGroupBand ? "shadow-md" : ""
+            }`}
             style={{ top: showGroupBand ? groupBandHeight : 0 }}
           >
             {selectable && (
@@ -505,16 +517,22 @@ export function AssetGrid({
                 // Fully opaque in every state — `/60` (or any alpha) here would let the
                 // scrolling row content bleed through the sticky FAR ID cell underneath it.
                 const rowBg = isSelected ? "bg-accent-light" : virtualRow.index % 2 === 1 ? "bg-gray-50" : "bg-white";
+                // A selected row is already tinted (accent-light) — hover adds nothing
+                // there. Unselected rows get a very low-opacity Calming Blue wash; this is
+                // a transient hover-only overlay, not the row's persistent background, so
+                // the sticky-cell opacity concern above doesn't apply the same way.
+                const hoverTint = isSelected ? "" : "hover:bg-brand-blue/5";
+                const groupHoverTint = isSelected ? "" : "group-hover:bg-brand-blue/5";
                 return (
                   <div
                     key={item.asset.farId}
                     data-testid="register-row"
                     data-far-id={item.asset.farId}
-                    className={`absolute left-0 top-0 flex w-full border-b border-gray-100 ${rowTextClass} ${rowBg}`}
+                    className={`group absolute left-0 top-0 flex w-full border-b border-gray-100 transition-colors duration-150 ${rowTextClass} ${rowBg} ${hoverTint}`}
                     style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {selectable && (
-                      <div className={`sticky left-0 z-10 flex w-10 shrink-0 items-center justify-center ${rowBg}`}>
+                      <div className={`sticky left-0 z-10 flex w-10 shrink-0 items-center justify-center transition-colors duration-150 ${rowBg} ${groupHoverTint}`}>
                         <input
                           type="checkbox"
                           className="accent-accent"
@@ -551,7 +569,9 @@ export function AssetGrid({
                           data-testid={`cell-${col.id}`}
                           className={`flex shrink-0 items-center truncate px-3 ${divider} ${
                             col.align === "right" ? "justify-end tabular-nums" : ""
-                          } ${isNegative ? "text-accent" : ""} ${pinnedOffset !== undefined ? `sticky z-10 ${rowBg}` : ""}`}
+                          } ${isNegative ? "text-accent" : ""} ${
+                            pinnedOffset !== undefined ? `sticky z-10 transition-colors duration-150 ${rowBg} ${groupHoverTint}` : ""
+                          }`}
                           style={{ width: col.width, left: pinnedOffset }}
                           title={rendered}
                         >
