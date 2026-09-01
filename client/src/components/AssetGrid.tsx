@@ -10,6 +10,7 @@ import {
   ChevronDownIcon,
   CollapseExpandIcon,
   DeleteIcon,
+  DensityIcon,
   EditIcon,
   EmptyIcon,
   ErrorIcon,
@@ -19,8 +20,11 @@ import {
   ViewIcon
 } from "../lib/icons.js";
 
-const ROW_HEIGHT = 40;
-const GROUP_BAND_HEIGHT = 26;
+type Density = "comfortable" | "compact";
+const DENSITY_KEY = "nephroassets.density";
+const ROW_HEIGHTS: Record<Density, number> = { comfortable: 40, compact: 32 };
+const HEADER_HEIGHTS: Record<Density, number> = { comfortable: 36, compact: 30 };
+const GROUP_BAND_HEIGHTS: Record<Density, number> = { comfortable: 26, compact: 22 };
 const MIN_COLUMN_WIDTH = 60;
 const COLLAPSED_GROUP_WIDTH = 110;
 
@@ -239,12 +243,42 @@ export function AssetGrid({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<ColumnGroupId>>(new Set());
 
+  // Row density — a shared preference (one localStorage key) rather than per-page, since
+  // every page here shows the same kind of asset table. Comfortable by default; compact
+  // trades whitespace for more visible rows on demand.
+  const [density, setDensity] = useState<Density>(() => {
+    try {
+      return localStorage.getItem(DENSITY_KEY) === "compact" ? "compact" : "comfortable";
+    } catch {
+      return "comfortable";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(DENSITY_KEY, density);
+    } catch {
+      // Private-browsing/storage-disabled — density just won't persist across reloads.
+    }
+  }, [density]);
+  const rowHeight = ROW_HEIGHTS[density];
+  const headerHeight = HEADER_HEIGHTS[density];
+  const groupBandHeight = GROUP_BAND_HEIGHTS[density];
+  const rowTextClass = density === "compact" ? "text-xs" : "text-sm";
+
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: 12
   });
+
+  // Toggling density changes what estimateSize returns, but the virtualizer only calls
+  // it for indices it hasn't sized yet — already-rendered rows keep their old cached
+  // size otherwise. measure() clears that cache so every row re-reads the new height.
+  useEffect(() => {
+    virtualizer.measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [density]);
 
   useEffect(() => {
     const virtualItems = virtualizer.getVirtualItems();
@@ -324,7 +358,7 @@ export function AssetGrid({
       <div className="min-h-0 flex-1 overflow-auto" ref={parentRef}>
         <div style={{ minWidth: slots.reduce((sum, s) => sum + slotWidth(s), checkboxWidth + actionWidth) }}>
           {showGroupBand && (
-            <div className="sticky top-0 z-10 flex border-b border-gray-300 bg-white" style={{ height: GROUP_BAND_HEIGHT }}>
+            <div className="sticky top-0 z-10 flex border-b border-gray-300 bg-white" style={{ height: groupBandHeight }}>
               {selectable && <div className="sticky left-0 z-20 h-full w-10 shrink-0 bg-white" style={{ left: 0 }} />}
               {bandSegments.map((seg, i) => {
                 const group = COLUMN_GROUPS.find((g) => g.id === seg.groupId)!;
@@ -368,12 +402,12 @@ export function AssetGrid({
           )}
           <div
             className="sticky z-10 flex border-b-2 border-gray-300 bg-gray-50"
-            style={{ top: showGroupBand ? GROUP_BAND_HEIGHT : 0 }}
+            style={{ top: showGroupBand ? groupBandHeight : 0 }}
           >
             {selectable && (
               <div
-                className="sticky left-0 z-20 flex h-9 w-10 shrink-0 items-center justify-center bg-gray-50"
-                style={{ left: 0 }}
+                className="sticky left-0 z-20 flex w-10 shrink-0 items-center justify-center bg-gray-50"
+                style={{ left: 0, height: headerHeight }}
               >
                 <input
                   type="checkbox"
@@ -390,8 +424,8 @@ export function AssetGrid({
                 return (
                   <div
                     key={`collapsed-header-${slot.groupId}-${i}`}
-                    className={`flex h-9 shrink-0 items-center justify-center bg-gray-50 text-[11px] text-gray-300 ${divider}`}
-                    style={{ width: slot.width }}
+                    className={`flex shrink-0 items-center justify-center bg-gray-50 text-[11px] text-gray-300 ${divider}`}
+                    style={{ width: slot.width, height: headerHeight }}
                   >
                     {group.abbrev}
                   </div>
@@ -418,12 +452,12 @@ export function AssetGrid({
                     const draggedId = e.dataTransfer.getData("text/column-id");
                     if (draggedId) onReorderColumn(draggedId, col.id);
                   }}
-                  className={`relative flex h-9 shrink-0 items-center gap-1 px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${divider} ${
+                  className={`relative flex shrink-0 items-center gap-1 px-3 text-[11px] font-bold uppercase tracking-wide text-gray-600 ${divider} ${
                     col.align === "right" ? "justify-end" : filter ? "justify-between" : ""
                   } ${pinnedOffset !== undefined ? "sticky z-20 bg-gray-50" : ""} ${
                     onReorderColumn ? "cursor-grab active:cursor-grabbing" : ""
                   } ${dragOverId === col.id ? "bg-accent-light" : ""}`}
-                  style={{ width: col.width, left: pinnedOffset }}
+                  style={{ width: col.width, left: pinnedOffset, height: headerHeight }}
                 >
                   <Tooltip text={col.tooltip} placement="bottom" className="min-w-0">
                     <span className="truncate">{col.label}</span>
@@ -441,13 +475,13 @@ export function AssetGrid({
                 </div>
               );
             })}
-            {actionWidth > 0 && <div className="h-9 shrink-0" style={{ width: actionWidth }} />}
+            {actionWidth > 0 && <div className="shrink-0" style={{ width: actionWidth, height: headerHeight }} />}
           </div>
 
           {loading ? (
             <div>
               {Array.from({ length: 14 }).map((_, i) => (
-                <div key={i} className="flex border-b border-gray-100" style={{ height: ROW_HEIGHT }}>
+                <div key={i} className="flex border-b border-gray-100" style={{ height: rowHeight }}>
                   {selectable && <div className="flex w-10 shrink-0 items-center justify-center" />}
                   {slots.map((slot, si) => (
                     <div
@@ -481,7 +515,7 @@ export function AssetGrid({
                     key={item.asset.farId}
                     data-testid="register-row"
                     data-far-id={item.asset.farId}
-                    className={`absolute left-0 top-0 flex w-full border-b border-gray-100 text-sm ${rowBg}`}
+                    className={`absolute left-0 top-0 flex w-full border-b border-gray-100 ${rowTextClass} ${rowBg}`}
                     style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {selectable && (
@@ -611,10 +645,28 @@ export function AssetGrid({
     </button>
   );
 
+  // Always rendered (unlike expandButton, which Register suppresses in favor of its own
+  // toolbar button) — offset left of the expand button when both are floating together,
+  // flush right when it's the only floating control (Register's controlled-expand case).
+  const densityButton = (
+    <button
+      type="button"
+      aria-label={density === "compact" ? "Switch to comfortable row height" : "Switch to compact row height"}
+      title={density === "compact" ? "Comfortable rows" : "Compact rows"}
+      onClick={() => setDensity((d) => (d === "compact" ? "comfortable" : "compact"))}
+      className={`absolute top-2 z-30 grid h-7 w-7 place-items-center rounded-md border bg-white shadow-sm hover:border-accent hover:text-accent ${
+        expanded || !isControlledExpand ? "right-11" : "right-2"
+      } ${density === "compact" ? "border-accent text-accent" : "border-gray-300 text-gray-500"}`}
+    >
+      <DensityIcon fontSize={15} />
+    </button>
+  );
+
   if (expanded) {
     return createPortal(
       <div className="fixed inset-0 z-50 flex flex-col bg-white p-4">
         {expandButton}
+        {densityButton}
         {content}
       </div>,
       document.body
@@ -624,6 +676,7 @@ export function AssetGrid({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {!isControlledExpand && expandButton}
+      {densityButton}
       {content}
     </div>
   );

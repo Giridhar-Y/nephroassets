@@ -43,5 +43,6 @@ export {
   KeyRegular as KeyIcon,
   LinkRegular as LinkIcon,
   MergeRegular as MergeIcon,
-  DocumentBulletListClockRegular as AuditLogIcon
+  DocumentBulletListClockRegular as AuditLogIcon,
+  LineHorizontal3Regular as DensityIcon
 } from "@fluentui/react-icons";
