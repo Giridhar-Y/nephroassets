@@ -18,9 +18,10 @@ import { ExportButton } from "../components/ui/ExportButton.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
-import { isConditionComplete, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
+import { isConditionComplete, OPERATORS_BY_TYPE, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
 import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
 import { hasPermission } from "../lib/permissions.js";
+import { FilterChips, type FilterChip } from "../components/ui/FilterChips.js";
 
 // Every Register column that gets a plain Excel-style custom-condition filter (operator
 // + value, no "distinct values" checklist) — the four columns that also get a checklist
@@ -67,6 +68,26 @@ const CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterTy
   { id: "c1Nbv", label: "C1 NBV", type: "number" },
   { id: "c2Nbv", label: "C2 NBV", type: "number" }
 ];
+
+// Column labels for the filter-chips row (item 8) — CONDITION_COLUMNS above, plus the
+// four checklist filters (Sub Classification/Status/the two Locations) that are wired up
+// separately via DualModeFilterPanel and so aren't in that list.
+const CONDITION_COLUMN_LABELS: Record<string, string> = Object.fromEntries([
+  ["subClassification", "Sub Classification"],
+  ["status", "Status"],
+  ["effectiveLocation", "Current Location"],
+  ["location", "Capitalized Location"],
+  ...CONDITION_COLUMNS.map((c): [string, string] => [c.id, c.label])
+]);
+
+// "Contains 163", "On 21-08-2026", "Blank" — the operator's own label already reads
+// naturally lower-cased after the column name; no-value operators (Blank, Today, ...)
+// need nothing appended.
+function describeCondition(c: ColumnCondition): string {
+  const opLabel = OPERATORS_BY_TYPE[c.type].find((o) => o.value === c.op)?.label ?? c.op;
+  if (c.value === undefined || c.value === "") return opLabel;
+  return c.valueTo ? `${opLabel} ${c.value}–${c.valueTo}` : `${opLabel} ${c.value}`;
+}
 
 export function RegisterPage() {
   const { user } = useAuth();
@@ -134,6 +155,29 @@ export function RegisterPage() {
     const rest = conditions.filter((c) => c.columnId !== columnId);
     setConditions(isConditionComplete(next) ? [...rest, next] : rest);
   };
+
+  // One removable chip per active filter — see FilterChips. A multi-select field (Sub
+  // Classification, Status, either Location) is one chip with every picked value listed,
+  // matching how the toolbar's own "N filters applied" count already treats it as a
+  // single filter regardless of how many values are checked.
+  const filterChips: FilterChip[] = [
+    ...(filters.globalSearch ? [{ key: "globalSearch", label: `Search: "${filters.globalSearch}"`, onRemove: () => clearFilter("globalSearch") }] : []),
+    ...(filters.subClassification?.length
+      ? [{ key: "subClassification", label: `Sub Classification: ${filters.subClassification.join(", ")}`, onRemove: () => clearFilter("subClassification") }]
+      : []),
+    ...(filters.status?.length ? [{ key: "status", label: `Status: ${filters.status.join(", ")}`, onRemove: () => clearFilter("status") }] : []),
+    ...(filters.center?.length
+      ? [{ key: "center", label: `Current Location: ${filters.center.join(", ")}`, onRemove: () => clearFilter("center") }]
+      : []),
+    ...(filters.capLocation?.length
+      ? [{ key: "capLocation", label: `Capitalized Location: ${filters.capLocation.join(", ")}`, onRemove: () => clearFilter("capLocation") }]
+      : []),
+    ...conditions.map((c) => ({
+      key: `condition-${c.columnId}`,
+      label: `${CONDITION_COLUMN_LABELS[c.columnId] ?? c.columnId}: ${describeCondition(c)}`,
+      onRemove: () => setCondition(c.columnId, undefined)
+    }))
+  ];
 
   // Component 2 columns/filters disappear only once the Register is scoped (via the Sub
   // Classification filter) to classification(s) that are ALL C1-only — an unfiltered or
@@ -303,6 +347,8 @@ export function RegisterPage() {
           </button>
         </div>
       </div>
+
+      <FilterChips chips={filterChips} />
 
       <AssetGrid
         items={groupedItems}
