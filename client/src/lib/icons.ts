@@ -44,5 +44,8 @@ export {
   LinkRegular as LinkIcon,
   MergeRegular as MergeIcon,
   DocumentBulletListClockRegular as AuditLogIcon,
-  LineHorizontal3Regular as DensityIcon
+  LineHorizontal3Regular as DensityIcon,
+  PhoneDesktopAddRegular as InstallIcon,
+  ShareIosRegular as ShareIcon,
+  WifiOffRegular as OfflineIcon
 } from "@fluentui/react-icons";

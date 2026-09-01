@@ -6,6 +6,9 @@ import { hasPermission, type Module } from "../lib/permissions.js";
 import { formatDate } from "../lib/format.js";
 import { useToast } from "./Toast.js";
 import { LogoSymbol, Wordmark } from "./Logo.js";
+import { InstallAppButton } from "./InstallAppButton.js";
+import { IosInstallHint } from "./IosInstallHint.js";
+import { OfflineBanner } from "./OfflineBanner.js";
 import {
   RegisterIcon,
   SettingsIcon,
@@ -192,13 +195,21 @@ export function Layout() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col print:block">
+        <OfflineBanner />
         <header className="flex shrink-0 items-center justify-end bg-ink px-6 py-3 print:hidden">
+          {/* mr-auto on a wrapper (not InstallAppButton's own root, which is null most of
+              the time) — pushes it to the far left when it renders, while an empty
+              wrapper still keeps AsAtControl pinned right via justify-end otherwise. */}
+          <div className="mr-auto">
+            <InstallAppButton />
+          </div>
           <AsAtControl />
         </header>
         <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">
           <Outlet />
         </main>
       </div>
+      <IosInstallHint />
     </div>
   );
 }
