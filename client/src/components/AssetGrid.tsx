@@ -93,7 +93,6 @@ interface BandSegment {
 
 function buildBandSegments(slots: Slot[], pinnedLeft: Map<string, number>): BandSegment[] {
   const segments: BandSegment[] = [];
-  let prevGroup: ColumnGroupId | null = null;
   let i = 0;
   while (i < slots.length) {
     const slot = slots[i]!;
@@ -103,24 +102,21 @@ function buildBandSegments(slots: Slot[], pinnedLeft: Map<string, number>): Band
         groupId: slot.groupId,
         width: slot.width,
         collapsed: true,
-        showLabel: true
+        showLabel: false
       });
-      prevGroup = slot.groupId;
       i++;
       continue;
     }
     const col = slot.col;
     const pinned = pinnedLeft.get(col.id);
     if (pinned !== undefined) {
-      segments.push({
-        key: col.id,
-        groupId: col.group,
-        width: col.width,
-        collapsed: false,
-        pinnedLeft: pinned,
-        showLabel: col.group !== prevGroup
-      });
-      prevGroup = col.group;
+      // A pinned column (FAR ID) is a single real column's width, e.g. 130px — too
+      // narrow to hold its group's label, so it never claims one here; the label pass
+      // below places it on the next (much wider) segment of the same group instead.
+      // Without this, Asset Identification's label used to render crammed into just
+      // this 130px cell while the rest of the group — everything after it — showed no
+      // label at all, reading as a mostly-empty header row.
+      segments.push({ key: col.id, groupId: col.group, width: col.width, collapsed: false, pinnedLeft: pinned, showLabel: false });
       i++;
       continue;
     }
@@ -133,8 +129,25 @@ function buildBandSegments(slots: Slot[], pinnedLeft: Map<string, number>): Band
       width += s.col.width;
       i++;
     }
-    segments.push({ key: startId, groupId: startGroup, width, collapsed: false, showLabel: startGroup !== prevGroup });
-    prevGroup = startGroup;
+    segments.push({ key: startId, groupId: startGroup, width, collapsed: false, showLabel: false });
+  }
+
+  // One label per group. A pinned column can split a group into more than one segment
+  // (see above), so this is a second pass rather than decided inline: prefer the first
+  // non-pinned segment for each group, falling back to a pinned one only if that's all
+  // the group has (never happens today — only FAR ID is pinned, and it's never the last
+  // column of its group — but a group made entirely of pinned columns would otherwise
+  // end up with no label at all).
+  const labeled = new Set<ColumnGroupId>();
+  for (const seg of segments) {
+    if (seg.pinnedLeft !== undefined || labeled.has(seg.groupId)) continue;
+    labeled.add(seg.groupId);
+    seg.showLabel = true;
+  }
+  for (const seg of segments) {
+    if (labeled.has(seg.groupId)) continue;
+    labeled.add(seg.groupId);
+    seg.showLabel = true;
   }
   return segments;
 }
