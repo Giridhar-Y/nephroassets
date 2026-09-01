@@ -4,7 +4,7 @@ import ExcelJS from "exceljs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
-import { authedInject } from "../testHelpers/authTestUtils.js";
+import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
 import { bulkInsertAssets, bulkInsertTransfers } from "../loadtest/bulkInsert.js";
@@ -1100,5 +1100,271 @@ describe("Asset Movement & Depreciation Schedule export — reconciliation at sc
     }
     expect([...reconstructed.keys()].sort()).toEqual(totalsRows.map((r) => r.location).sort());
     expect(totalsGrandTotalPaise).toBe(detailGrandTotalPaise);
+  });
+});
+
+// Finance FAR Dashboard — reuses far_calc_component/buildCalcCteExtras exactly like every
+// report above; these tests cover the aggregation/exception SQL this route adds on top,
+// not the calc math itself (already covered by sqlParity.test.ts and friends).
+describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", () => {
+  let app: FastifyInstance;
+  const fy = { asAt: AS_AT, fyStart: FY_START, fyEnd: FY_END, daysInFy: DAYS_IN_FY };
+
+  // Ground truth for the totals test comes from computeAsset (engine.ts) — the same
+  // independent JS implementation sqlParity.test.ts keeps in lock-step with the SQL
+  // far_calc_component this route calls — rather than hand-deriving SLM math again here.
+  const TOTALS_FIXTURES = [
+    {
+      far_id: "DASH-TOTALS-1",
+      sub_classification: "Dashboard-Test-Totals",
+      asset_description: "Totals fixture 1",
+      serial_no: "DT1",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 120000,
+      additions_c1: 0,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 24000,
+      date_of_disposal: null,
+      location: "Dash-Center-A"
+    },
+    {
+      far_id: "DASH-TOTALS-2",
+      sub_classification: "Dashboard-Test-Totals",
+      asset_description: "Totals fixture 2",
+      serial_no: "DT2",
+      qty: 1,
+      useful_life_c1_years: 8,
+      c1_opening_cost: 64000,
+      additions_c1: 0,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 8000,
+      date_of_disposal: null,
+      location: "Dash-Center-A"
+    }
+  ];
+
+  beforeAll(async () => {
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+    await db.query(`INSERT INTO centers (code) VALUES ('Dash-Center-A'), ('Dash-Center-B') ON CONFLICT (LOWER(code)) DO NOTHING`);
+
+    for (const row of TOTALS_FIXTURES) await insertAsset(row);
+
+    // Center scoping: one asset at each of two centers, its own sub-classification so it
+    // doesn't bleed into the totals test above.
+    await insertAsset({
+      far_id: "DASH-SCOPE-A",
+      sub_classification: "Dashboard-Test-Scope",
+      asset_description: "Scope fixture A",
+      serial_no: "DSA",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      location: "Dash-Center-A"
+    });
+    await insertAsset({
+      far_id: "DASH-SCOPE-B",
+      sub_classification: "Dashboard-Test-Scope",
+      asset_description: "Scope fixture B",
+      serial_no: "DSB",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      location: "Dash-Center-B"
+    });
+
+    // Exceptions — a healthy control that must trip nothing, plus one fixture engineered
+    // per category. All Active-status ones share useful_life_c2_years: 5 / c2_opening_cost:
+    // 0 from BASE_ASSET, whose own expiry (date_acquired + 5y) is irrelevant here since a
+    // zero-cost C2 never affects gross_block/nbv, only (harmlessly) the expiry GREATEST.
+    await insertAsset({
+      far_id: "DASH-HEALTHY",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Healthy control",
+      serial_no: "SN-HEALTHY",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 50000,
+      acc_dep_c1_opening: 5000,
+      location: "Dash-Center-A"
+    });
+    // Negative NBV: Deletions recorded against a real (on/before AS_AT) disposal date,
+    // exceeding the asset's own cost base — an over-stated Deletions/Sale entry. Status is
+    // deliberately left "Active" (BASE_ASSET's default) — a genuine data inconsistency
+    // this exception exists to surface, not something the app's own disposal flow would
+    // produce on its own.
+    await insertAsset({
+      far_id: "DASH-NEGNBV",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Negative NBV fixture",
+      serial_no: "SN-NEG",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 10000,
+      date_of_disposal: "2026-05-01",
+      deletions_c1: 50000,
+      sale_value: 0,
+      location: "Dash-Center-A"
+    });
+    // Fully depreciated but still Active: opening Acc Dep already equals opening cost, and
+    // useful life has NOT yet expired (so this trips fullyDepreciatedActive only, not
+    // pastUsefulLifeActive).
+    await insertAsset({
+      far_id: "DASH-FULLDEP",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Fully depreciated fixture",
+      serial_no: "SN-FULLDEP",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 20000,
+      acc_dep_c1_opening: 20000,
+      location: "Dash-Center-A"
+    });
+    // Past useful life, still Active: acquired 2010, 5-year life on both components —
+    // expired 2015, long before AS_AT. The engine's end-of-life taper sweeps any
+    // remaining NBV to depreciation once useful life has fully elapsed, so this ALSO
+    // trips fullyDepreciatedActive — a real, expected overlap (a past-life asset that's
+    // still Active is, definitionally, also fully written down), not a fixture bug.
+    await insertAsset({
+      far_id: "DASH-PASTLIFE",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Past useful life fixture",
+      serial_no: "SN-PASTLIFE",
+      qty: 1,
+      date_acquired: "2010-01-01",
+      useful_life_c1_years: 5,
+      useful_life_c2_years: 5,
+      c1_opening_cost: 5000,
+      acc_dep_c1_opening: 2000,
+      location: "Dash-Center-A"
+    });
+    // Big disposal swing: sale value far exceeds WDV at disposal (a large gain), within
+    // this FY, well past the ₹1L threshold.
+    await insertAsset({
+      far_id: "DASH-BIGSWING",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Big disposal swing fixture",
+      serial_no: "SN-BIGSWING",
+      status: "Disposed",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 200000,
+      date_of_disposal: "2026-05-01",
+      deletions_c1: 200000,
+      sale_value: 350000,
+      location: "Dash-Center-A"
+    });
+    // Small disposal swing: same shape, well under the ₹1L threshold — must NOT appear.
+    await insertAsset({
+      far_id: "DASH-SMALLSWING",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Small disposal swing fixture",
+      serial_no: "SN-SMALLSWING",
+      status: "Disposed",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 20000,
+      date_of_disposal: "2026-05-01",
+      deletions_c1: 20000,
+      sale_value: 21000,
+      location: "Dash-Center-A"
+    });
+    // Missing data: no serial number.
+    await insertAsset({
+      far_id: "DASH-MISSING",
+      sub_classification: "Dashboard-Test-Exceptions",
+      asset_description: "Missing data fixture",
+      serial_no: null,
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 15000,
+      location: "Dash-Center-A"
+    });
+
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("totals match a hand-computed sum from the independent engine.ts implementation", async () => {
+    let expectedGrossBlock = 0;
+    let expectedClosingAccDep = 0;
+    let expectedNbv = 0;
+    for (const row of TOTALS_FIXTURES) {
+      const result = computeAsset(mapAssetRow({ ...BASE_ASSET, ...row } as AssetRow), fy, []);
+      expectedGrossBlock += result.c1.grossBlock + result.c2.grossBlock;
+      expectedClosingAccDep += result.c1.closingAccDep + result.c2.closingAccDep;
+      expectedNbv += result.c1.nbv + result.c2.nbv;
+    }
+
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.totals.assetCount).toBe(2);
+    expect(body.totals.grossBlock).toBeCloseTo(expectedGrossBlock, 2);
+    expect(body.totals.closingAccDep).toBeCloseTo(expectedClosingAccDep, 2);
+    expect(body.totals.nbv).toBeCloseTo(expectedNbv, 2);
+  });
+
+  it("center scoping narrows totals and the location breakdown to the user's own centers", async () => {
+    const scopedUser = await createTestUser({ username: "dash-scope-user", role: "editor", centerAccess: ["Dash-Center-A"] });
+    const scopedRes = await app.inject({
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Scope" })}`,
+      headers: { cookie: authHeaderFor(scopedUser.id, scopedUser.username) }
+    });
+    expect(scopedRes.statusCode).toBe(200);
+    const scopedBody = scopedRes.json();
+    expect(scopedBody.totals.assetCount).toBe(1);
+    expect(scopedBody.locationBreakdown.map((r: { location: string }) => r.location)).toEqual(["Dash-Center-A"]);
+
+    const unscopedRes = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Scope" })}`
+    });
+    expect(unscopedRes.json().totals.assetCount).toBe(2);
+  });
+
+  it("each exception category catches exactly the fixture rows engineered to trip it, and none of the ones that shouldn't", async () => {
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
+    });
+    expect(res.statusCode).toBe(200);
+    const { exceptions } = res.json();
+    const farIds = (category: { sample: { farId: string }[] }) => category.sample.map((r) => r.farId);
+
+    expect(exceptions.negativeNbv.count).toBe(1);
+    expect(farIds(exceptions.negativeNbv)).toEqual(["DASH-NEGNBV"]);
+
+    // See the DASH-PASTLIFE fixture comment above: past-useful-life-but-Active assets are
+    // expected to also show up here, ordered by Gross Block descending.
+    expect(exceptions.fullyDepreciatedActive.count).toBe(2);
+    expect(farIds(exceptions.fullyDepreciatedActive)).toEqual(["DASH-FULLDEP", "DASH-PASTLIFE"]);
+
+    expect(exceptions.pastUsefulLifeActive.count).toBe(1);
+    expect(farIds(exceptions.pastUsefulLifeActive)).toEqual(["DASH-PASTLIFE"]);
+
+    expect(exceptions.bigDisposalSwings.count).toBe(1);
+    expect(farIds(exceptions.bigDisposalSwings)).toEqual(["DASH-BIGSWING"]);
+    expect(exceptions.bigDisposalSwings.sample[0].profitLoss).toBeGreaterThan(100000);
+
+    expect(exceptions.missingData.count).toBe(1);
+    expect(farIds(exceptions.missingData)).toEqual(["DASH-MISSING"]);
   });
 });

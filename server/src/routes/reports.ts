@@ -930,6 +930,330 @@ async function streamTransferDepreciationWorkbook(
   await workbook.commit();
 }
 
+// Finance FAR Dashboard — a single-screen overview, built entirely from the same
+// far_calc_component/buildCalcCteExtras/TOTAL_WDV_AND_PROFIT_LOSS_SQL primitives every
+// other report route above already uses. No new calc logic, no new source of truth: this
+// is a different SHAPE of read over the same per-asset figures.
+const dashboardSummaryQuerySchema = z.object({
+  asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  center: z.string().min(1).optional(),
+  subClassification: z.string().min(1).optional()
+});
+
+// ₹1L — a disposal P&L swing beyond this is exception-worthy. Named so the threshold has
+// one place to tune, not a magic number buried in a WHERE clause.
+const BIG_DISPOSAL_SWING_THRESHOLD = 100_000;
+const EXCEPTION_SAMPLE_LIMIT = 25;
+
+interface DashboardFilters {
+  center?: string;
+  subClassification?: string;
+}
+
+/** deleted_at + center scope + the dashboard's own center/subClassification filters —
+ *  shared by every section below, calc-engine sections and plain-aggregate ones (status
+ *  counts) alike. */
+function buildDashboardWhere(user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters): { whereSql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const conditions = ["deleted_at IS NULL"];
+  const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
+  if (scopeSql) conditions.push(scopeSql);
+  if (filters.center) {
+    params.push(filters.center);
+    conditions.push(`COALESCE(revised_location, location) = $${params.length}`);
+  }
+  if (filters.subClassification) {
+    params.push(filters.subClassification);
+    conditions.push(`sub_classification = $${params.length}`);
+  }
+  return { whereSql: conditions.join(" AND "), params };
+}
+
+/** Same WHERE as above, plus the calc engine's per-row C1/C2 composites and derived
+ *  aliases (effective_location, expiry_date_c1/c2, total_wdv, profit_loss) — the exact
+ *  buildCalcCteExtras/TOTAL_WDV_AND_PROFIT_LOSS_SQL pair the Asset Movement & Depreciation
+ *  Schedule above already uses, not a second calc path. `fy` drives both the calc's own
+ *  AS_AT (fy.asAt) and its FY window (fy.fyStart/fy.fyEnd/fy.daysInFy); the NBV trend below
+ *  passes a copy of `fy` with only `asAt` swapped, same asAt-only-override convention every
+ *  other route in this file already follows. Returns `params` still open for the caller to
+ *  push further placeholders onto (continuing from `params.length + 1`). */
+function buildDashboardCalcCte(fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters): { cteSql: string; params: unknown[] } {
+  const { whereSql, params } = buildDashboardWhere(user, filters);
+  const calcExtras = buildCalcCteExtras(params, fy.asAt, fy);
+  const cteSql = `
+    WITH calc_base AS (
+      SELECT assets.*, ${calcExtras}
+      FROM assets
+      WHERE ${whereSql}
+    ), calc AS (
+      SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+      FROM calc_base
+    )
+  `;
+  return { cteSql, params };
+}
+
+const CALENDAR_QUARTER_ENDS: [number, number][] = [
+  [3, 31],
+  [6, 30],
+  [9, 30],
+  [12, 31]
+];
+
+function calendarQuarterEnd(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function mostRecentQuarterEnd(asAt: string): string {
+  const year = Number(asAt.slice(0, 4));
+  const candidates = CALENDAR_QUARTER_ENDS.map(([m, d]) => calendarQuarterEnd(year, m, d)).filter((c) => c <= asAt);
+  return candidates.length > 0 ? candidates[candidates.length - 1]! : calendarQuarterEnd(year - 1, 12, 31);
+}
+
+function previousQuarterEnd(quarterEnd: string): string {
+  const year = Number(quarterEnd.slice(0, 4));
+  const month = Number(quarterEnd.slice(5, 7));
+  if (month === 3) return calendarQuarterEnd(year - 1, 12, 31);
+  if (month === 6) return calendarQuarterEnd(year, 3, 31);
+  if (month === 9) return calendarQuarterEnd(year, 6, 30);
+  return calendarQuarterEnd(year, 9, 30);
+}
+
+/** `count` trailing calendar-quarter-end dates (Mar/Jun/Sep/Dec 31) on or before `asAt`,
+ *  oldest first. */
+function trailingQuarterEnds(asAt: string, count: number): string[] {
+  const dates: string[] = [];
+  let q = mostRecentQuarterEnd(asAt);
+  for (let i = 0; i < count; i++) {
+    dates.unshift(q);
+    q = previousQuarterEnd(q);
+  }
+  return dates;
+}
+
+interface ExceptionResult<T> {
+  count: number;
+  sample: T[];
+}
+
+async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+  const totalsBase = buildDashboardCalcCte(fy, user, filters);
+  const fyStartIdx = totalsBase.params.push(fy.fyStart);
+  const asAtIdx = totalsBase.params.push(fy.asAt);
+  const totalsPromise = db.query<{
+    asset_count: string;
+    gross_block: string;
+    closing_acc_dep: string;
+    nbv: string;
+    dep_fytd: string;
+    disposal_count: string;
+    gains: string;
+    losses: string;
+  }>(
+    `${totalsBase.cteSql}
+     SELECT
+       COUNT(*) AS asset_count,
+       COALESCE(SUM((c1).gross_block + (c2).gross_block), 0) AS gross_block,
+       COALESCE(SUM((c1).closing_acc_dep + (c2).closing_acc_dep), 0) AS closing_acc_dep,
+       COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv,
+       COALESCE(SUM((c1).period_depreciation + (c2).period_depreciation), 0) AS dep_fytd,
+       COUNT(*) FILTER (WHERE date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date) AS disposal_count,
+       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss > 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS gains,
+       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS losses
+     FROM calc`,
+    totalsBase.params
+  );
+
+  const statusBase = buildDashboardWhere(user, filters);
+  const statusPromise = db.query<{ status: string; count: string }>(
+    `SELECT status, COUNT(*) AS count FROM assets WHERE ${statusBase.whereSql} GROUP BY status ORDER BY count DESC`,
+    statusBase.params
+  );
+
+  const subClassBase = buildDashboardCalcCte(fy, user, filters);
+  const subClassPromise = db.query<{ sub_classification: string; gross_block: string }>(
+    `${subClassBase.cteSql}
+     SELECT sub_classification, COALESCE(SUM((c1).gross_block + (c2).gross_block), 0) AS gross_block
+     FROM calc GROUP BY sub_classification ORDER BY gross_block DESC`,
+    subClassBase.params
+  );
+
+  const locationBase = buildDashboardCalcCte(fy, user, filters);
+  const locationPromise = db.query<{ location: string; nbv: string }>(
+    `${locationBase.cteSql}
+     SELECT effective_location AS location, COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv
+     FROM calc GROUP BY effective_location ORDER BY nbv DESC`,
+    locationBase.params
+  );
+
+  // NBV trend — 6 trailing calendar-quarter-ends, current FY's fy_start/fy_end/days_in_fy
+  // held fixed (only asAt varies per point). A point before the current FY's start
+  // therefore reflects this FY's opening balance rather than a true replay of an earlier
+  // FY's own depreciation (this app stores one FY's opening balance per asset, not a full
+  // multi-year history) — an accepted v1 approximation, not fabricated data: it's the same
+  // real calc engine, just read outside the window it was designed to be precise for. If
+  // this needs to be exact, or this gets slow at the app's documented 250k-asset scale,
+  // revisit with a monthly snapshot table — not needed for v1.
+  const trendDates = trailingQuarterEnds(fy.asAt, 6);
+  const trendPromise = Promise.all(
+    trendDates.map(async (date) => {
+      const { cteSql, params } = buildDashboardCalcCte({ ...fy, asAt: date }, user, filters);
+      const { rows } = await db.query<{ nbv: string }>(`${cteSql} SELECT COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv FROM calc`, params);
+      return { asAt: date, nbv: Number(rows[0]!.nbv) };
+    })
+  );
+
+  const negativeNbvBase = buildDashboardCalcCte(fy, user, filters);
+  const negativeNbvPromise = db.query<{ far_id: string; asset_description: string; nbv: string; total_count: string }>(
+    `${negativeNbvBase.cteSql}
+     SELECT far_id, asset_description, (c1).nbv + (c2).nbv AS nbv, COUNT(*) OVER() AS total_count
+     FROM calc WHERE (c1).nbv + (c2).nbv < ${-EPSILON} AND status = 'Active'
+     ORDER BY (c1).nbv + (c2).nbv ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
+    negativeNbvBase.params
+  );
+
+  const fullyDepreciatedBase = buildDashboardCalcCte(fy, user, filters);
+  const fullyDepreciatedPromise = db.query<{
+    far_id: string;
+    asset_description: string;
+    nbv: string;
+    gross_block: string;
+    total_count: string;
+  }>(
+    `${fullyDepreciatedBase.cteSql}
+     SELECT far_id, asset_description, (c1).nbv + (c2).nbv AS nbv, (c1).gross_block + (c2).gross_block AS gross_block,
+       COUNT(*) OVER() AS total_count
+     FROM calc WHERE (c1).nbv + (c2).nbv BETWEEN 0 AND ${EPSILON} AND status = 'Active'
+     ORDER BY (c1).gross_block + (c2).gross_block DESC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
+    fullyDepreciatedBase.params
+  );
+
+  const pastUsefulLifeBase = buildDashboardCalcCte(fy, user, filters);
+  const pastUsefulLifeAsAtIdx = pastUsefulLifeBase.params.push(fy.asAt);
+  const pastUsefulLifePromise = db.query<{ far_id: string; asset_description: string; expiry_date: string; total_count: string }>(
+    `${pastUsefulLifeBase.cteSql}
+     SELECT far_id, asset_description, GREATEST(expiry_date_c1, expiry_date_c2) AS expiry_date, COUNT(*) OVER() AS total_count
+     FROM calc WHERE GREATEST(expiry_date_c1, expiry_date_c2) < $${pastUsefulLifeAsAtIdx}::date AND status = 'Active'
+     ORDER BY GREATEST(expiry_date_c1, expiry_date_c2) ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
+    pastUsefulLifeBase.params
+  );
+
+  const bigSwingsBase = buildDashboardCalcCte(fy, user, filters);
+  const bigSwingsFyStartIdx = bigSwingsBase.params.push(fy.fyStart);
+  const bigSwingsAsAtIdx = bigSwingsBase.params.push(fy.asAt);
+  const bigSwingsPromise = db.query<{ far_id: string; asset_description: string; profit_loss: string; total_count: string }>(
+    `${bigSwingsBase.cteSql}
+     SELECT far_id, asset_description, profit_loss, COUNT(*) OVER() AS total_count
+     FROM calc WHERE date_of_disposal BETWEEN $${bigSwingsFyStartIdx}::date AND $${bigSwingsAsAtIdx}::date
+       AND ABS(profit_loss) > ${BIG_DISPOSAL_SWING_THRESHOLD}
+     ORDER BY ABS(profit_loss) DESC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
+    bigSwingsBase.params
+  );
+
+  const missingDataBase = buildDashboardCalcCte(fy, user, filters);
+  const missingDataPromise = db.query<{
+    far_id: string;
+    asset_description: string;
+    serial_no: string | null;
+    sub_classification: string;
+    total_count: string;
+  }>(
+    `${missingDataBase.cteSql}
+     SELECT far_id, asset_description, serial_no, sub_classification, COUNT(*) OVER() AS total_count
+     FROM calc WHERE serial_no IS NULL OR serial_no = '' OR sub_classification IS NULL OR sub_classification = ''
+     ORDER BY far_id ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
+    missingDataBase.params
+  );
+
+  const [
+    totalsRows,
+    statusRows,
+    subClassRows,
+    locationRows,
+    nbvTrend,
+    negativeNbvRows,
+    fullyDepreciatedRows,
+    pastUsefulLifeRows,
+    bigSwingsRows,
+    missingDataRows
+  ] = await Promise.all([
+    totalsPromise,
+    statusPromise,
+    subClassPromise,
+    locationPromise,
+    trendPromise,
+    negativeNbvPromise,
+    fullyDepreciatedPromise,
+    pastUsefulLifePromise,
+    bigSwingsPromise,
+    missingDataPromise
+  ]);
+
+  const t = totalsRows.rows[0]!;
+  return {
+    asAt: fy.asAt,
+    totals: {
+      grossBlock: Number(t.gross_block),
+      closingAccDep: Number(t.closing_acc_dep),
+      nbv: Number(t.nbv),
+      assetCount: Number(t.asset_count)
+    },
+    statusCounts: statusRows.rows.map((r) => ({ status: r.status, count: Number(r.count) })),
+    subClassificationBreakdown: subClassRows.rows.map((r) => ({
+      subClassification: r.sub_classification,
+      grossBlock: Number(r.gross_block)
+    })),
+    locationBreakdown: locationRows.rows.map((r) => ({ location: r.location, nbv: Number(r.nbv) })),
+    depreciationFytd: Number(t.dep_fytd),
+    disposalPL: {
+      gains: Number(t.gains),
+      losses: Number(t.losses),
+      disposalCount: Number(t.disposal_count)
+    },
+    nbvTrend,
+    exceptions: {
+      negativeNbv: {
+        count: negativeNbvRows.rows[0] ? Number(negativeNbvRows.rows[0].total_count) : 0,
+        sample: negativeNbvRows.rows.map((r) => ({ farId: r.far_id, assetDescription: r.asset_description, nbv: Number(r.nbv) }))
+      } satisfies ExceptionResult<{ farId: string; assetDescription: string; nbv: number }>,
+      fullyDepreciatedActive: {
+        count: fullyDepreciatedRows.rows[0] ? Number(fullyDepreciatedRows.rows[0].total_count) : 0,
+        sample: fullyDepreciatedRows.rows.map((r) => ({
+          farId: r.far_id,
+          assetDescription: r.asset_description,
+          nbv: Number(r.nbv),
+          grossBlock: Number(r.gross_block)
+        }))
+      } satisfies ExceptionResult<{ farId: string; assetDescription: string; nbv: number; grossBlock: number }>,
+      pastUsefulLifeActive: {
+        count: pastUsefulLifeRows.rows[0] ? Number(pastUsefulLifeRows.rows[0].total_count) : 0,
+        sample: pastUsefulLifeRows.rows.map((r) => ({
+          farId: r.far_id,
+          assetDescription: r.asset_description,
+          expiryDate: r.expiry_date
+        }))
+      } satisfies ExceptionResult<{ farId: string; assetDescription: string; expiryDate: string }>,
+      bigDisposalSwings: {
+        count: bigSwingsRows.rows[0] ? Number(bigSwingsRows.rows[0].total_count) : 0,
+        sample: bigSwingsRows.rows.map((r) => ({
+          farId: r.far_id,
+          assetDescription: r.asset_description,
+          profitLoss: Number(r.profit_loss)
+        }))
+      } satisfies ExceptionResult<{ farId: string; assetDescription: string; profitLoss: number }>,
+      missingData: {
+        count: missingDataRows.rows[0] ? Number(missingDataRows.rows[0].total_count) : 0,
+        sample: missingDataRows.rows.map((r) => ({
+          farId: r.far_id,
+          assetDescription: r.asset_description,
+          serialNo: r.serial_no,
+          subClassification: r.sub_classification
+        }))
+      } satisfies ExceptionResult<{ farId: string; assetDescription: string; serialNo: string | null; subClassification: string }>
+    }
+  };
+}
+
 export default async function reportsRoutes(app: FastifyInstance) {
   // Location Summary: count and total C1 Gross Block for assets whose Effective
   // Location matches the chosen center, computed with a single DB-level aggregate
@@ -1177,5 +1501,24 @@ export default async function reportsRoutes(app: FastifyInstance) {
     const stream = new PassThrough();
     reply.send(stream);
     await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream, req.user!);
+  });
+
+  // Finance FAR Dashboard — see computeDashboardSummary above.
+  app.get("/api/reports/dashboard-summary", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
+    const parsed = dashboardSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    return computeDashboardSummary(db, fy, req.user!, {
+      center: parsed.data.center,
+      subClassification: parsed.data.subClassification
+    });
   });
 }

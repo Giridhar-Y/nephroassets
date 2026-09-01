@@ -582,6 +582,70 @@ export function fetchDepreciationPosting(
   return request(`/api/reports/depreciation-posting?${new URLSearchParams({ asAt })}`);
 }
 
+// Finance FAR Dashboard — mirrors server/src/routes/reports.ts's computeDashboardSummary
+// response shape field-for-field.
+export interface DashboardStatusCount {
+  status: string;
+  count: number;
+}
+
+export interface DashboardSubClassificationBreakdown {
+  subClassification: string;
+  grossBlock: number;
+}
+
+export interface DashboardLocationBreakdown {
+  location: string;
+  nbv: number;
+}
+
+export interface DashboardNbvTrendPoint {
+  asAt: string;
+  nbv: number;
+}
+
+export interface DashboardExceptionResult<T> {
+  count: number;
+  sample: T[];
+}
+
+export interface DashboardSummary {
+  asAt: string;
+  totals: {
+    grossBlock: number;
+    closingAccDep: number;
+    nbv: number;
+    assetCount: number;
+  };
+  statusCounts: DashboardStatusCount[];
+  subClassificationBreakdown: DashboardSubClassificationBreakdown[];
+  locationBreakdown: DashboardLocationBreakdown[];
+  depreciationFytd: number;
+  disposalPL: {
+    gains: number;
+    losses: number;
+    disposalCount: number;
+  };
+  nbvTrend: DashboardNbvTrendPoint[];
+  exceptions: {
+    negativeNbv: DashboardExceptionResult<{ farId: string; assetDescription: string; nbv: number }>;
+    fullyDepreciatedActive: DashboardExceptionResult<{ farId: string; assetDescription: string; nbv: number; grossBlock: number }>;
+    pastUsefulLifeActive: DashboardExceptionResult<{ farId: string; assetDescription: string; expiryDate: string }>;
+    bigDisposalSwings: DashboardExceptionResult<{ farId: string; assetDescription: string; profitLoss: number }>;
+    missingData: DashboardExceptionResult<{ farId: string; assetDescription: string; serialNo: string | null; subClassification: string }>;
+  };
+}
+
+export function fetchDashboardSummary(
+  asAt: string,
+  opts?: { center?: string; subClassification?: string }
+): Promise<DashboardSummary> {
+  const params: Record<string, string> = { asAt };
+  if (opts?.center) params.center = opts.center;
+  if (opts?.subClassification) params.subClassification = opts.subClassification;
+  return request(`/api/reports/dashboard-summary?${new URLSearchParams(params)}`);
+}
+
 export interface MovementScheduleRow {
   farId: string;
   subClassification: string;
