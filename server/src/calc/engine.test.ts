@@ -348,22 +348,32 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.periodDepreciation).toBeCloseTo(5273.972602739726, 6);
   });
 
-  it("(f) disposed after useful life had already expired — step 8 stays flat-rate, reopening the Audit Reconciliation gap", () => {
+  it("(f) disposed after useful life had already expired — step 8 now uses the SAME taper-aware Period Dep as step 5, matching Excel's AB/AC literally", () => {
     // eol = 2020-01-01 + 5yr = 2024-12-30, before fyStart (2025-04-01) — remLife <= 0, so
     // step 5's periodDepreciation is this component's entire remaining taperNbv
-    // (50000 - 10000 = 40000). Step 8 (accDepOnDisposed) was reverted 2026-08-27 to a
-    // flat-rate form fully independent of step 5's taper, per the FAR FY 2026-27 Excel
-    // workbook's AB/AC formula (confirmed cell-by-cell) — a component whose useful life
-    // had already run out before disposal now gets flat-rate SLM in step 8 regardless of
-    // step 5's taper. This deliberately reopens the Audit Reconciliation dep-check gap
-    // for exactly this combination (an asset disposed post-expiry): accDepOpening +
-    // periodDepreciation - accDepOnDisposed no longer equals closingAccDep. Confirmed
-    // explicitly by finance as an accepted consequence, since the Excel file itself has
-    // this same gap.
+    // (50000 - 10000 = 40000).
     //
-    // depOnDisposedPortion = (50000/5) * (62 days fyStart..disposalDate / 365) =
-    // 1698.6301369863013; accDepOnDisposed = 10000 (accDepOpening, disposedRatio=1) +
-    // 1698.6301369863013 = 11698.630136986301.
+    // 2026-09-01 addition-window fix (second round): step 8 (accDepOnDisposed) now uses
+    // disposedRatio × (accDepOpening + periodDepreciation) — the SAME taper-aware
+    // periodDepreciation from step 5, matching the FAR FY 2026-27 Excel workbook's AB/AC
+    // formula literally: (S/(M+O))*(X+Z). Reinstated after this reconciliation session's
+    // ME0161-04 finding (a real production asset, disposed after useful life had nearly
+    // run out) showed the prior flat-rate substitute diverging from Excel by a material
+    // amount, and a portfolio sweep found this affects 146 of 303 disposed assets
+    // (48.2%). Full disposal here (disposedRatio=1): accDepOnDisposed = 1 * (10000 +
+    // 40000) = 50000.
+    //
+    // History for context: a flat-rate substitute was chosen in an earlier round
+    // (pre-2026-08-28) specifically because using the taper here for a post-expiry
+    // disposal was known to reopen the Audit Reconciliation roll-forward gap (accDepOpening
+    // + periodDepreciation - accDepOnDisposed != closingAccDep) — a real characteristic of
+    // the Excel workbook's own formulas, not a bug. This round's finding: using the SAME
+    // periodDepreciation on both sides of that identity's subtraction algebraically
+    // reopens it back to always holding exactly (closingAccDep = (1-ratio) *
+    // (accDepOpening+periodDepreciation), which is >= 0 for any well-formed disposal) —
+    // switching to match Excel here happens to restore internal consistency as a
+    // byproduct, not just parity with the workbook. See this same reconciliation showing
+    // up in every other disposal test in this file.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -379,13 +389,12 @@ describe("End-of-life taper (step 5)", () => {
       fy({ asAt: "2025-12-31" })
     );
     expect(r.periodDepreciation).toBeCloseTo(40000, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(11698.630136986301, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(50000, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
-    // The reconciliation identity Audit Reconciliation checks (accDepOpening is 10000,
-    // per the fixture above) no longer holds — the whole point of this reversion:
-    expect(10000 + r.periodDepreciation - r.accDepOnDisposed).not.toBeCloseTo(r.closingAccDep, 2);
-    expect(r.wdvAtDisposal).toBeCloseTo(38301.369863013699, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-33301.369863013699, 6);
+    // The reconciliation identity holds exactly again, unlike the flat-rate era:
+    expect(10000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(0, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(5000, 6);
   });
 
   it("(g) taper branch: a not-yet-happened addition doesn't inflate taperNbv (ongoing asset)", () => {
@@ -414,33 +423,24 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.periodDepreciation).toBeCloseTo(8000, 6);
   });
 
-  it("(h) step 5's taper branch still gates a future-dated addition; step 8's own date-gating now does the same job independently", () => {
+  it("(h) step 5's taper branch still gates a future-dated addition; step 8 now derives disposedRatio from the same date-gated costBase, no separate gating logic of its own", () => {
     // Same shape as (g), but disposed instead of ongoing — the exact pattern found in
     // real seed data (an addition dated after its own asset's disposal date). eol is well
     // before fyStart (remLife <= 0); dateOfAddition (2025-08-01) is after dateOfDisposal
     // (2025-06-01), so as of the disposal it hasn't happened yet — step 5's taperNbv gate
     // still correctly excludes it (10000 - 2000 = 8000, opening only, not 15000 - 2000 =
     // 13000). This is the future-dated-addition-gating fix from before the taper work —
-    // unrelated to either the 2026-08-27 reversion or the 2026-08-28 additions-window
-    // correction, kept intact.
+    // kept intact, unrelated to this round's change.
     //
-    // Step 8, corrected 2026-08-28: the additions-portion term is date-gated again (via
-    // MAX(0, disposalDate - dateOfAddition + 1)), so the future-dated addition here
-    // contributes exactly 0 to it — same outcome as before this correction, but for a
-    // different reason (previously step 8 didn't look at dateOfAddition at all; now it
-    // does, and correctly zeroes out a not-yet-happened one). What DOES change: the
-    // opening-portion term's ratio is openingCost/(openingCost+additions) = 10000/15000,
-    // not 1 — this fixture's deletionsCost (10000) was deliberately set to only the
-    // opening amount (a bulk-upload-style historical row, not what this app's own full-
-    // disposal write path would ever produce, which always sets deletionsCost to the full
-    // combined cost) — so part of that 10000 gets attributed to the (zeroed-out)
-    // additions share and is simply not recovered, rather than being fully attributed to
-    // the opening share. depOnDisposedOpening = 10000 * (10000/15000) * (62 days
-    // fyStart..disposalDate / (3*365)) = 377.47337278106509; depOnDisposedAdditions = 0
-    // (date-gated). accDepOnDisposed = 2000 (accDepOpening) + 377.47337278106509 =
-    // 2377.4733637747336 — down from 2566.2100456621005 before this correction, per
-    // test (f) above the reconciliation identity still doesn't hold for a post-expiry
-    // disposal (unrelated to this fix, still accepted).
+    // 2026-09-01 addition-window fix (second round): step 8 no longer computes its own
+    // ratio/window at all — it reuses disposedRatio from step 7, which is already
+    // date-gated by costBase (steps 2-4): since dateOfAddition (2025-08-01) is after
+    // effectiveEndDate (the disposal date, 2025-06-01), the addition tranche "hasn't
+    // happened yet" as of this view and contributes 0 to costBase, same gating
+    // mechanism `costBase`/`additionsGrossBlock` already used elsewhere in this engine.
+    // costBase = 10000 (opening only), effectiveDisposedCost = deletionsCost = 10000, so
+    // disposedRatio = 1 — not 10000/15000 as a raw-input-based ratio would give.
+    // accDepOnDisposed = 1 * (2000 + 8000) = 10000.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -456,9 +456,10 @@ describe("End-of-life taper (step 5)", () => {
       fy({ asAt: "2025-12-31" })
     );
     expect(r.periodDepreciation).toBeCloseTo(8000, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(2377.4733637747336, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(10000, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
-    expect(2000 + r.periodDepreciation - r.accDepOnDisposed).not.toBeCloseTo(r.closingAccDep, 2);
+    // Reconciliation identity holds exactly again (see (f)'s comment for why):
+    expect(2000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
   });
 
   // Additional regression coverage (2026-08-27, second round): the Excel workbook's own
@@ -734,6 +735,10 @@ describe("Disposed Ratio (step 7)", () => {
 // ---------------------------------------------------------------------------
 describe("Disposal accounting (steps 8-11)", () => {
   it("normal case: partial disposal mid-year with opening accumulated depreciation", () => {
+    // 2026-09-01 addition-window fix (second round): accDepOnDisposed = disposedRatio *
+    // (accDepOpening + periodDepreciation) = 0.4 * (20000 + 5013.698630136987) =
+    // 10005.479452054795 — matches Excel's AB/AC formula literally, using the same
+    // periodDepreciation as step 5 rather than a separately-derived flat-rate term.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -748,15 +753,16 @@ describe("Disposal accounting (steps 8-11)", () => {
       },
       fy({ asAt: "2025-12-31" })
     );
-    expect(r.depOnDisposedPortion).toBeCloseTo(2005.4794520547944, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(10005.479452054794, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(10005.479452054795, 6);
     expect(r.closingAccDep).toBeCloseTo(15008.219178082192, 6);
-    expect(r.nbv).toBeCloseTo(44991.780821917808, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(29994.520547945206, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-4994.520547945206, 6);
+    expect(r.nbv).toBeCloseTo(44991.78082191781, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(29994.520547945205, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(-4994.520547945205, 6);
+    // Reconciliation identity holds exactly, including for a partial (not full) disposal:
+    expect(20000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(r.closingAccDep, 6);
   });
 
-  it("edge case (doc): asset added and disposed within the same period never goes negative, and no longer needs the floor to get there", () => {
+  it("edge case (doc): asset added and disposed within the same period never goes negative, and step 8 is identical to step 5 again for a full disposal", () => {
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -776,64 +782,56 @@ describe("Disposal accounting (steps 8-11)", () => {
     // the taper branch — eol (2024-12-30) being before fyStart no longer matters once
     // there's an addition this period.
     //
-    // 2026-09-01 addition-window fix: step 5's flat-rate branch now uses the SAME
-    // eff-fyStart+1 window (153 days, fyStart..disposalDate) for both the opening and
-    // addition terms, matching the FAR FY 2026-27 "V2" workbook's Z/AA formula literally
-    // (see engine.ts's step-5 comment). With openingCost=0, only the addition term
-    // matters: periodDepreciation = (50000/5) * (153/365) = 4191.780821917808 — this is
-    // the exact FY-Start-window figure the 2026-08-28 step-8 fix's own comment once cited
-    // as "before this correction", now reinstated deliberately for step 5 (not step 8).
+    // 2026-09-01 addition-window fix (first round): step 5's flat-rate branch uses the
+    // SAME eff-fyStart+1 window (153 days, fyStart..disposalDate) for both the opening
+    // and addition terms, matching the FAR FY 2026-27 "V2" workbook's Z/AA formula
+    // literally (see engine.ts's step-5 comment). With openingCost=0, only the addition
+    // term matters: periodDepreciation = (50000/5) * (153/365) = 4191.780821917808.
     //
-    // Step 8's depOnDisposedPortion is UNCHANGED by this fix (out of scope per this
-    // round's explicit sign-off) — it still uses its own dateOfAddition-based 123-day
-    // window: depOnDisposedPortion = 50000 * 1 * (123/(5*365)) = 3369.863013698630.
-    // periodDepreciation and depOnDisposedPortion are consequently NO LONGER identical
-    // (they were, briefly, between the 2026-08-28 step-8 fix and this round) — accDepOpening
-    // (0) + periodDepreciation (4191.78) - accDepOnDisposed (3369.86) = 821.92, no longer
-    // exactly 0. closingAccDep still correctly lands at 0, but now via the Math.min(...,
-    // grossBlock) CAP (grossBlock is 0 here, fully disposed) rather than the raw value
-    // already being 0 — a different mechanism reaching the same right answer.
+    // 2026-09-01 addition-window fix (second round): step 8 no longer derives its own
+    // window at all — it reuses periodDepreciation directly via disposedRatio *
+    // (accDepOpening + periodDepreciation). With accDepOpening=0 and disposedRatio=1
+    // (full disposal, deletionsCost=combined cost), accDepOnDisposed = 1 * (0 +
+    // 4191.780821917808) = periodDepreciation exactly, once again — restoring the
+    // "identical to step 5" property this fixture's name originally described, though
+    // via a different mechanism than before (matching Excel's literal formula this time,
+    // not a coincidence of two independently-derived flat-rate windows happening to
+    // agree). Reconciliation identity holds exactly as a result (0 + 4191.78 - 4191.78 =
+    // 0 = closingAccDep), no floor or cap needed to get there.
     expect(r.periodDepreciation).toBeCloseTo(4191.780821917808, 6);
-    expect(r.depOnDisposedPortion).toBeCloseTo(3369.863013698630, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(3369.863013698630, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(4191.780821917808, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(r.periodDepreciation, 6);
     expect(r.grossBlock).toBe(0);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(r.closingAccDep).toBeGreaterThanOrEqual(0);
     expect(r.nbv).toBeCloseTo(0, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(46630.136986301370, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-1630.136986301370, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(45808.21917808219, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(-808.2191780821886, 6);
   });
 
   // Additional regression coverage (2026-08-27, second round; recomputed 2026-08-28): a
   // realistically-shaped, long-owned asset (dateAcquired well before FY Start) with a
   // mid-year addition fully disposed later the same FY.
-  it("(j) realistic shape: opening cost + mid-year addition fully disposed the same FY — step 8 no longer matches step 5 exactly (2026-09-01 addition-window fix); grossBlock cap keeps closingAccDep at 0 instead", () => {
+  it("(j) realistic shape: opening cost + mid-year addition fully disposed the same FY — step 8 matches step 5 exactly again (2026-09-01, second round)", () => {
     // dateAcquired 2015-01-01, 10yr useful life -> eol is 2025-01-01, before this FY starts
     // (2025-04-01) -- but that's irrelevant here since there IS an addition, so step 5
     // never even reaches the eol check (additions-first order, per (c) and (i) above).
     //
-    // 2026-09-01 addition-window fix: step 5's flat-rate branch now uses the SAME
-    // eff-fyStart+1 window (244 days, fyStart..disposalDate) for both terms, matching the
-    // FAR FY 2026-27 "V2" workbook's Z/AA formula literally:
+    // 2026-09-01 addition-window fix (first round): step 5's flat-rate branch uses the
+    // SAME eff-fyStart+1 window (244 days, fyStart..disposalDate) for both terms, matching
+    // the FAR FY 2026-27 "V2" workbook's Z/AA formula literally:
     //   periodDepreciation = ((250000+60000)/10) * (244/365) = 20723.28767123288
-    //   (taperNbv 260000 doesn't cap it) — this is the exact figure the 2026-08-28 step-8
-    //   fix's own comment once cited as "before this correction", now reinstated
-    //   deliberately for step 5 (not step 8).
+    //   (taperNbv 260000 doesn't cap it).
     //
-    // Step 8's depOnDisposedPortion is UNCHANGED by this fix (out of scope per this
-    // round's explicit sign-off) — it still uses each tranche's own dateOfAddition-based
-    // window:
-    //   depOnDisposedOpening = 310000 * (250000/310000) * (244/(10*365)) = 16712.32876712329
-    //   depOnDisposedAdditions = 310000 * (60000/310000) * (153/(10*365)) = 2515.068493150685
-    //   depOnDisposedPortion = their sum = 19227.39726027397
-    //
-    // periodDepreciation and depOnDisposedPortion are consequently NO LONGER identical
-    // (they briefly were, between the 2026-08-28 step-8 fix and this round) — the
-    // reconciliation identity's raw value is now accDepOpening(50000) +
-    // periodDepreciation(20723.28767123288) - accDepOnDisposed(50000 + 19227.39726027397)
-    // = 1495.8904109589057, not 0. closingAccDep still correctly lands at 0, but now via
-    // the Math.min(..., grossBlock) CAP (grossBlock is 0, fully disposed) rather than the
-    // raw value already being 0 — a different mechanism reaching the same right answer.
+    // 2026-09-01 addition-window fix (second round): step 8 no longer derives its own
+    // window at all — it reuses periodDepreciation directly via disposedRatio *
+    // (accDepOpening + periodDepreciation). disposedRatio=1 (full disposal,
+    // deletionsCost=310000=combined cost): accDepOnDisposed = 1 * (50000 +
+    // 20723.28767123288) = 70723.28767123289. Reconciliation identity holds exactly as a
+    // result (50000 + 20723.29 - 70723.29 = 0 = closingAccDep) — the "step 8 matches step
+    // 5 exactly" property this fixture originally described is back, restored by matching
+    // Excel rather than by the two independently-derived windows happening to coincide
+    // (which is what made them match, briefly, right after the 2026-08-28 fix).
     const r = computeComponent(
       {
         dateAcquired: "2015-01-01",
@@ -851,32 +849,30 @@ describe("Disposal accounting (steps 8-11)", () => {
     expect(r.depOnOpening).toBeCloseTo(16712.32876712329, 6);
     expect(r.depOnAdditions).toBeCloseTo(2515.068493150685, 6);
     expect(r.periodDepreciation).toBeCloseTo(20723.28767123288, 6);
-    expect(r.depOnDisposedPortion).toBeCloseTo(19227.39726027397, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(69227.39726027397, 6);
-    // Raw reconciliation value is no longer 0 — the grossBlock cap below is what keeps
-    // closingAccDep at 0, not this identity holding on its own:
-    expect(50000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(1495.8904109589057, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(70723.28767123289, 6);
+    // Reconciliation identity holds exactly:
+    expect(50000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(0, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(r.nbv).toBeCloseTo(0, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(240772.60273972602, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-220772.60273972602, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(239276.7123287671, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(-219276.7123287671, 6);
   });
 
-  // Additional regression coverage (2026-08-28): the additions-window correction above
-  // doesn't eliminate the floor's need in general — it narrows WHEN it's needed. Proven
-  // by sweeping many opening cost / additions / accDepOpening / useful-life combinations
-  // for a long-owned asset (dateAcquired well before FY Start): the raw pre-floor value
-  // never goes negative there, confirming the floor really is dead for that shape now.
-  // But an asset CAPITALIZED mid-year (dateAcquired after FY Start) and disposed later
-  // the same FY still triggers it — with or without any "additions" field at all — because
-  // step 8's opening-portion term unconditionally uses FY Start (per the literal Excel
-  // formula), while step 5 (via splitTranche's FY-rollover classification, unchanged)
-  // correctly uses the asset's own dateAcquired once that falls inside the current FY.
-  // Same mismatch shape as the additions bug just fixed, just on the opening-cost field
-  // instead of the additions field — and this one is NOT something Excel's own formula
-  // structure avoids by construction, since Excel's file has no rows that are both
-  // capitalized and disposed in the same period to reveal it.
-  it("(k) realistic shape: asset CAPITALIZED mid-year (no addition at all) and disposed later the same FY — floor still engages", () => {
+  // Additional regression coverage, rewritten 2026-09-01 (second round): this fixture
+  // originally proved the closingAccDep floor still engages for an asset CAPITALIZED
+  // mid-year and disposed later the same FY, because the pre-this-round step 8 computed
+  // its own opening-portion term unconditionally from FY Start, diverging from step 5's
+  // FY-rollover-aware dateAcquired-based window. That mismatch is gone now that step 8
+  // no longer computes anything of its own — it reuses periodDepreciation directly via
+  // disposedRatio * (accDepOpening + periodDepreciation), so it inherits step 5's correct
+  // dateAcquired-based classification automatically. The floor no longer engages for this
+  // shape, or for any well-formed disposal found in this file: algebraically, raw
+  // closingAccDep = (1 - disposedRatio) * (accDepOpening + periodDepreciation), which is
+  // >= 0 whenever disposedRatio <= 1 and both terms are non-negative — true for every
+  // normal disposal. The floor is NOT dead code, though: it still guards malformed data
+  // where deletionsCost exceeds the component's own cost base (disposedRatio > 1), which
+  // this fixture doesn't exercise. See engine.ts's step 9 comment for the updated history.
+  it("(k) realistic shape: asset CAPITALIZED mid-year (no addition at all) and disposed later the same FY — step 8 now inherits step 5's dateAcquired-based window automatically, floor no longer engages here", () => {
     // dateAcquired 2026-05-01 is one month after this FY's Start (2026-04-01), so
     // splitTranche classifies it as an addition-tranche for step 5's purposes — its
     // depreciation window runs from dateAcquired, not FY Start:
@@ -886,14 +882,11 @@ describe("Disposal accounting (steps 8-11)", () => {
     //   depOnAdditions = (80000/5) * (214 days dateAcquired..disposalDate / 365) = 9380.82191780822
     //   periodDepreciation = 9380.82191780822 (taperNbv 80000 doesn't cap it)
     //
-    // Step 8's opening-portion term, per the Excel formula, always starts from FY Start
-    // regardless of dateAcquired:
-    //   depOnDisposedOpening = 80000 * (80000/80000) * (244 days fyStart..disposalDate /
-    //     (5*365)) = 10695.890410958904 (no additions field at all, so no additions term)
-    //
-    // Raw closing: 0 + 9380.82191780822 - 10695.890410958904 = -1315.068493150684 —
-    // negative, by exactly (80000/5) * (30 days fyStart..dateAcquired / 365) = 1315.07,
-    // the extra month step 8 counts before the asset even existed. Floored to 0.
+    // Step 8: disposedRatio = 1 (full disposal, deletionsCost = combined cost = 80000).
+    // accDepOnDisposed = 1 * (0 + 9380.82191780822) = 9380.82191780822 — no longer the
+    // FY-Start-based 10695.890410958904 a separately-derived opening-portion term once
+    // gave. Reconciliation identity holds exactly (0 + 9380.82 - 9380.82 = 0), no floor
+    // needed to reach 0.
     const r = computeComponent(
       {
         dateAcquired: "2026-05-01",
@@ -911,15 +904,15 @@ describe("Disposal accounting (steps 8-11)", () => {
     expect(r.depOnOpening).toBeCloseTo(0, 6);
     expect(r.depOnAdditions).toBeCloseTo(9380.82191780822, 6);
     expect(r.periodDepreciation).toBeCloseTo(9380.82191780822, 6);
-    expect(r.depOnDisposedPortion).toBeCloseTo(10695.890410958904, 6);
-    expect(r.accDepOnDisposed).toBeCloseTo(10695.890410958904, 6);
-    // The reconciliation identity's raw value is negative before the floor:
-    expect(0 + r.periodDepreciation - r.accDepOnDisposed).toBeLessThan(0);
+    expect(r.accDepOnDisposed).toBeCloseTo(9380.82191780822, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(r.periodDepreciation, 6);
+    // Reconciliation identity holds exactly, without the floor:
+    expect(0 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(0, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(r.closingAccDep).toBeGreaterThanOrEqual(0);
     expect(r.nbv).toBeCloseTo(0, 6);
-    expect(r.wdvAtDisposal).toBeCloseTo(69304.1095890411, 6);
-    expect(r.profitLossOnDisposal).toBeCloseTo(-59304.109589041094, 6);
+    expect(r.wdvAtDisposal).toBeCloseTo(70619.17808219178, 6);
+    expect(r.profitLossOnDisposal).toBeCloseTo(-60619.17808219178, 6);
   });
 
   it("edge case (doc): no additions and no disposal leaves WDV/P&L null, not zero", () => {
@@ -948,6 +941,82 @@ describe("Disposal accounting (steps 8-11)", () => {
     expect(r.nbv).toBeCloseTo(16605.83941605839, 6);
     expect(r.wdvAtDisposal).toBeNull();
     expect(r.profitLossOnDisposal).toBeNull();
+  });
+
+  it("ME0161-04 regression: FAR FY 2026-27 V2 workbook reconciliation (2026-09-01, second round) — real Excel-computed figures for a disposal after useful life had nearly run out", () => {
+    // Real production asset (a dialysis machine) whose actual stored accDepOpening —
+    // pulled directly from production during this reconciliation session, not the
+    // slightly-different figure an earlier round mistakenly used — is 495507, leaving
+    // only 19793 of NBV against an 11-year useful life largely already consumed by
+    // disposal date. Built live in Excel (real .xlsx, COM automation) as this session's
+    // test row: Z7 (Period Dep) = 5408.5523255814, AB7 (Acc Dep on Disposed) =
+    // 500915.552325581, AF7 (WDV at Disposal) = 14384.4476744186, AI7 (Profit/(Loss),
+    // combined both components) = -14384.4476744186. This is the exact case that revealed
+    // the flat-rate-vs-taper divergence this round's fix closes — permanent regression
+    // coverage pinned to Excel's own computed numbers, not a hand derivation.
+    const fy2627: FySettings = { asAt: "2026-09-01", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 };
+    const c1 = computeComponent(
+      {
+        dateAcquired: "2016-03-12",
+        openingCost: 515300,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 11,
+        dateOfDisposal: "2026-07-03",
+        deletionsCost: 515300,
+        saleValue: 0,
+        accDepOpening: 495507
+      },
+      fy2627
+    );
+    expect(c1.periodDepreciation).toBeCloseTo(5408.5523255814, 6);
+    expect(c1.accDepOnDisposed).toBeCloseTo(500915.552325581, 6);
+    expect(c1.wdvAtDisposal).toBeCloseTo(14384.4476744186, 6);
+    expect(c1.profitLossOnDisposal).toBeCloseTo(-14384.4476744186, 6);
+    // Reconciliation identity holds exactly, matching this round's general finding:
+    expect(495507 + c1.periodDepreciation - c1.accDepOnDisposed).toBeCloseTo(c1.closingAccDep, 6);
+  });
+
+  it("malformed-data safety net: accDepOpening exceeding cost still caps accDepOnDisposed at effectiveDisposedCost (2026-09-01, second round)", () => {
+    // The 2026-09-01 (second round) formula, disposedRatio * (accDepOpening +
+    // periodDepreciation), is algebraically bounded by effectiveDisposedCost for any
+    // WELL-FORMED input (accDepOpening <= cost basis, deletionsCost <= cost basis) — see
+    // engine.ts's step 9 comment for the proof. This fixture deliberately violates that
+    // assumption (accDepOpening=60000 exceeds openingCost=50000, the same shape as the
+    // existing "over-depreciated bad data" fixture above, but WITH a disposal this time)
+    // to prove the Math.min(..., effectiveDisposedCost) cap in step 8 is still load-
+    // bearing, not dead code, for malformed data — this app's own write paths can't
+    // produce it (checkAccDepWithinCost in assetSchema.ts blocks it at entry), but a
+    // historical bulk-upload row predating that validation could.
+    //
+    // taperNbv = max(0, 50000-60000) = 0, so periodDepreciation = 0 (eol is decades in
+    // the past here, so this lands in the taper branch's remLife<=0 sub-case, which
+    // returns taperNbv directly). disposedRatio = 1 (full disposal, deletionsCost =
+    // openingCost). Raw (uncapped) accDepOnDisposed = 1 * (60000 + 0) = 60000 — bigger
+    // than effectiveDisposedCost (50000), which would make wdvAtDisposal negative
+    // (50000 - 60000 = -10000) without the cap. Verified directly: computeComponent
+    // actually returns accDepOnDisposed=50000, proving the cap engaged.
+    const r = computeComponent(
+      {
+        dateAcquired: "2010-01-01",
+        openingCost: 50000,
+        additions: 0,
+        dateOfAddition: null,
+        usefulLifeYears: 5,
+        dateOfDisposal: "2026-06-01",
+        deletionsCost: 50000,
+        saleValue: 5000,
+        accDepOpening: 60000
+      },
+      { asAt: "2026-08-17", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+    );
+    expect(r.periodDepreciation).toBeCloseTo(0, 6);
+    expect(r.disposedRatio).toBeCloseTo(1, 6);
+    expect(r.accDepOnDisposed).toBeCloseTo(50000, 6);
+    expect(r.accDepOnDisposed).toBeLessThan(60000); // the cap actually did something
+    expect(r.wdvAtDisposal).toBeCloseTo(0, 6);
+    expect(r.wdvAtDisposal).toBeGreaterThanOrEqual(0); // never negative, thanks to the cap
+    expect(r.profitLossOnDisposal).toBeCloseTo(5000, 6);
   });
 });
 

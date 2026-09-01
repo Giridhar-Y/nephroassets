@@ -240,80 +240,61 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // Step 7: Disposed Ratio
   const disposedRatio = costBase !== 0 ? effectiveDisposedCost / costBase : 0;
 
-  // Step 8: Depreciation on the disposed portion, up to Disposal Date — per the FAR FY
-  // 2026-27 Excel workbook's AB/AC formula, fully independent of step 5's end-of-life
-  // taper: a component whose useful life had already run out before disposal still gets
-  // flat-rate SLM here, even though step 5 above would taper it. Confirmed explicitly by
-  // finance as intentional; known, accepted consequence: this reopens the Audit
-  // Reconciliation roll-forward gap for an asset disposed after its useful life had
-  // already expired — that gap exists in the Excel file itself, so it's not a regression
-  // to route around.
+  // Step 8: Acc Dep on Disposed — matches the FAR FY 2026-27 Excel workbook's AB/AC
+  // formula literally: `(S/(M+O))*(X+Z)`, i.e. disposedRatio × (Opening Acc Dep + Period
+  // Depreciation), using the SAME taper-aware periodDepreciation already computed in
+  // step 5 above — not a separately-derived flat-rate term. Capped at
+  // effectiveDisposedCost so WDV at Disposal can never go negative.
   //
-  // Corrected 2026-08-28: the additions-portion day-count window uses the addition's own
-  // dateOfAddition, NOT FY Start. The "FY_ST for both terms" reading from the prior round
-  // was a misdiagnosis — it was checked against a version of the workbook with only one
-  // usable data row, and a stray same-looking reference was assumed to be the intended
-  // formula. A newer version of the file (two consistent data rows) plus its own
-  // "Methodology & Notes" sheet confirm explicitly: "Start date for additions: Date of
-  // Addition", and for this specific calc, "FY dep on deleted cost from FY_Start (or
-  // Add_Date) to Disposal Date." The opening-portion term is unchanged (FY Start), per
-  // the same note's "Start date for opening balance assets: FY Start".
+  // Reinstated 2026-09-01 (second round) after this reconciliation session's ME0161-04
+  // finding: a real production asset (dialysis machine, useful life nearly run out at
+  // disposal) showed the code's flat-rate substitute diverging from Excel by ~₹6,656 on
+  // a single asset. A production-wide sweep found this isn't rare — 146 of 303 disposed
+  // assets (48.2%) have at least one component disposed on/after that component's useful
+  // life had already elapsed, exactly the shape where flat-rate and taper pull apart
+  // hardest. Explicit user sign-off: match Excel exactly.
   //
-  // M and O below are the RAW openingCost/additions input fields (not the FY-rollover-
-  // reclassified openingGrossBlockAsAt/additionsGrossBlock from steps 2-4) — the Excel
-  // formula's (openingCost + additions) denominator is a direct two-cell reference with
-  // no reclassification concept of its own, and step 8 has been independent of step 5's
-  // FY-rollover machinery since the reversion two rounds ago. Each term is still
-  // separately date-gated (MAX(0, ...)) so a not-yet-happened addition (dateOfAddition
-  // after Disposal Date) still contributes zero, matching the rest of this engine's
-  // future-dated-tranche handling — without needing step 5's reclassification to do it.
-  let depOnDisposedPortion = 0;
-  const disposedCombinedCost = input.openingCost + input.additions;
-  if (disposalEffective && hasUsefulLife && disposedCombinedCost !== 0) {
-    const disposalDate = input.dateOfDisposal!;
-    const cappedDisposalDate = isAfter(disposalDate, fyEnd) ? fyEnd : disposalDate;
-    const daysOpeningToDisposal = Math.max(0, daysHeldInclusive(fyStart, cappedDisposalDate));
-    const depOnDisposedOpening =
-      input.deletionsCost * (input.openingCost / disposedCombinedCost) * (daysOpeningToDisposal / (usefulLife * daysInFy));
-
-    let depOnDisposedAdditions = 0;
-    if (input.additions !== 0) {
-      const daysAdditionToDisposal = Math.max(0, daysHeldInclusive(input.dateOfAddition!, cappedDisposalDate));
-      depOnDisposedAdditions =
-        input.deletionsCost * (input.additions / disposedCombinedCost) * (daysAdditionToDisposal / (usefulLife * daysInFy));
-    }
-
-    depOnDisposedPortion = depOnDisposedOpening + depOnDisposedAdditions;
-  }
-
+  // History for context: a flat-rate substitute (computed independently of step 5,
+  // ignoring the taper) was deliberately chosen in an earlier round (pre-2026-08-28)
+  // specifically BECAUSE using the taper-aware Period Dep here reopens a known,
+  // accepted gap — Audit Reconciliation's roll-forward identity (accDepOpening +
+  // periodDepreciation - accDepOnDisposed = closingAccDep) no longer holds exactly for
+  // an asset disposed after its useful life had already expired. That gap exists in the
+  // Excel workbook itself (its own formulas produce the same non-identity), so it was
+  // already accepted as a pre-existing characteristic of the source of truth, not a
+  // regression — this round's decision is simply to also accept it here, now that its
+  // real-money impact is known and sized.
   const accDepOnDisposed = disposalEffective
-    ? Math.min(disposedRatio * input.accDepOpening + depOnDisposedPortion, effectiveDisposedCost)
+    ? Math.min(disposedRatio * (input.accDepOpening + periodDepreciation), effectiveDisposedCost)
     : 0;
 
   // Step 9: Closing Accumulated Depreciation — floored at 0, not just capped at
   // grossBlock. Confirmed explicitly by finance (2026-08-27): negative accumulated
   // depreciation has no accounting meaning, floor it.
   //
-  // Re-examined 2026-08-28 after step 8's additions-window correction above: that fix
-  // eliminated the floor's ORIGINAL trigger (a long-owned asset's mid-year addition,
-  // disposed the same FY — proven by an exhaustive sweep over cost/accDep/useful-life
-  // combinations for that shape: the raw pre-floor value never goes negative there
-  // anymore, and closing engine.test.ts's (j) confirms it lands at exactly 0, not merely
-  // ≥0). The floor is NOT dead code, though — it's still load-bearing for a different,
-  // narrower case: an asset CAPITALIZED mid-year (dateAcquired after FY Start, with or
-  // without any addition at all) and disposed later the same FY. See engine.test.ts's
-  // (k) for the hand-derived proof. The mechanism is the same shape as the additions bug
-  // just fixed, just on the opening-cost field: step 8's opening-portion term
-  // unconditionally uses FY Start (per the literal Excel formula), while step 5 (via
-  // splitTranche's FY-rollover classification, unchanged) correctly uses the asset's own
-  // dateAcquired once that falls inside the current FY — a shorter window, so step 8
-  // over-attributes days the asset didn't exist yet.
+  // Re-examined 2026-09-01 (second round) after step 8 switched to
+  // disposedRatio * (accDepOpening + periodDepreciation) (see step 8's comment): this
+  // eliminated every remaining trigger for the floor found so far, not just the
+  // additions-window one from the prior round. Algebraically, the raw pre-floor value
+  // reduces to (1 - disposedRatio) * (accDepOpening + periodDepreciation) — since
+  // periodDepreciation is always >= 0 (every depreciationAsOf branch returns a
+  // non-negative number), accDepOpening is an entered fact assumed >= 0, and
+  // disposedRatio is <= 1 for any well-formed disposal (effectiveDisposedCost no larger
+  // than costBase), this product is always >= 0. Every disposal scenario in
+  // engine.test.ts — including (k), an asset CAPITALIZED mid-year and disposed the same
+  // FY, the prior round's last surviving trigger — now reconciles to exactly 0 without
+  // the floor doing anything.
   //
-  // This is a NephroAssets-specific safety net, not something the Excel workbook itself
-  // needs or has: the file's own sample rows have no asset both capitalized and disposed
-  // in the same period to reveal this, so its formulas never had to confront it. This
-  // same floor also applies to the accepted post-expiry-disposal reconciliation gap (see
-  // step 8's comment) — a no-op there in every case checked so far.
+  // The floor is NOT dead code, though: it remains a safety net for malformed data where
+  // deletionsCost exceeds the component's own cost base (disposedRatio > 1, e.g. a bad
+  // bulk-upload row), which would otherwise make the raw value negative. No such case
+  // exists in this app's own write paths (which always derive deletionsCost from the
+  // asset's own cost fields), so this is defense-in-depth against bad data, not a
+  // scenario this app's UI can produce.
+  //
+  // This remains a NephroAssets-specific safety net, not something the Excel workbook
+  // itself needs: its own sample rows never combine a malformed deletionsCost with a
+  // disposal to reveal whether it needs one.
   const closingAccDep = Math.max(
     0,
     Math.min(input.accDepOpening + periodDepreciation - accDepOnDisposed, grossBlock)
@@ -340,7 +321,6 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
     periodDepreciation,
     grossBlock,
     disposedRatio,
-    depOnDisposedPortion,
     accDepOnDisposed,
     closingAccDep,
     nbv,

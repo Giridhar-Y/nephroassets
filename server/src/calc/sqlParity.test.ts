@@ -445,6 +445,26 @@ const fixtures: Fixture[] = [
       accDepOpening: 30000
     },
     fy: { asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+  },
+  // ME0161-04 regression (2026-09-01, second round) — matches engine.test.ts's "ME0161-04
+  // regression", a real production asset disposed after its useful life had nearly run
+  // out. Real accDepOpening (495507) pulled directly from production during this
+  // reconciliation session. The exact case that revealed the flat-rate-vs-taper
+  // divergence this round's accDepOnDisposed fix closes.
+  {
+    name: "ME0161-04 (C1): disposal after useful life nearly expired, accDepOnDisposed now taper-based",
+    input: {
+      dateAcquired: "2016-03-12",
+      openingCost: 515300,
+      additions: 0,
+      dateOfAddition: null,
+      usefulLifeYears: 11,
+      dateOfDisposal: "2026-07-03",
+      deletionsCost: 515300,
+      saleValue: 0,
+      accDepOpening: 495507
+    },
+    fy: { asAt: "2026-09-01", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
   }
 ];
 
@@ -484,7 +504,6 @@ it.each(fixtures)("SQL matches TypeScript engine: $name", async ({ input, fy }) 
   expect(Number(sql.period_depreciation)).toBeCloseTo(ts.periodDepreciation, 6);
   expect(Number(sql.gross_block)).toBeCloseTo(ts.grossBlock, 6);
   expect(Number(sql.disposed_ratio)).toBeCloseTo(ts.disposedRatio, 6);
-  expect(Number(sql.dep_on_disposed_portion)).toBeCloseTo(ts.depOnDisposedPortion, 6);
   expect(Number(sql.acc_dep_on_disposed)).toBeCloseTo(ts.accDepOnDisposed, 6);
   expect(Number(sql.closing_acc_dep)).toBeCloseTo(ts.closingAccDep, 6);
   expect(Number(sql.nbv)).toBeCloseTo(ts.nbv, 6);

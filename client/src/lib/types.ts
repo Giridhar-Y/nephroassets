@@ -42,7 +42,6 @@ export interface ComponentResult {
   periodDepreciation: number;
   grossBlock: number;
   disposedRatio: number;
-  depOnDisposedPortion: number;
   accDepOnDisposed: number;
   closingAccDep: number;
   nbv: number;

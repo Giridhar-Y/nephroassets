@@ -68,7 +68,6 @@ CREATE TYPE far_component_result AS (
   period_depreciation numeric,
   gross_block numeric,
   disposed_ratio numeric,
-  dep_on_disposed_portion numeric,
   acc_dep_on_disposed numeric,
   closing_acc_dep numeric,
   nbv numeric,
@@ -261,18 +260,6 @@ DECLARE
   effective_disposed_cost numeric;
   gross_block numeric;
   disposed_ratio numeric;
-  dep_on_disposed_portion numeric := 0;
-
-  -- Step 8's own flat-rate day-count windows (opening: FY Start to Disposal Date;
-  -- additions: p_date_of_addition to Disposal Date; both capped at FY End) — see
-  -- far_calc_component's step 8 comment for why this is independent of the tranche
-  -- classification above.
-  capped_disposal_date date;
-  disposed_combined_cost numeric;
-  days_opening_to_disposal integer;
-  days_addition_to_disposal integer;
-  dep_on_disposed_opening numeric;
-  dep_on_disposed_additions numeric;
 
   acc_dep_on_disposed numeric;
   closing_acc_dep numeric;
@@ -363,64 +350,44 @@ BEGIN
   gross_block := cost_base - effective_disposed_cost;
   disposed_ratio := CASE WHEN cost_base <> 0 THEN effective_disposed_cost / cost_base ELSE 0 END;
 
-  -- Step 8: Depreciation on the disposed portion, up to Disposal Date — per the FAR FY
-  -- 2026-27 Excel workbook's AB/AC formula, fully independent of step 5's end-of-life
-  -- taper: a component whose useful life had already run out before disposal still gets
-  -- flat-rate SLM here, even though step 5 above would taper it. Confirmed explicitly by
-  -- finance as intentional; known, accepted consequence: this reopens the Audit
-  -- Reconciliation roll-forward gap for an asset disposed after its useful life had
-  -- already expired — that gap exists in the Excel file itself, so it's not a regression
-  -- to route around.
+  -- Step 8: Acc Dep on Disposed — matches the FAR FY 2026-27 Excel workbook's AB/AC
+  -- formula literally: (p_deletions_cost/(p_opening_cost+p_additions))*(p_acc_dep_opening+
+  -- period_depreciation), i.e. disposed_ratio × (Opening Acc Dep + Period Depreciation),
+  -- using the SAME taper-aware period_depreciation already computed in step 5 above —
+  -- not a separately-derived flat-rate term. Capped at effective_disposed_cost so WDV at
+  -- Disposal can never go negative.
   --
-  -- Corrected 2026-08-28: the additions-portion day-count window uses p_date_of_addition,
-  -- NOT FY Start. The "FY_ST for both terms" reading from the prior round was a
-  -- misdiagnosis — it was checked against a version of the workbook with only one usable
-  -- data row, and a stray same-looking reference was assumed to be the intended formula.
-  -- A newer version of the file (two consistent data rows) plus its own "Methodology &
-  -- Notes" sheet confirm explicitly: "Start date for additions: Date of Addition", and
-  -- for this specific calc, "FY dep on deleted cost from FY_Start (or Add_Date) to
-  -- Disposal Date." The opening-portion term is unchanged (FY Start), per the same note's
-  -- "Start date for opening balance assets: FY Start".
+  -- Reinstated 2026-09-01 (second round) after this reconciliation session's ME0161-04
+  -- finding: a real production asset (dialysis machine, useful life nearly run out at
+  -- disposal) showed the prior flat-rate substitute diverging from Excel by ~6,656 (INR) on a
+  -- single asset. A production-wide sweep found this isn't rare — 146 of 303 disposed
+  -- assets (48.2%) have at least one component disposed on/after that component's useful
+  -- life had already elapsed, exactly the shape where flat-rate and taper pull apart
+  -- hardest. Explicit user sign-off: match Excel exactly.
   --
-  -- M and O below are the RAW p_opening_cost/p_additions input fields (not the
-  -- FY-rollover-reclassified opening_gross_block_as_at/additions_gross_block from steps
-  -- 2-4) — the Excel formula's (p_opening_cost + p_additions) denominator is a direct
-  -- two-cell reference with no reclassification concept of its own, and step 8 has been
-  -- independent of step 5's FY-rollover machinery since the reversion two rounds ago.
-  -- Each term is still separately date-gated (GREATEST(0, ...)) so a not-yet-happened
-  -- addition (p_date_of_addition after Disposal Date) still contributes zero, matching
-  -- the rest of this engine's future-dated-tranche handling — without needing step 5's
-  -- reclassification to do it.
-  disposed_combined_cost := p_opening_cost + p_additions;
-  IF disposal_effective AND has_useful_life AND disposed_combined_cost <> 0 THEN
-    capped_disposal_date := LEAST(p_date_of_disposal, p_fy_end);
-    days_opening_to_disposal := GREATEST(0, (capped_disposal_date - p_fy_start) + 1);
-    dep_on_disposed_opening := p_deletions_cost * (p_opening_cost / disposed_combined_cost)
-      * (days_opening_to_disposal::numeric / (p_useful_life_years * p_days_in_fy));
-
-    dep_on_disposed_additions := 0;
-    IF p_additions <> 0 THEN
-      days_addition_to_disposal := GREATEST(0, (capped_disposal_date - p_date_of_addition) + 1);
-      dep_on_disposed_additions := p_deletions_cost * (p_additions / disposed_combined_cost)
-        * (days_addition_to_disposal::numeric / (p_useful_life_years * p_days_in_fy));
-    END IF;
-
-    dep_on_disposed_portion := dep_on_disposed_opening + dep_on_disposed_additions;
-  END IF;
-
+  -- History for context: a flat-rate substitute (computed independently of step 5,
+  -- ignoring the taper) was deliberately chosen in an earlier round (pre-2026-08-28)
+  -- specifically BECAUSE using the taper-aware Period Dep here reopens a known, accepted
+  -- gap — Audit Reconciliation's roll-forward identity (p_acc_dep_opening +
+  -- period_depreciation - acc_dep_on_disposed = closing_acc_dep) no longer holds exactly
+  -- for a component disposed after its useful life had already expired. That gap exists
+  -- in the Excel workbook itself (its own formulas produce the same non-identity), so it
+  -- was already accepted as a pre-existing characteristic of the source of truth, not a
+  -- regression — this round's decision is simply to also accept it here, now that its
+  -- real-money impact is known and sized.
   acc_dep_on_disposed := CASE WHEN disposal_effective
-    THEN LEAST(disposed_ratio * p_acc_dep_opening + dep_on_disposed_portion, effective_disposed_cost) ELSE 0 END;
+    THEN LEAST(disposed_ratio * (p_acc_dep_opening + period_depreciation), effective_disposed_cost) ELSE 0 END;
 
   -- Step 9: Closing Accumulated Depreciation / Step 10: Net Book Value — floored at 0,
   -- not just capped at gross_block. See engine.ts's computeComponent step 9 comment for
-  -- the full history: step 8's 2026-08-28 additions-window correction eliminated this
-  -- floor's original trigger (a long-owned asset's mid-year addition disposed the same
-  -- FY), but it's still load-bearing for a narrower case — an asset CAPITALIZED mid-year
-  -- and disposed later the same FY, since step 8's opening-portion term unconditionally
-  -- uses FY Start while step 5 correctly uses the asset's own date_acquired once that
-  -- falls inside the current FY. Confirmed explicitly by finance (2026-08-27). This is a
-  -- NephroAssets-specific safety net — the Excel workbook's own sample rows have no asset
-  -- both capitalized and disposed in the same period to reveal this.
+  -- the full history. Re-examined 2026-09-01 (second round): now that step 8 reuses
+  -- period_depreciation directly, the raw pre-floor value reduces to
+  -- (1 - disposed_ratio) * (p_acc_dep_opening + period_depreciation), which is always
+  -- >= 0 for any well-formed disposal (disposed_ratio <= 1, both terms non-negative) —
+  -- every scenario in sqlParity.test.ts's fixtures now reconciles to exactly 0 without
+  -- the floor doing anything. It remains a safety net against malformed data
+  -- (p_deletions_cost exceeding the component's own cost base, disposed_ratio > 1), not
+  -- something this app's own write paths can produce.
   closing_acc_dep := GREATEST(0, LEAST(p_acc_dep_opening + period_depreciation - acc_dep_on_disposed, gross_block));
   nbv := gross_block - closing_acc_dep;
 
@@ -440,7 +407,6 @@ BEGIN
   result.period_depreciation := period_depreciation;
   result.gross_block := gross_block;
   result.disposed_ratio := disposed_ratio;
-  result.dep_on_disposed_portion := dep_on_disposed_portion;
   result.acc_dep_on_disposed := acc_dep_on_disposed;
   result.closing_acc_dep := closing_acc_dep;
   result.nbv := nbv;

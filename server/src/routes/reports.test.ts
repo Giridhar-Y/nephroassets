@@ -144,14 +144,15 @@ describe("Audit Reconciliation report", () => {
     });
 
     // Regression fixture: an asset disposed after its useful life had already expired
-    // (dateAcquired + usefulLife = 2024-12-30, well before this FY's fyStart). Step 8
-    // (accDepOnDisposed) was reverted 2026-08-27 to a flat-rate form fully independent of
-    // step 5's end-of-life taper, per the FAR FY 2026-27 Excel workbook's AB/AC formula
-    // (confirmed cell-by-cell) — this deliberately reopens the dep-check gap for exactly
-    // this combination. Cost side is unaffected and still reconciles. Confirmed explicitly
-    // by finance as an accepted consequence, since the Excel file itself has this same
-    // gap — see engine.test.ts's "(f) disposed after useful life had already expired" for
-    // the underlying component-level numbers this fixture matches.
+    // (dateAcquired + usefulLife = 2024-12-30, well before this FY's fyStart). Originally
+    // built (2026-08-27) to prove accDepOnDisposed's then-flat-rate form deliberately
+    // reopened the dep-check gap for this shape. Since 2026-09-01 (second round),
+    // accDepOnDisposed uses the same taper-aware periodDepreciation as step 5 (matching
+    // Excel's AB/AC literally), which closes that gap back up — this fixture now proves
+    // the report ties out with NO cap/floor adjustment needed, the opposite of its
+    // original purpose. Cost side was never affected either way. See engine.test.ts's
+    // "(f) disposed after useful life had already expired" for the underlying
+    // component-level numbers this fixture matches.
     await insertAsset({
       far_id: "RECON-POST-EXPIRY-DISPOSAL",
       sub_classification: "Test-Post-Expiry-Disposal",
@@ -167,16 +168,17 @@ describe("Audit Reconciliation report", () => {
       sale_value: 5000
     });
 
-    // Regression fixture for the cap/floor adjustment feature: an old asset (acquired
-    // 2018-01-01) with a short useful life (3 years — already well expired by this FY)
-    // disposed mid-year, with a real partial disposal amount (40000 of 90000 cost).
-    // Matches the shape found via the 250k-asset load-test scale test's "Audit
-    // Reconciliation ties out at full scale" failure investigation: an old,
-    // short-useful-life, disposed-mid-year asset legitimately pushes the naive
-    // Opening Acc Dep + Period Dep − Acc Dep Removed figure above the remaining Gross
-    // Block, so the locked engine's Closing Acc Dep clamp (see engine.ts) caps it —
-    // confirmed via engine.computeComponent directly: naive 56624.048706240486, capped
-    // to grossBlock 50000, a 6624.048706240486 adjustment.
+    // Regression fixture, originally for the cap/floor adjustment feature: an old asset
+    // (acquired 2018-01-01) with a short useful life (3 years — already well expired by
+    // this FY) disposed mid-year, with a real partial disposal amount (40000 of 90000
+    // cost). Originally (pre-2026-09-01) this legitimately pushed the flat-rate-based
+    // naive Opening Acc Dep + Period Dep − Acc Dep Removed figure above the remaining
+    // Gross Block, needing the Closing Acc Dep clamp (see engine.ts) to cap it — a
+    // 6624.048706240486 adjustment. Since 2026-09-01 (second round), accDepOnDisposed's
+    // taper-aware, ratio-based formula produces a naive figure that already lands exactly
+    // on Gross Block for this fixture too (confirmed via engine.computeComponent
+    // directly) — no cap needed. Kept as a regression fixture proving the report still
+    // ties out cleanly for this shape, now via reconciliation rather than a cap.
     await insertAsset({
       far_id: "RECON-CAP-SCENARIO",
       sub_classification: "Test-Cap-Scenario",
@@ -191,6 +193,35 @@ describe("Audit Reconciliation report", () => {
       deletions_c1: 40000,
       acc_dep_c1_opening: 70000,
       sale_value: 1000
+    });
+
+    // Regression fixture, new 2026-09-01 (second round): the accDepOnDisposed fix above
+    // closed off the only case (well-formed disposals) that previously exercised the
+    // cap/floor adjustment mechanism's non-zero path — Test-Post-Expiry-Disposal and
+    // Test-Cap-Scenario now both reconcile with no adjustment needed at all. This leaves
+    // the mechanism with zero test coverage of the malformed-data scenario it still
+    // exists to catch: accDepOpening exceeding the component's own cost basis (same shape
+    // as the "over-depreciated bad data" fixture used elsewhere, but with a disposal).
+    // Confirmed directly against engine.computeComponent: naive Opening Acc Dep(60000) +
+    // Period Dep(0) - Acc Dep Removed(50000, itself already capped down from a raw 60000
+    // by step 8's own Math.min) = 10000, above the remaining Gross Block (0 for a full
+    // disposal) — a 10000 adjustment, this time exercising step 9's clamp on top of step
+    // 8's. Kept distinct from Test-Cap-Scenario (which now represents the well-formed,
+    // no-adjustment case) rather than modifying it.
+    await insertAsset({
+      far_id: "RECON-CAP-SCENARIO-MALFORMED",
+      sub_classification: "Test-Cap-Scenario-Malformed",
+      asset_description: "Malformed data: Opening Acc Dep exceeds cost, disposed (safety-net cap)",
+      serial_no: "S7B",
+      qty: 1,
+      date_acquired: "2010-01-01",
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      additions_c1: 0,
+      date_of_disposal: "2026-06-01",
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 60000,
+      sale_value: 5000
     });
 
     // Has Component 2, decision 3: a C1-only Sub Classification shows a single row, not
@@ -309,7 +340,7 @@ describe("Audit Reconciliation report", () => {
     expect(brokenC2.depCheckPass).toBe(true);
   });
 
-  it("disposal after useful life had already expired — was an accepted, unexplained dep-check gap; now ties out via the cap adjustment", async () => {
+  it("disposal after useful life had already expired — reconciles exactly on its own now, no cap adjustment needed (2026-09-01, second round)", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const postExpiry = body.items.find(
@@ -320,20 +351,20 @@ describe("Audit Reconciliation report", () => {
     // Cost side was never affected by this — still reconciles.
     expect(postExpiry.costCheckPass).toBe(true);
     expect(postExpiry.costCheckDelta).toBeCloseTo(0, 6);
-    // Step 8 stays flat-rate independent of step 5's taper (confirmed by finance, see
-    // engine.ts), so accDepOpening(10000) + periodDep(40000) - accDepOnDisposed
-    // (11698.630137) doesn't match closingAccDep(0) directly — Closing Acc Dep gets
-    // capped at Gross Block (0, since this asset's fully disposed). The dep check now
-    // accounts for that ₹38,301.37 cap explicitly instead of reporting an unexplained
-    // gap, and ties out exactly.
+    // 2026-09-01 (second round): accDepOnDisposed now uses disposedRatio * (accDepOpening
+    // + periodDepreciation) — the same taper-aware periodDepreciation as step 5, matching
+    // Excel's AB/AC formula literally (see engine.ts's step 8 comment). accDepOpening
+    // (10000) + periodDep(40000) - accDepOnDisposed(50000) = 0 = closingAccDep exactly,
+    // with disposedRatio=1 (full disposal). No cap or floor engages — the gap this
+    // fixture was built to explain no longer exists for this shape.
     expect(postExpiry.depCheckPass).toBe(true);
     expect(postExpiry.depCheckDelta).toBeCloseTo(0, 6);
-    expect(postExpiry.cappedSum).toBeCloseTo(38301.369863013699, 4);
+    expect(postExpiry.cappedSum).toBeCloseTo(0, 6);
     expect(postExpiry.flooredSum).toBeCloseTo(0, 6);
-    expect(postExpiry.capAdjustmentMessage).toContain("Capped at Gross Block: ₹38301.37");
+    expect(postExpiry.capAdjustmentMessage).toBeNull();
   });
 
-  it("an old, short-useful-life asset disposed mid-year (the exact scale-test cap scenario) ties out exactly and shows the adjustment line", async () => {
+  it("an old, short-useful-life asset disposed mid-year (previously the cap-scenario fixture) now reconciles exactly on its own, no adjustment needed (2026-09-01, second round)", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const capScenario = body.items.find(
@@ -342,25 +373,59 @@ describe("Audit Reconciliation report", () => {
     );
     expect(capScenario).toBeDefined();
 
-    // Cost side is unaffected by the cap — still reconciles on its own.
+    // Cost side is unaffected — still reconciles on its own.
     expect(capScenario.costCheckPass).toBe(true);
     expect(capScenario.costCheckDelta).toBeCloseTo(0, 6);
 
-    // Confirmed directly against engine.computeComponent: naive Opening Acc Dep(70000)
-    // + Period Dep(20000) - Acc Dep Removed(33375.951293759514) = 56624.048706240486,
-    // capped to Gross Block (50000) — a 6624.048706240486 adjustment.
+    // Confirmed directly against engine.computeComponent: disposedRatio = 40000/90000 =
+    // 0.4444..., accDepOnDisposed = 0.4444... * (70000 + 20000) = 40000 exactly —
+    // Opening Acc Dep(70000) + Period Dep(20000) - Acc Dep Removed(40000) = 50000 =
+    // Closing Acc Dep(50000) = Gross Block(50000), with no cap needed to get there
+    // (unlike the pre-2026-09-01 flat-rate figure of 33375.95, which needed a
+    // 6624.05 cap adjustment to reach the same 50000).
     expect(capScenario.accDepOpeningSum).toBeCloseTo(70000, 6);
     expect(capScenario.periodDepSum).toBeCloseTo(20000, 6);
-    expect(capScenario.accDepRemovedSum).toBeCloseTo(33375.951293759514, 4);
+    expect(capScenario.accDepRemovedSum).toBeCloseTo(40000, 6);
     expect(capScenario.closingAccDepSum).toBeCloseTo(50000, 6);
-    expect(capScenario.cappedSum).toBeCloseTo(6624.048706240486, 4);
+    expect(capScenario.cappedSum).toBeCloseTo(0, 6);
     expect(capScenario.flooredSum).toBeCloseTo(0, 6);
 
-    // The report ties out exactly once the adjustment is accounted for, and the
-    // adjustment itself is shown explicitly rather than left as an unexplained gap.
     expect(capScenario.depCheckPass).toBe(true);
     expect(capScenario.depCheckDelta).toBeCloseTo(0, 6);
-    expect(capScenario.capAdjustmentMessage).toBe("Capped at Gross Block: ₹6624.05");
+    expect(capScenario.capAdjustmentMessage).toBeNull();
+  });
+
+  it("malformed data (Opening Acc Dep exceeds cost) still ties out via the cap adjustment — the safety net the mechanism now exists for (2026-09-01, second round)", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const body = res.json();
+    const malformed = body.items.find(
+      (i: { subClassification: string; component: string }) =>
+        i.subClassification === "Test-Cap-Scenario-Malformed" && i.component === "C1"
+    );
+    expect(malformed).toBeDefined();
+
+    // Cost side is unaffected by the cap — still reconciles on its own.
+    expect(malformed.costCheckPass).toBe(true);
+    expect(malformed.costCheckDelta).toBeCloseTo(0, 6);
+
+    // step 8's own Math.min(..., effectiveDisposedCost) already capped accDepOnDisposed
+    // down from a raw 60000 to 50000 (see engine.test.ts's "malformed-data safety net"
+    // for that layer's own direct verification) — acc_dep_removed_sum below reflects the
+    // POST-cap value. On top of that, step 9's clamp is what this report's cappedSum
+    // metric measures: Opening Acc Dep(60000) + Period Dep(0) - Acc Dep Removed(50000) =
+    // 10000, above the remaining Gross Block (0, full disposal) — a 10000 adjustment.
+    expect(malformed.accDepOpeningSum).toBeCloseTo(60000, 6);
+    expect(malformed.periodDepSum).toBeCloseTo(0, 6);
+    expect(malformed.accDepRemovedSum).toBeCloseTo(50000, 6);
+    expect(malformed.closingAccDepSum).toBeCloseTo(0, 6);
+    expect(malformed.cappedSum).toBeCloseTo(10000, 6);
+    expect(malformed.flooredSum).toBeCloseTo(0, 6);
+
+    // The report ties out exactly once the adjustment is accounted for, and shows it
+    // explicitly rather than leaving an unexplained gap — the mechanism doing its job.
+    expect(malformed.depCheckPass).toBe(true);
+    expect(malformed.depCheckDelta).toBeCloseTo(0, 6);
+    expect(malformed.capAdjustmentMessage).toBe("Capped at Gross Block: ₹10000.00");
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {
@@ -449,7 +514,7 @@ describe("Audit Reconciliation report", () => {
     expect(res.rawPayload.length).toBeGreaterThan(0);
   });
 
-  it("Excel export includes the Acc Dep Adjustment column and shows the cap value for the cap-scenario fixture's C1 row", async () => {
+  it("Excel export includes the Acc Dep Adjustment column, correctly positioned, matching the JSON API's value for the cap-scenario fixture's C1 row", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
     expect(res.statusCode).toBe(200);
 
@@ -471,16 +536,20 @@ describe("Audit Reconciliation report", () => {
     expect(accDepCheckCol).toBe(adjustmentCol + 2);
 
     // Find the cap-scenario fixture's C1 row by scanning column 1 (Sub Classification)
-    // for its label, and confirm the adjustment cell holds the same capped amount the
-    // JSON API returns for it (6624.048706240486, see the dedicated JSON test above).
-    // The fixture appears in all three blocks (C1, C2, Combined) — the sheet writes C1
-    // first (see buildReconciliationWorkbook), so the first match is its C1 row.
+    // for its label, and confirm the adjustment cell holds the same amount the JSON API
+    // returns for it. Since 2026-09-01 (second round) this fixture no longer needs any
+    // cap adjustment (see the dedicated JSON test above) — the value is 0, not the
+    // pre-2026-09-01 6624.048706240486 — but the column's existence, position, and
+    // JSON-parity are still worth proving regardless of what the current fixtures' values
+    // happen to be. The fixture appears in all three blocks (C1, C2, Combined) — the
+    // sheet writes C1 first (see buildReconciliationWorkbook), so the first match is its
+    // C1 row.
     let found = false;
     sheet.eachRow((row, rowNumber) => {
       if (found || rowNumber <= 4) return;
       if (row.getCell(1).value === "Test-Cap-Scenario") {
         found = true;
-        expect(Number(row.getCell(adjustmentCol).value)).toBeCloseTo(6624.048706240486, 4);
+        expect(Number(row.getCell(adjustmentCol).value)).toBeCloseTo(0, 6);
       }
     });
     expect(found).toBe(true);
