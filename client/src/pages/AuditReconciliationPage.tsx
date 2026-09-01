@@ -10,8 +10,9 @@ import { formatCurrency } from "../lib/format.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
-import { EmptyIcon, ErrorIcon, ExportIcon, FailIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
+import { EmptyIcon, ErrorIcon, FailIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { ExportButton } from "../components/ui/ExportButton.js";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -77,18 +78,7 @@ export function AuditReconciliationPage() {
           forward correctly: Opening + Additions − Deletions should equal Closing cost, Opening Depreciation + This
           Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
           Closing Depreciation should equal Closing NBV."
-        actions={
-          <a
-            href={period ? getAuditReconciliationExportUrl(period) : undefined}
-            aria-disabled={!period}
-            className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 ${
-              !period ? "pointer-events-none opacity-40" : ""
-            }`}
-          >
-            <ExportIcon fontSize={14} />
-            Export to Excel
-          </a>
-        }
+        actions={<ExportButton url={period ? getAuditReconciliationExportUrl(period) : undefined} />}
       >
         {period && (
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">

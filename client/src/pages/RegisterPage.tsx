@@ -12,8 +12,9 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { CollapseExpandIcon, ExpandIcon, ExportIcon, SearchIcon } from "../lib/icons.js";
+import { CollapseExpandIcon, ExpandIcon, SearchIcon } from "../lib/icons.js";
 import { Tooltip } from "../components/Tooltip.js";
+import { ExportButton } from "../components/ui/ExportButton.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
@@ -289,16 +290,7 @@ export function RegisterPage() {
               onMerge={() => setMergeOpen(true)}
             />
           )}
-          <a
-            href={asAt ? getExportUrl({ asAt, ...filters }) : undefined}
-            aria-disabled={!asAt}
-            className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 ${
-              !asAt ? "pointer-events-none opacity-40" : ""
-            }`}
-          >
-            <ExportIcon fontSize={14} />
-            Export to Excel
-          </a>
+          <ExportButton url={asAt ? getExportUrl({ asAt, ...filters }) : undefined} />
           <ColumnPicker prefs={columnPrefs} />
           <button
             type="button"

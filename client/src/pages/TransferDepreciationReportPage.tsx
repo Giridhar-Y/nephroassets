@@ -15,8 +15,9 @@ import { isConditionComplete, type ColumnCondition } from "../lib/columnFilters.
 import type { FySettings } from "../lib/types.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { EmptyIcon, ErrorIcon, ExportIcon, LocationIcon, TransferIcon } from "../lib/icons.js";
+import { EmptyIcon, ErrorIcon, LocationIcon, TransferIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { ExportButton } from "../components/ui/ExportButton.js";
 
 const SCHEDULE_GRID_COLS = "grid-cols-[120px_1fr_130px_100px_100px_80px_100px_100px_110px]";
 const ROW_HEIGHT = 40;
@@ -335,17 +336,7 @@ export function TransferDepreciationReportPage() {
         title="Asset Movement & Depreciation Schedule"
         subtitle="Every asset, one row per location it physically sat in during the period — an asset that never moved
               still gets exactly one row."
-        actions={
-          <a
-            href={exportUrl}
-            className={`flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 ${
-              exportUrl ? "" : "pointer-events-none opacity-50"
-            }`}
-          >
-            <ExportIcon fontSize={15} />
-            Export to Excel
-          </a>
-        }
+        actions={<ExportButton url={exportUrl} size="md" />}
       >
 
         {asAt && (
