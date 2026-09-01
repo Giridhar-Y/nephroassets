@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import {
   fetchCenters,
   fetchDashboardSummary,
@@ -9,10 +10,11 @@ import {
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
-import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { DashboardIcon, DismissIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
-import { StatusBadge } from "../components/ui/Badge.js";
+import { Badge, StatusBadge } from "../components/ui/Badge.js";
+import { Modal } from "../components/ui/Modal.js";
 
 // Top 5 by value + one "Other" row summing the rest — the server returns every row (it
 // doesn't know how many the client wants to show), this is purely a display fold.
@@ -26,21 +28,21 @@ function foldTop5(rows: { label: string; value: number }[]): { label: string; va
 function BarPanel({ title, rows }: { title: string; rows: { label: string; value: number }[] }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
-    <Card className="p-5">
+    <Card className="p-4">
       <h2 className="text-sm font-semibold text-ink">{title}</h2>
       {rows.length === 0 ? (
-        <p className="mt-3 text-sm text-gray-400">Nothing in scope.</p>
+        <p className="mt-2 text-sm text-gray-400">Nothing in scope.</p>
       ) : (
-        <div className="mt-3 space-y-2.5">
+        <div className="mt-2 space-y-1.5">
           {rows.map((row) => (
             <div key={row.label}>
               <div className="flex items-baseline justify-between gap-2 text-xs">
                 <span className="truncate text-gray-600">{row.label}</span>
                 <span className="shrink-0 font-medium tabular-nums text-ink">{formatCurrency(row.value)}</span>
               </div>
-              <div className="mt-1 h-2 rounded-full bg-gray-100">
+              <div className="mt-0.5 h-1.5 rounded-full bg-gray-100">
                 <div
-                  className="h-2 rounded-full bg-brand-blue"
+                  className="h-1.5 rounded-full bg-brand-blue"
                   style={{ width: `${Math.max(2, (row.value / max) * 100)}%` }}
                 />
               </div>
@@ -54,9 +56,9 @@ function BarPanel({ title, rows }: { title: string; rows: { label: string; value
 
 function KpiTile({ label, value, children }: { label: string; value: string; children?: ReactNode }) {
   return (
-    <Card className="px-5 py-4">
+    <Card className="px-4 py-3">
       <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
-      <div className="mt-1 text-2xl font-semibold text-ink">{value}</div>
+      <div className="mt-0.5 text-xl font-semibold text-ink">{value}</div>
       {children}
     </Card>
   );
@@ -132,6 +134,78 @@ function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
   );
 }
 
+type ExceptionKey = keyof DashboardSummary["exceptions"];
+type ExceptionSampleRow = DashboardSummary["exceptions"][ExceptionKey]["sample"][number];
+
+// Tones reuse the design system's existing vocabulary (Badge's TONE_CLASSES) rather than
+// inventing new severity colors.
+const EXCEPTION_TILES: { key: ExceptionKey; label: string; tone: "danger" | "warning" | "info" | "neutral" }[] = [
+  { key: "negativeNbv", label: "Negative NBV", tone: "danger" },
+  { key: "fullyDepreciatedActive", label: "Fully Depreciated, Still Active", tone: "warning" },
+  { key: "pastUsefulLifeActive", label: "Past Useful Life, Still Active", tone: "warning" },
+  { key: "bigDisposalSwings", label: "Big Disposal Swings (> ₹1L)", tone: "info" },
+  { key: "missingData", label: "Missing Data", tone: "neutral" }
+];
+
+// Each exception category's sample rows carry a different "relevant figure" field — this
+// picks the one present on `row` rather than switching on the category key, so it stays
+// correct even if a category's own field set changes.
+function renderExceptionFigure(row: ExceptionSampleRow): ReactNode {
+  if ("nbv" in row && "grossBlock" in row) {
+    return (
+      <>
+        <div className="tabular-nums">{formatCurrency(row.nbv)}</div>
+        <div className="text-[10px] text-gray-400">of {formatCurrency(row.grossBlock)}</div>
+      </>
+    );
+  }
+  if ("nbv" in row) return <span className="tabular-nums">{formatCurrency(row.nbv)}</span>;
+  if ("expiryDate" in row) return <span>Expired {formatDateDDMMYYYY(row.expiryDate)}</span>;
+  if ("profitLoss" in row) return <span className="tabular-nums">{formatCurrency(row.profitLoss)}</span>;
+  if ("serialNo" in row) return <span>{row.serialNo ? "Sub Classification" : "Serial No"} missing</span>;
+  return null;
+}
+
+function ExceptionModal({
+  exceptionKey,
+  exceptions,
+  onClose
+}: {
+  exceptionKey: ExceptionKey;
+  exceptions: DashboardSummary["exceptions"];
+  onClose: () => void;
+}) {
+  const category = exceptions[exceptionKey];
+  const label = EXCEPTION_TILES.find((t) => t.key === exceptionKey)!.label;
+  return (
+    <Modal onClose={onClose} widthClassName="max-w-lg">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-ink">{label}</h2>
+        <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="Close">
+          <DismissIcon fontSize={16} />
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-gray-500">
+        {category.count} asset{category.count === 1 ? "" : "s"}
+        {category.count > category.sample.length ? ` — showing the first ${category.sample.length}` : ""}.
+      </p>
+      <ul className="mt-3 max-h-80 space-y-2 overflow-auto">
+        {category.sample.map((row) => (
+          <li key={row.farId} className="flex items-center justify-between gap-3 rounded-md border border-gray-100 px-3 py-2 text-sm">
+            <div className="min-w-0">
+              <Link to={`/assets/${row.farId}`} className="font-semibold text-accent hover:underline">
+                {row.farId}
+              </Link>
+              <div className="truncate text-xs text-gray-500">{row.assetDescription}</div>
+            </div>
+            <div className="shrink-0 text-right text-xs font-medium text-ink">{renderExceptionFigure(row)}</div>
+          </li>
+        ))}
+      </ul>
+    </Modal>
+  );
+}
+
 export function DashboardPage() {
   const { settings } = useSettings();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -144,6 +218,7 @@ export function DashboardPage() {
   const [subClassification, setSubClassification] = useState("");
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<string[]>([]);
+  const [openException, setOpenException] = useState<ExceptionKey | null>(null);
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -214,9 +289,9 @@ export function DashboardPage() {
         </div>
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
         {error && (
-          <p className="mb-4 flex items-center gap-1.5 text-sm text-red-600">
+          <p className="mb-3 flex items-center gap-1.5 text-sm text-red-600">
             <ErrorIcon fontSize={15} />
             {error}{" "}
             <button className="flex items-center gap-1 font-semibold underline" onClick={load}>
@@ -227,14 +302,14 @@ export function DashboardPage() {
         )}
 
         {loading && !summary ? (
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-4 gap-3">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-24 animate-pulse rounded-xl bg-gray-100" />
+              <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-100" />
             ))}
           </div>
         ) : summary ? (
-          <div className="space-y-4">
-            <div className="grid grid-cols-4 gap-4">
+          <div className="space-y-3">
+            <div className="grid grid-cols-4 gap-3">
               <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} />
               <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} />
               <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)} />
@@ -243,7 +318,7 @@ export function DashboardPage() {
               </KpiTile>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <BarPanel
                 title="By Sub Classification (Gross Block)"
                 rows={foldTop5(
@@ -256,52 +331,74 @@ export function DashboardPage() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <Card className="p-5">
+            <div className="grid grid-cols-3 gap-3">
+              <Card className="p-4">
                 <h2 className="text-sm font-semibold text-ink">Depreciation Run-Rate (FYTD)</h2>
-                <div className="mt-1 text-2xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
+                <div className="mt-1 text-xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
                 <div className="mt-2 text-brand-blue">
                   <LineChart
                     points={[
                       { label: "FY Start", value: 0 },
                       { label: "Now", value: summary.depreciationFytd }
                     ]}
-                    height={24}
+                    height={20}
                   />
                 </div>
               </Card>
 
-              <Card className="p-5">
+              <Card className="p-4">
                 <h2 className="text-sm font-semibold text-ink">Disposal P&L (FYTD)</h2>
-                <div className="mt-2 flex justify-between text-xs text-gray-500">
+                <div className="mt-2 flex justify-between text-[11px] text-gray-500">
                   <span>Losses {formatCurrency(summary.disposalPL.losses)}</span>
                   <span>Gains {formatCurrency(summary.disposalPL.gains)}</span>
                 </div>
                 <DivergingBar gains={summary.disposalPL.gains} losses={summary.disposalPL.losses} />
-                <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-xs text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
-                  <span className="text-lg font-semibold text-ink">
+                <div className="mt-2 flex items-baseline justify-between">
+                  <span className="text-[11px] text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
+                  <span className="text-sm font-semibold text-ink">
                     Net {formatCurrency(summary.disposalPL.gains + summary.disposalPL.losses)}
                   </span>
                 </div>
               </Card>
+
+              <Card className="p-4">
+                <h2 className="text-sm font-semibold text-ink">Net Block Trend</h2>
+                <div className="mt-2 text-brand-blue">
+                  <LineChart
+                    points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
+                    height={36}
+                    showDots
+                  />
+                </div>
+                <div className="mt-1 flex justify-between text-[9px] text-gray-400">
+                  {summary.nbvTrend.map((t) => (
+                    <span key={t.asAt}>{t.asAt.slice(5, 7)}/{t.asAt.slice(2, 4)}</span>
+                  ))}
+                </div>
+              </Card>
             </div>
 
-            <Card className="p-5">
-              <h2 className="text-sm font-semibold text-ink">Net Block Trend (6 trailing quarters)</h2>
-              <div className="mt-3 text-brand-blue">
-                <LineChart
-                  points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
-                  height={70}
-                  showDots
-                />
-              </div>
-              <div className="mt-1 flex justify-between text-[10px] text-gray-400">
-                {summary.nbvTrend.map((t) => (
-                  <span key={t.asAt}>{formatDateDDMMYYYY(t.asAt)}</span>
-                ))}
-              </div>
-            </Card>
+            <div className="grid grid-cols-5 gap-3">
+              {EXCEPTION_TILES.map((t) => {
+                const category = summary.exceptions[t.key];
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => category.count > 0 && setOpenException(t.key)}
+                    disabled={category.count === 0}
+                    className="rounded-xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-accent disabled:cursor-default disabled:opacity-50 disabled:hover:border-gray-200"
+                  >
+                    <Badge tone={t.tone}>{category.count}</Badge>
+                    <div className="mt-1.5 text-xs font-medium text-gray-600">{t.label}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {openException && (
+              <ExceptionModal exceptionKey={openException} exceptions={summary.exceptions} onClose={() => setOpenException(null)} />
+            )}
           </div>
         ) : null}
       </div>
