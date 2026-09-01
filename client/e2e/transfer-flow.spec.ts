@@ -3,6 +3,16 @@ import { expect, test } from "@playwright/test";
 const API_BASE = "http://localhost:4000";
 const FAR_ID = "FAR-000009";
 
+// A fixed past date here (the original code used "2026-01-01") is only "the latest
+// transfer" until some other transfer — real seed data, or a previous run of this very
+// test against the same persistent dev database — lands a later one; effectiveLocation
+// resolves to whichever transfer is latest as of today, not necessarily this one. Today's
+// date is the one value guaranteed to out-date anything seeded in the past.
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 test("center-first transfer: pick a center, select an asset, move it to another center", async ({
   page,
   request
@@ -10,7 +20,7 @@ test("center-first transfer: pick a center, select an asset, move it to another 
   // Put the asset at a known starting center first, so this test is self-contained
   // regardless of what earlier test/manual-testing runs left it at.
   await request.post(`${API_BASE}/api/transfers`, {
-    data: { farIds: [FAR_ID], toLocation: "Center-010", transactionDate: "2026-01-01" }
+    data: { farIds: [FAR_ID], toLocation: "Center-010", transactionDate: todayIso() }
   });
 
   await page.goto("/#/register");

@@ -23,7 +23,7 @@ test("Transfer: Go back preserves entered values, Esc dismisses the confirm step
 
   await page.goto("/#/register");
   await page.getByRole("button", { name: "Filter FAR ID" }).click();
-  await page.getByPlaceholder("e.g. FAR-000123").fill(farId);
+  await page.getByRole("textbox", { name: "FAR ID value" }).fill(farId);
   const row = page.locator(`[data-testid="register-row"][data-far-id="${farId}"]`);
   await expect(row).toBeVisible();
 
@@ -72,7 +72,7 @@ test("Dispose: confirm step shows the right summary, then completes the disposal
 
   await page.goto("/#/register");
   await page.getByRole("button", { name: "Filter FAR ID" }).click();
-  await page.getByPlaceholder("e.g. FAR-000123").fill(farId);
+  await page.getByRole("textbox", { name: "FAR ID value" }).fill(farId);
   const row = page.locator(`[data-testid="register-row"][data-far-id="${farId}"]`);
   await expect(row).toBeVisible();
 

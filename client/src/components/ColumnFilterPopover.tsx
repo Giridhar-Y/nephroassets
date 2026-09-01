@@ -289,6 +289,7 @@ export function ConditionFilterPanel({
         <input
           id={valueId}
           type={inputType}
+          aria-label={`${label} value`}
           autoFocus
           className={FIELD_INPUT_CLASS}
           value={draft.value ?? ""}
@@ -298,6 +299,7 @@ export function ConditionFilterPanel({
       {needsSecondValue && (
         <input
           type={inputType}
+          aria-label={`${label} value (to)`}
           placeholder="and…"
           className={FIELD_INPUT_CLASS}
           value={draft.valueTo ?? ""}
