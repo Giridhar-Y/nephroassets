@@ -13,6 +13,7 @@ import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { CollapseExpandIcon, ExpandIcon, ExportIcon, SearchIcon } from "../lib/icons.js";
+import { Tooltip } from "../components/Tooltip.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
 import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
@@ -238,11 +239,16 @@ export function RegisterPage() {
           <SearchIcon fontSize={15} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
-            placeholder="Search FAR ID, Description, Sub Classification, Status, or Location…"
-            className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-2 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+            placeholder="Search assets…"
+            className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-7 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
             value={filters.globalSearch ?? ""}
             onChange={(e) => (e.target.value ? setFilter("globalSearch", e.target.value) : clearFilter("globalSearch"))}
           />
+          <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
+            <Tooltip text="Searches FAR ID, Description, Sub Classification, Status, and Location.">
+              <></>
+            </Tooltip>
+          </span>
         </div>
       </div>
 

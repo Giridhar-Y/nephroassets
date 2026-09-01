@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AssetListItem } from "../lib/types.js";
 import { COLUMN_GROUPS, type ColumnDef, type ColumnGroupId } from "../lib/columns.js";
 import { Tooltip } from "./Tooltip.js";
+import { StatusBadge } from "./ui/Badge.js";
 import {
   ChevronDownIcon,
   CollapseExpandIcon,
@@ -518,6 +519,8 @@ export function AssetGrid({
                               )}
                               <span className="truncate">{item.asset.farId}</span>
                             </span>
+                          ) : col.id === "status" ? (
+                            <StatusBadge status={item.asset.status} />
                           ) : (
                             col.render(item)
                           )}
