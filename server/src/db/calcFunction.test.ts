@@ -79,14 +79,16 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     expect(Number(result.rows[0].gross_block)).toBe(100000);
   });
 
-  // Same class of regression, for far_depreciation_as_of's signature change (the
-  // fractional-useful-life fix, 2026-08-28): p_eol date -> p_eol_within_fy boolean,
-  // p_rem_life integer -> numeric. CREATE OR REPLACE cannot change an existing
-  // function's argument types — proves the explicit DROP FUNCTION IF EXISTS for the old
-  // 11-arg signature (see calcFunction.sql's header comment above it) actually does its
-  // job on a database that already booted with that old signature, not just that the
-  // DROP line is textually present.
-  it("removes a legacy far_depreciation_as_of(date,...,integer,...) overload and leaves one working (boolean,...,numeric,...) function", async () => {
+  // Same class of regression, for far_depreciation_as_of's signature changes. First the
+  // fractional-useful-life fix (2026-08-28): p_eol date -> p_eol_within_fy boolean,
+  // p_rem_life integer -> numeric. Then the addition-window fix (2026-09-01): gained two
+  // trailing params (p_useful_life_years, p_days_in_fy) so the additions branch can
+  // recompute a flat-rate term itself. CREATE OR REPLACE cannot change an existing
+  // function's argument types/count — proves the explicit DROP FUNCTION IF EXISTS for
+  // both prior signatures (see calcFunction.sql's header comment above it) actually does
+  // its job on a database that already booted with either of them, not just that the
+  // DROP lines are textually present.
+  it("removes both legacy far_depreciation_as_of overloads and leaves one working 13-parameter function", async () => {
     await pool.query(`
       CREATE OR REPLACE FUNCTION far_depreciation_as_of(
         p_view_end date, p_fy_start date, p_fy_end date, p_eol date, p_rem_life integer,
@@ -108,16 +110,16 @@ describe("calcFunction.sql: cleans up a stale far_calc_component overload", () =
     const calcSql = readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8");
     await pool.query(calcSql);
 
-    const after = await pool.query<{ nargs: number; eol_type: string; rem_life_type: string }>(
+    const after = await pool.query<{ nargs: number; useful_life_type: string; days_in_fy_type: string }>(
       `SELECT p.pronargs AS nargs,
-              format_type(p.proargtypes[3], NULL) AS eol_type,
-              format_type(p.proargtypes[4], NULL) AS rem_life_type
+              format_type(p.proargtypes[11], NULL) AS useful_life_type,
+              format_type(p.proargtypes[12], NULL) AS days_in_fy_type
        FROM pg_proc p WHERE p.proname = 'far_depreciation_as_of'`
     );
     expect(after.rows).toHaveLength(1);
     const row = after.rows[0]!;
-    expect(row.nargs).toBe(11);
-    expect(row.eol_type).toBe("boolean");
-    expect(row.rem_life_type).toBe("numeric");
+    expect(row.nargs).toBe(13);
+    expect(row.useful_life_type).toBe("numeric");
+    expect(row.days_in_fy_type).toBe("integer");
   });
 });

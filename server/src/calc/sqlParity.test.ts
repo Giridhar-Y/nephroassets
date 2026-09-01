@@ -339,9 +339,13 @@ const fixtures: Fixture[] = [
     fy: { ...FY, asAt: "2026-02-01" }
   },
   // Additional regression coverage (2026-08-27, third round; recomputed 2026-08-28) —
-  // matching engine.test.ts's (j): step 8 now matches step 5 exactly here, no floor.
+  // matching engine.test.ts's (j). Between 2026-08-28 and 2026-09-01 this fixture's step 8
+  // matched step 5 exactly (no floor needed); the 2026-09-01 addition-window fix changed
+  // step 5's window (not step 8's), so they diverge again here — see engine.test.ts's (j)
+  // for the full before/after. This fixture still just proves SQL agrees with TS, whatever
+  // the current numbers are.
   {
-    name: "taper (j): realistic shape, opening cost + mid-year addition fully disposed the same FY (no floor needed)",
+    name: "taper (j): realistic shape, opening cost + mid-year addition fully disposed the same FY",
     input: {
       dateAcquired: "2015-01-01",
       openingCost: 250000,
@@ -406,6 +410,41 @@ const fixtures: Fixture[] = [
       accDepOpening: 20000
     },
     fy: FY
+  },
+  // ADD001 regression (2026-09-01) — matches engine.test.ts's "(l) ADD001 regression",
+  // real Excel-computed values from the FAR FY 2026-27 "V2" workbook reconciliation
+  // session's own test row (built live in Excel via COM automation, since the workbook's
+  // own two data rows never exercise the addition branch). This is the exact case that
+  // revealed the pre-2026-09-01 addition-window divergence from Excel.
+  {
+    name: "ADD001 (C1): mid-year addition, addition-window fix matches Excel's Z9 literally",
+    input: {
+      dateAcquired: "2018-01-01",
+      openingCost: 500000,
+      additions: 60000,
+      dateOfAddition: "2026-06-01",
+      usefulLifeYears: 15,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 100000
+    },
+    fy: { asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
+  },
+  {
+    name: "ADD001 (C2): mid-year addition, addition-window fix matches Excel's AA9 literally",
+    input: {
+      dateAcquired: "2018-01-01",
+      openingCost: 150000,
+      additions: 20000,
+      dateOfAddition: "2026-06-01",
+      usefulLifeYears: 12,
+      dateOfDisposal: null,
+      deletionsCost: 0,
+      saleValue: 0,
+      accDepOpening: 30000
+    },
+    fy: { asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 }
   }
 ];
 

@@ -150,12 +150,23 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
   // finance as intentional (2026-08-27) and reverses the eol-first order shipped in the
   // prior deploy — don't re-flip this order without re-confirming with finance.
   //
-  // The flat-rate branch's additions term still uses depOnOpening/depOnAdditions from
-  // steps 2-4 above (splitTranche, dated from the addition's own dateOfAddition), NOT a
-  // flat eff-fyStart+1 window for both — this part is UNCHANGED and orthogonal to the
-  // branch-order question above: it was evaluated and rejected as a real regression of
-  // the prior FY-rollover fix when the taper formula first shipped, and that decision
-  // still stands.
+  // The flat-rate branch's additions term uses the SAME eff-fyStart+1 window as the
+  // opening term (both openingCost and additionsAt divided by usefulLife, multiplied by
+  // the same daysHeldAtEff/daysInFy) — matching the FAR FY 2026-27 "V2" workbook's Z/AA
+  // formula literally. Reinstated 2026-09-01 after a fresh reconciliation against that
+  // workbook (its Methodology & Notes sheet, plus a live ADD001 numeric test case built
+  // for this) found the code diverging here: engine.ts computed periodDep=11810.05 vs
+  // Excel's 12478.54 on identical inputs, because the code was instead using each
+  // tranche's own days-held (depOnOpening/depOnAdditions from steps 2-4 above,
+  // splitTranche, dated from the addition's own dateOfAddition). That prior approach was
+  // deliberately chosen once before (pre-2026-08-28) BECAUSE the literal Excel reading was
+  // evaluated and rejected as a regression: it overstates first-period depreciation on a
+  // mid-year addition, charging it the full-FY proportional rate instead of only the days
+  // it was actually held. That overstatement is confined to the addition's first FY —
+  // accDepOpening carries the inflated figure forward, so later years' remaining-NBV math
+  // self-corrects. Confirmed intentional this round via explicit user sign-off
+  // (2026-09-01 reconciliation session, ADD001 test case) regardless of that known,
+  // accepted consequence — the workbook is the source of truth for this reconciliation.
   //
   // NOTE (step 8 coupling): step 8 below still calls this same depreciationAsOf function
   // in this commit, so its output changes too wherever an addition and a disposal
@@ -194,8 +205,14 @@ export function computeComponent(input: ComponentInput, fy: FySettings): Compone
     const taperNbvAt = Math.max(0, input.openingCost + additionsAt - input.accDepOpening);
     if (additionsAt > 0) {
       // An addition happened this period (Excel's O>0) — flat-rate SLM on cost+additions,
-      // capped at NBV, unconditionally. The taper branch below never fires here.
-      return Math.min(depOnOpeningAt + depOnAdditionsAt, taperNbvAt);
+      // capped at NBV, unconditionally. The taper branch below never fires here. Both
+      // terms share the same eff-fyStart+1 day window (see the comment above this
+      // function) — NOT depOnOpeningAt/depOnAdditionsAt, which are dated from each
+      // tranche's own start date via splitTranche.
+      const daysHeldAtEff = Math.max(0, daysHeldInclusive(fyStart, effAt));
+      const flatOpeningDep = (input.openingCost / usefulLife) * (daysHeldAtEff / daysInFy);
+      const flatAdditionDep = (additionsAt / usefulLife) * (daysHeldAtEff / daysInFy);
+      return Math.min(flatOpeningDep + flatAdditionDep, taperNbvAt);
     }
     if (eolWithinFy) {
       // Taper branch: no addition this period, and useful life ends within (or before)

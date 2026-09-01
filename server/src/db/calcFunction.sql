@@ -42,6 +42,13 @@ DROP FUNCTION IF EXISTS far_calc_component(numeric, numeric, date, numeric, date
 -- booted with it doesn't end up carrying both.
 DROP FUNCTION IF EXISTS far_depreciation_as_of(date, date, date, date, integer, numeric, numeric, date, numeric, numeric, numeric);
 
+-- far_depreciation_as_of gained two new trailing parameters (p_useful_life_years,
+-- p_days_in_fy) for the 2026-09-01 addition-window fix below — the additions-branch now
+-- needs to recompute a flat-rate term itself rather than relying solely on the
+-- precomputed p_dep_on_opening_at/p_dep_on_additions_at. Drop the prior (boolean/numeric,
+-- 11-param) signature explicitly, same reasoning as the drop above.
+DROP FUNCTION IF EXISTS far_depreciation_as_of(date, date, date, boolean, numeric, numeric, numeric, date, numeric, numeric, numeric);
+
 -- SQL port of server/src/calc/engine.ts's computeComponent, so the aggregate reports
 -- (Location Summary, Audit Reconciliation, Depreciation Posting Summary) can GROUP BY /
 -- SUM at the database level across all 2,50,000+ rows instead of pulling every row into
@@ -84,6 +91,24 @@ CREATE TYPE far_component_result AS (
 -- explicitly by finance as intentional (2026-08-27); reverses the eol-first order shipped
 -- in the prior deploy — don't re-flip this order without re-confirming with finance.
 --
+-- The additions branch's flat-rate term uses the SAME (eff - fy_start + 1) window as the
+-- opening term (both p_opening_cost and additions_at divided by p_useful_life_years,
+-- multiplied by the same days_held_at_eff/p_days_in_fy) — matching the FAR FY 2026-27 "V2"
+-- workbook's Z/AA formula literally. Reinstated 2026-09-01 after a fresh reconciliation
+-- against that workbook (a live ADD001 numeric test case built for this) found the code
+-- diverging here: this function computed period_depreciation=11810.05 vs Excel's 12478.54
+-- on identical inputs, because it was instead using p_dep_on_opening_at/
+-- p_dep_on_additions_at, each dated from its own tranche's start date (see
+-- far_calc_component's tranche logic). That prior approach was deliberately chosen once
+-- before (pre-2026-08-28) BECAUSE the literal Excel reading was evaluated and rejected as
+-- a regression: it overstates first-period depreciation on a mid-year addition, charging
+-- it the full-FY proportional rate instead of only the days it was actually held. That
+-- overstatement is confined to the addition's first FY — p_acc_dep_opening carries the
+-- inflated figure forward, so later years' remaining-NBV math self-corrects. Confirmed
+-- intentional this round via explicit user sign-off (2026-09-01 reconciliation session,
+-- ADD001 test case) regardless of that known, accepted consequence — the workbook is the
+-- source of truth for this reconciliation.
+--
 -- NOTE (far_calc_component's step 8 coupling): step 8 still calls this same function in
 -- this commit, so its output changes too wherever an addition and a disposal coincide —
 -- expected here, and gets superseded in the very next commit, which reverts step 8 to a
@@ -118,7 +143,9 @@ CREATE OR REPLACE FUNCTION far_depreciation_as_of(
   p_date_of_addition date,
   p_acc_dep_opening numeric,
   p_dep_on_opening_at numeric,
-  p_dep_on_additions_at numeric
+  p_dep_on_additions_at numeric,
+  p_useful_life_years numeric,
+  p_days_in_fy integer
 ) RETURNS numeric
 LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
@@ -126,14 +153,23 @@ DECLARE
   days_used_at numeric;
   additions_at numeric;
   taper_nbv_at numeric;
+  days_held_at_eff numeric;
 BEGIN
   eff_at := LEAST(p_view_end, p_fy_end);
   additions_at := CASE WHEN p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_view_end THEN p_additions ELSE 0 END;
   taper_nbv_at := GREATEST(0, p_opening_cost + additions_at - p_acc_dep_opening);
   IF additions_at > 0 THEN
     -- An addition happened this period (Excel's O>0) — flat-rate SLM on cost+additions,
-    -- capped at NBV, unconditionally. The taper branch below never fires here.
-    RETURN LEAST(p_dep_on_opening_at + p_dep_on_additions_at, taper_nbv_at);
+    -- capped at NBV, unconditionally. The taper branch below never fires here. Both terms
+    -- share the same eff-fy_start+1 day window (see the comment above this function) —
+    -- NOT p_dep_on_opening_at/p_dep_on_additions_at, which are dated from each tranche's
+    -- own start date.
+    days_held_at_eff := GREATEST(0, (eff_at - p_fy_start) + 1);
+    RETURN LEAST(
+      (p_opening_cost / p_useful_life_years) * (days_held_at_eff / p_days_in_fy)
+        + (additions_at / p_useful_life_years) * (days_held_at_eff / p_days_in_fy),
+      taper_nbv_at
+    );
   END IF;
   IF p_eol_within_fy THEN
     -- Taper branch: no addition this period, and useful life ends within (or before)
@@ -317,7 +353,7 @@ BEGIN
     ELSE far_depreciation_as_of(
       effective_end_date, p_fy_start, p_fy_end, eol_within_fy, rem_life,
       p_opening_cost, p_additions, p_date_of_addition, p_acc_dep_opening,
-      dep_on_opening, dep_on_additions
+      dep_on_opening, dep_on_additions, p_useful_life_years, p_days_in_fy
     )
   END;
 

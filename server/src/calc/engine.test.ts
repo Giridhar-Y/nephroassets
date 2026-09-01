@@ -259,11 +259,13 @@ describe("End-of-life taper (step 5)", () => {
     // wrote off the combined NBV in one shot; see the git history of this test for that
     // prior expectation).
     //
-    // depOnOpening: (100000/4) * (290 days fyStart..asAt / 365) = 19863.013698630137
-    // depOnAdditions: (20000/4) * (229 days dateOfAddition..asAt / 365) = 3136.986301369863
-    // periodDepreciation = their sum = 23000, well under taperNbv (90000) so the cap
-    // doesn't bind — NOT the taper branch's 90000 (full write-off) from before this
-    // reversion.
+    // 2026-09-01 addition-window fix: both terms now use the SAME eff-fyStart+1 window
+    // (290 days, fyStart..asAt), matching the FAR FY 2026-27 "V2" workbook's Z/AA formula
+    // literally, rather than the addition's own 229-day dateOfAddition..asAt window:
+    //   periodDepreciation = ((100000+20000)/4) * (290/365) = 23835.616438356163
+    // well under taperNbv (90000) so the cap doesn't bind — still NOT the taper branch's
+    // 90000 (full write-off) from before the 2026-08-27 branch-order reversion, and no
+    // longer the 23000 the pre-2026-09-01 own-dateOfAddition window gave either.
     const r = computeComponent(
       {
         dateAcquired: "2021-10-01",
@@ -278,9 +280,9 @@ describe("End-of-life taper (step 5)", () => {
       },
       fy({ asAt: "2026-01-15" })
     );
-    expect(r.periodDepreciation).toBeCloseTo(23000, 6);
-    expect(r.closingAccDep).toBeCloseTo(53000, 6);
-    expect(r.nbv).toBeCloseTo(67000, 6);
+    expect(r.periodDepreciation).toBeCloseTo(23835.616438356163, 6);
+    expect(r.closingAccDep).toBeCloseTo(53835.616438356163, 6);
+    expect(r.nbv).toBeCloseTo(66164.38356164384, 6);
   });
 
   it("(d) eol in a prior FY, stale leftover NBV — fully written off in one period", () => {
@@ -306,19 +308,25 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.nbv).toBeCloseTo(0, 6);
   });
 
-  it("(e) flat-rate branch: a mid-year addition still prorates from its own dateOfAddition, not FY Start", () => {
+  it("(e) flat-rate branch: a mid-year addition now prorates over the same fyStart..asAt window as opening cost, matching Excel's Z/AA formula literally", () => {
     // eol = 2020-01-01 + 10yr, safely past fyEnd (2026-03-31) — flat-rate branch, reached
     // here via the additions-first check now (additionsAt > 0, since dateOfAddition
     // 2025-07-01 <= asAt) rather than via "eol not within FY" as it would have been
-    // before the 2026-08-27 branch-order reversion — same destination branch, same
-    // result, confirming the reordering didn't disturb this. Proves the addition-dating
-    // question raised before the original taper implementation still holds: depOnOpening/
-    // depOnAdditions (steps 2-4, splitTranche) are what feed periodDepreciation here, so
-    // the addition (dated 2025-07-01, mid-FY) depreciates only from its own date, not
-    // from fyStart like opening cost — NOT the Excel formula's literal fy_start-for-both
-    // wording, which was evaluated and rejected as a real regression of the prior
-    // FY-rollover fix, and stays rejected through this reversion (explicitly reconfirmed
-    // 2026-08-27, see step 5's comment in engine.ts).
+    // before the 2026-08-27 branch-order reversion — same destination branch as then.
+    //
+    // 2026-09-01 addition-window fix: depOnOpening/depOnAdditions (steps 2-4,
+    // splitTranche) — which prorate the addition from its own dateOfAddition, not
+    // fyStart — no longer feed periodDepreciation in this branch at all; kept below only
+    // as their own independent step-2-4 assertions, unchanged from before. What actually
+    // drives periodDepreciation now is a fresh flat-rate calc using the SAME
+    // fyStart..asAt window (275 days) for both terms:
+    //   periodDepreciation = ((50000+20000)/10) * (275/365) = 5273.972602739726
+    // This is exactly the literal-formula figure this test previously rejected (see git
+    // history) — matching Excel's Z/AA formula was evaluated and rejected once before
+    // (pre-2026-08-28) as a regression (overstates a mid-year addition's first-period
+    // dep), then reinstated 2026-09-01 via explicit user sign-off after a fresh
+    // reconciliation against the FAR FY 2026-27 "V2" workbook (ADD001 test case) found
+    // the code diverging from it. See engine.ts's step-5 comment for the full history.
     const r = computeComponent(
       {
         dateAcquired: "2020-01-01",
@@ -333,13 +341,11 @@ describe("End-of-life taper (step 5)", () => {
       },
       fy({ asAt: "2025-12-31" })
     );
-    // depOnOpening: (50000/10) * (275 days fyStart..asAt / 365) = 3767.123287671233
-    // depOnAdditions: (20000/10) * (184 days dateOfAddition..asAt / 365) = 1008.219178082192
-    // periodDepreciation = their sum, NOT the literal-formula's 5273.97 (both terms over
-    // the same 275-day opening window).
+    // Steps 2-4 (splitTranche) still compute these independently — unchanged, no longer
+    // fed into periodDepreciation for this branch:
     expect(r.depOnOpening).toBeCloseTo(3767.123287671233, 6);
     expect(r.depOnAdditions).toBeCloseTo(1008.219178082192, 6);
-    expect(r.periodDepreciation).toBeCloseTo(4775.342465753425, 6);
+    expect(r.periodDepreciation).toBeCloseTo(5273.972602739726, 6);
   });
 
   it("(f) disposed after useful life had already expired — step 8 stays flat-rate, reopening the Audit Reconciliation gap", () => {
@@ -469,11 +475,15 @@ describe("End-of-life taper (step 5)", () => {
     // off taperNbv if there were no addition (asAt 2026-02-01 is after eol, so remLife<=
     // daysUsed and the taper branch would return taperNbv exactly: 134202). Instead, the
     // 45000 addition on 2025-09-01 means additionsAt > 0, so per the reordering this stays
-    // in the flat-rate branch regardless of eol:
-    //   depOnOpening = (439202/5) * (307 days fyStart..asAt / 365) = 73882.19945205479
-    //   depOnAdditions = (45000/5) * (154 days dateOfAddition..asAt / 365) = 3797.2602739726026
-    //   periodDepreciation = their sum = 77679.45972602739, well under taperNbv (134202)
-    // — NOT the taper branch's 134202 a full write-off would have given.
+    // in the flat-rate branch regardless of eol.
+    //
+    // 2026-09-01 addition-window fix: both terms use the SAME 307-day fyStart..asAt
+    // window, matching Excel's Z/AA formula literally (steps 2-4's own 154-day
+    // dateOfAddition..asAt window, asserted below, no longer feeds periodDepreciation):
+    //   periodDepreciation = ((439202+45000)/5) * (307/365) = 81452.06246575342
+    // still well under taperNbv (134202), so the cap doesn't bind — still NOT the taper
+    // branch's 134202 a full write-off would have given, and no longer the
+    // own-dateOfAddition window's 77679.45972602739 either.
     const r = computeComponent(
       {
         dateAcquired: "2021-01-01",
@@ -490,11 +500,11 @@ describe("End-of-life taper (step 5)", () => {
     );
     expect(r.depOnOpening).toBeCloseTo(73882.19945205479, 6);
     expect(r.depOnAdditions).toBeCloseTo(3797.2602739726026, 6);
-    expect(r.periodDepreciation).toBeCloseTo(77679.45972602739, 6);
+    expect(r.periodDepreciation).toBeCloseTo(81452.06246575342, 6);
     expect(r.periodDepreciation).not.toBeCloseTo(134202, 0);
     expect(r.grossBlock).toBe(484202);
-    expect(r.closingAccDep).toBeCloseTo(427679.4597260274, 6);
-    expect(r.nbv).toBeCloseTo(56522.54027397261, 6);
+    expect(r.closingAccDep).toBeCloseTo(431452.06246575341, 6);
+    expect(r.nbv).toBeCloseTo(52749.93753424659, 6);
   });
 
   it("(j) fractional useful life: taper branch keeps remLife as a fraction of a day, not rounded — regression for a real Excel-verified figure (TEST-101/C2)", () => {
@@ -545,6 +555,55 @@ describe("End-of-life taper (step 5)", () => {
     expect(r.periodDepreciation).toBeCloseTo(6469.288555015467, 6);
     expect(r.closingAccDep).toBeCloseTo(26469.288555015467, 6);
     expect(r.nbv).toBeCloseTo(73530.71144498453, 6);
+  });
+
+  it("(l) ADD001 regression: FAR FY 2026-27 V2 workbook reconciliation (2026-09-01) — real Excel-computed figures for a mid-year addition, both components", () => {
+    // Built live in Excel (real .xlsb, COM automation) during the 2026-09-01
+    // reconciliation session as a purpose-built test row (the workbook's own two data
+    // rows never exercise the addition branch) — dateAcquired 2018-01-01, addition
+    // 2026-06-01, AS_AT 2026-07-31, FY_ST 2026-04-01, FY_EN 2027-03-31, DAYS_FY 365.
+    // Excel's Z9/AA9/AD9/AE9/AL9/AM9 (full precision, calculated values not formulas):
+    //   C1: periodDep=12478.5388127854, closingAccDep=112478.538812785, nbv=447521.461187215
+    //   C2: periodDep=4735.1598173516,  closingAccDep=34735.1598173516,  nbv=135264.840182648
+    // This is the exact case that revealed the pre-2026-09-01 code diverging from Excel
+    // (see engine.ts's step-5 comment for the full history) — permanent regression
+    // coverage for the fix, pinned to Excel's own computed numbers rather than a hand
+    // derivation.
+    const fy2627: FySettings = { asAt: "2026-07-31", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365 };
+    const c1 = computeComponent(
+      {
+        dateAcquired: "2018-01-01",
+        openingCost: 500000,
+        additions: 60000,
+        dateOfAddition: "2026-06-01",
+        usefulLifeYears: 15,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 100000
+      },
+      fy2627
+    );
+    const c2 = computeComponent(
+      {
+        dateAcquired: "2018-01-01",
+        openingCost: 150000,
+        additions: 20000,
+        dateOfAddition: "2026-06-01",
+        usefulLifeYears: 12,
+        dateOfDisposal: null,
+        deletionsCost: 0,
+        saleValue: 0,
+        accDepOpening: 30000
+      },
+      fy2627
+    );
+    expect(c1.periodDepreciation).toBeCloseTo(12478.5388127854, 6);
+    expect(c1.closingAccDep).toBeCloseTo(112478.538812785, 6);
+    expect(c1.nbv).toBeCloseTo(447521.461187215, 6);
+    expect(c2.periodDepreciation).toBeCloseTo(4735.1598173516, 6);
+    expect(c2.closingAccDep).toBeCloseTo(34735.1598173516, 6);
+    expect(c2.nbv).toBeCloseTo(135264.840182648, 6);
   });
 });
 
@@ -715,21 +774,26 @@ describe("Disposal accounting (steps 8-11)", () => {
     // Since the 2026-08-27 reversion, this hits step 5's flat-rate branch (additionsAt >
     // 0: the addition is dated 2025-05-01, before the 2025-08-31 disposal) rather than
     // the taper branch — eol (2024-12-30) being before fyStart no longer matters once
-    // there's an addition this period. periodDepreciation = (50000/5) * (123 days
-    // dateOfAddition..disposalDate / 365) = 3369.863013698630.
+    // there's an addition this period.
     //
-    // Corrected 2026-08-28: step 8's additions-portion term now also uses dateOfAddition
-    // (not FY Start) as its window start — with openingCost=0 here, the entire disposed
-    // cost is attributed to the additions share (ratio 50000/50000 = 1), using the exact
-    // SAME 123-day window step 5 uses: depOnDisposedPortion = 50000 * 1 * (123/(5*365)) =
-    // 3369.863013698630 — now IDENTICAL to periodDepreciation, not the FY-Start-window's
-    // 4191.780821917808 from before this correction. accDepOnDisposed = 0 (accDepOpening)
-    // + 3369.863013698630 = 3369.863013698630, so the raw closing value (0 + 3369.86... -
-    // 3369.86...) is exactly 0 — the floor added two rounds ago for this exact scenario no
-    // longer has anything to guard against here. It's still in the code (see the new
-    // mid-year-capitalization test below for where it's still load-bearing), just not for
-    // this shape anymore.
-    expect(r.periodDepreciation).toBeCloseTo(3369.863013698630, 6);
+    // 2026-09-01 addition-window fix: step 5's flat-rate branch now uses the SAME
+    // eff-fyStart+1 window (153 days, fyStart..disposalDate) for both the opening and
+    // addition terms, matching the FAR FY 2026-27 "V2" workbook's Z/AA formula literally
+    // (see engine.ts's step-5 comment). With openingCost=0, only the addition term
+    // matters: periodDepreciation = (50000/5) * (153/365) = 4191.780821917808 — this is
+    // the exact FY-Start-window figure the 2026-08-28 step-8 fix's own comment once cited
+    // as "before this correction", now reinstated deliberately for step 5 (not step 8).
+    //
+    // Step 8's depOnDisposedPortion is UNCHANGED by this fix (out of scope per this
+    // round's explicit sign-off) — it still uses its own dateOfAddition-based 123-day
+    // window: depOnDisposedPortion = 50000 * 1 * (123/(5*365)) = 3369.863013698630.
+    // periodDepreciation and depOnDisposedPortion are consequently NO LONGER identical
+    // (they were, briefly, between the 2026-08-28 step-8 fix and this round) — accDepOpening
+    // (0) + periodDepreciation (4191.78) - accDepOnDisposed (3369.86) = 821.92, no longer
+    // exactly 0. closingAccDep still correctly lands at 0, but now via the Math.min(...,
+    // grossBlock) CAP (grossBlock is 0 here, fully disposed) rather than the raw value
+    // already being 0 — a different mechanism reaching the same right answer.
+    expect(r.periodDepreciation).toBeCloseTo(4191.780821917808, 6);
     expect(r.depOnDisposedPortion).toBeCloseTo(3369.863013698630, 6);
     expect(r.accDepOnDisposed).toBeCloseTo(3369.863013698630, 6);
     expect(r.grossBlock).toBe(0);
@@ -743,32 +807,33 @@ describe("Disposal accounting (steps 8-11)", () => {
   // Additional regression coverage (2026-08-27, second round; recomputed 2026-08-28): a
   // realistically-shaped, long-owned asset (dateAcquired well before FY Start) with a
   // mid-year addition fully disposed later the same FY.
-  it("(j) realistic shape: opening cost + mid-year addition fully disposed the same FY — step 8 now matches step 5 exactly, no floor needed", () => {
+  it("(j) realistic shape: opening cost + mid-year addition fully disposed the same FY — step 8 no longer matches step 5 exactly (2026-09-01 addition-window fix); grossBlock cap keeps closingAccDep at 0 instead", () => {
     // dateAcquired 2015-01-01, 10yr useful life -> eol is 2025-01-01, before this FY starts
     // (2025-04-01) -- but that's irrelevant here since there IS an addition, so step 5
     // never even reaches the eol check (additions-first order, per (c) and (i) above).
     //
-    // Step 5 (flat-rate, addition dated from its own date):
-    //   depOnOpening = (250000/10) * (244 days fyStart..disposalDate / 365) = 16712.32876712329
-    //   depOnAdditions = (60000/10) * (153 days dateOfAddition..disposalDate / 365) = 2515.068493150685
-    //   periodDepreciation = their sum = 19227.397260273974 (taperNbv 260000 doesn't cap it)
+    // 2026-09-01 addition-window fix: step 5's flat-rate branch now uses the SAME
+    // eff-fyStart+1 window (244 days, fyStart..disposalDate) for both terms, matching the
+    // FAR FY 2026-27 "V2" workbook's Z/AA formula literally:
+    //   periodDepreciation = ((250000+60000)/10) * (244/365) = 20723.28767123288
+    //   (taperNbv 260000 doesn't cap it) — this is the exact figure the 2026-08-28 step-8
+    //   fix's own comment once cited as "before this correction", now reinstated
+    //   deliberately for step 5 (not step 8).
     //
-    // Step 8, corrected 2026-08-28 to use dateOfAddition (not FY Start) for the
-    // additions-portion window:
+    // Step 8's depOnDisposedPortion is UNCHANGED by this fix (out of scope per this
+    // round's explicit sign-off) — it still uses each tranche's own dateOfAddition-based
+    // window:
     //   depOnDisposedOpening = 310000 * (250000/310000) * (244/(10*365)) = 16712.32876712329
     //   depOnDisposedAdditions = 310000 * (60000/310000) * (153/(10*365)) = 2515.068493150685
-    //   depOnDisposedPortion = their sum = 19227.39726027397 — now IDENTICAL to step 5's
-    //   periodDepreciation (the 250000/60000 ratio against the combined 310000 exactly
-    //   cancels back to the raw opening/addition amounts, since deletionsCost here equals
-    //   openingCost+additions — a real disposal always sets it that way).
+    //   depOnDisposedPortion = their sum = 19227.39726027397
     //
-    // Since disposedRatio is 1 (full disposal) and depOnDisposedPortion now equals
-    // periodDepreciation exactly, the reconciliation identity's raw value comes out to
-    // exactly 0 on its own — accDepOpening(50000) + periodDepreciation(19227.397260273974)
-    // - accDepOnDisposed(50000 + 19227.39726027397) = 0. Before this correction, step 8's
-    // FY-Start-based additions window gave 20723.287671232876 instead — 1495.89 higher —
-    // which is exactly what made the floor engage for this fixture two rounds ago. It no
-    // longer does.
+    // periodDepreciation and depOnDisposedPortion are consequently NO LONGER identical
+    // (they briefly were, between the 2026-08-28 step-8 fix and this round) — the
+    // reconciliation identity's raw value is now accDepOpening(50000) +
+    // periodDepreciation(20723.28767123288) - accDepOnDisposed(50000 + 19227.39726027397)
+    // = 1495.8904109589057, not 0. closingAccDep still correctly lands at 0, but now via
+    // the Math.min(..., grossBlock) CAP (grossBlock is 0, fully disposed) rather than the
+    // raw value already being 0 — a different mechanism reaching the same right answer.
     const r = computeComponent(
       {
         dateAcquired: "2015-01-01",
@@ -785,12 +850,12 @@ describe("Disposal accounting (steps 8-11)", () => {
     );
     expect(r.depOnOpening).toBeCloseTo(16712.32876712329, 6);
     expect(r.depOnAdditions).toBeCloseTo(2515.068493150685, 6);
-    expect(r.periodDepreciation).toBeCloseTo(19227.397260273974, 6);
+    expect(r.periodDepreciation).toBeCloseTo(20723.28767123288, 6);
     expect(r.depOnDisposedPortion).toBeCloseTo(19227.39726027397, 6);
-    expect(r.depOnDisposedPortion).toBeCloseTo(r.periodDepreciation, 6);
     expect(r.accDepOnDisposed).toBeCloseTo(69227.39726027397, 6);
-    // The reconciliation identity's raw value is exactly 0 now, no floor required:
-    expect(50000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(0, 6);
+    // Raw reconciliation value is no longer 0 — the grossBlock cap below is what keeps
+    // closingAccDep at 0, not this identity holding on its own:
+    expect(50000 + r.periodDepreciation - r.accDepOnDisposed).toBeCloseTo(1495.8904109589057, 6);
     expect(r.closingAccDep).toBeCloseTo(0, 6);
     expect(r.nbv).toBeCloseTo(0, 6);
     expect(r.wdvAtDisposal).toBeCloseTo(240772.60273972602, 6);
