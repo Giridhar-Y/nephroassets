@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import {
   fetchCenters,
   fetchDashboardSummary,
   fetchSubClassifications,
+  type DashboardNbvTrendPoint,
   type DashboardStatusCount,
   type DashboardSummary
 } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
-import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { ChevronDownIcon, ChevronUpIcon, DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
 import { StatusBadge } from "../components/ui/Badge.js";
@@ -141,6 +141,31 @@ const EXCEPTION_TILE_TONE_CLASSES: Record<"danger" | "warning" | "info" | "neutr
   neutral: { bg: "bg-gray-100", text: "text-gray-700" }
 };
 
+// A real "vs last quarter-end" comparison from the trend endpoint's own last two points
+// — not a sparkline. A previous attempt reused LineChart here, but LineChart's zero-based
+// y-axis (appropriate for the Depreciation Run-Rate sparkline, which really does start at
+// 0) crushes a tightly-clustered, all-large NBV series into an invisible sliver hugging
+// the chart's top edge: real data, unreadable render. A plain delta is legible at a
+// glance and doesn't need a second y-axis convention just for this one series.
+function NetBlockDelta({ trend }: { trend: DashboardNbvTrendPoint[] }) {
+  if (trend.length < 2) return null;
+  const prev = trend[trend.length - 2]!;
+  const last = trend[trend.length - 1]!;
+  if (prev.nbv === 0) return null; // no meaningful % change to express from a zero base
+  const deltaPct = ((last.nbv - prev.nbv) / Math.abs(prev.nbv)) * 100;
+  const isUp = deltaPct >= 0;
+  return (
+    <div className={`mt-2 flex items-center gap-1 text-xs font-semibold ${isUp ? "text-green-600" : "text-accent"}`}>
+      {isUp ? <ChevronUpIcon fontSize={14} /> : <ChevronDownIcon fontSize={14} />}
+      <span className="tabular-nums">
+        {isUp ? "+" : ""}
+        {deltaPct.toFixed(1)}%
+      </span>
+      <span className="font-normal text-gray-400">vs last quarter-end</span>
+    </div>
+  );
+}
+
 function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
   if (statusCounts.length === 0) return null;
   return (
@@ -261,12 +286,7 @@ export function DashboardPage() {
               <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} />
               <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} />
               <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)}>
-                {/* A real trend, not a fabricated delta — the same 6-quarter series the
-                    Net Block Trend card below charts in full, reused here as a compact
-                    "which way is this moving" cue right under the headline figure. */}
-                <div className="mt-2 h-6 text-brand-blue">
-                  <LineChart points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))} height={24} />
-                </div>
+                <NetBlockDelta trend={summary.nbvTrend} />
               </KpiTile>
               <KpiTile label="Asset Count" value={String(summary.totals.assetCount)}>
                 <StatusMix statusCounts={summary.statusCounts} />
@@ -347,17 +367,21 @@ export function DashboardPage() {
                     <div className="mt-1 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
                   </>
                 );
-                // A real anchor (not a programmatic navigation) opened in a new tab —
-                // same reasoning as AssetGrid's own "View Lifecycle" link: right-click/
-                // middle-click/Ctrl+click all need to work, and it needs to survive
-                // outside React Router's own client-side history. Register's own
-                // GET /api/assets?exception=<key> re-derives the exact row set from the
-                // same shared predicate this tile's count came from — see
-                // exceptionPredicates.ts — so the two can never silently disagree.
+                // A plain native anchor — deliberately NOT react-router's <Link>. Link's
+                // own click handler bails out and lets the browser handle target="_blank"
+                // natively (confirmed against the installed react-router-dom source), but
+                // a real click still navigated the CURRENT tab instead of opening a new
+                // one. Using a bare <a> removes React/router entirely from the click path,
+                // leaving pure native browser semantics — right-click/middle-click/
+                // Ctrl+click all need to work, and a plain click must leave Dashboard
+                // exactly where it was. Register's own GET /api/assets?exception=<key>
+                // re-derives the exact row set from the same shared predicate this tile's
+                // count came from — see exceptionPredicates.ts — so the two can never
+                // silently disagree.
                 return category.count > 0 ? (
-                  <Link
+                  <a
                     key={key}
-                    to={`/register?exception=${key}&asAt=${summary.asAt}`}
+                    href={`#/register?exception=${key}&asAt=${summary.asAt}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
@@ -365,7 +389,7 @@ export function DashboardPage() {
                     className={`rounded-xl p-5 text-left shadow-sm transition-transform hover:-translate-y-0.5 ${toneClasses.bg}`}
                   >
                     {tileContent}
-                  </Link>
+                  </a>
                 ) : (
                   <div key={key} className="rounded-xl bg-gray-50 p-5 text-left">
                     {tileContent}
