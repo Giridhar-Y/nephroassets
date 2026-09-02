@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
-import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows, stringifyRowData } from "./bulkParse.js";
 import { disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
@@ -80,7 +80,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       const childViolations = new Map(
         (await findDirectChildActionViolations(db, farIds)).map((v) => [v.farId, v.parentFarId])
       );
-      const classified: Array<{ row: number; farId: string; status: "update" }> = [];
+      const classified: Array<{ row: number; farId: string; status: "update"; data: Record<string, string> }> = [];
       for (const { row, data } of validRows) {
         const info = existing.get(data.farId);
         const violatingParent = childViolations.get(data.farId);
@@ -88,26 +88,29 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
           errors.push({
             row,
             farId: data.farId,
-            message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`
+            message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`,
+            data: stringifyRowData(data)
           });
         } else if (!info || !isCenterInScope(req.user!, info.currentLocation)) {
-          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
         } else if (info.dateOfDisposal != null) {
-          errors.push({ row, farId: data.farId, message: `Asset "${data.farId}" has already been disposed.` });
+          errors.push({ row, farId: data.farId, message: `Asset "${data.farId}" has already been disposed.`, data: stringifyRowData(data) });
         } else if (data.dateOfDisposal < info.dateAcquired) {
           errors.push({
             row,
             farId: data.farId,
-            message: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(info.dateAcquired)}).`
+            message: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(info.dateAcquired)}).`,
+            data: stringifyRowData(data)
           });
         } else if (info.dateOfAddition !== null && data.dateOfDisposal < info.dateOfAddition) {
           errors.push({
             row,
             farId: data.farId,
-            message: `Disposal date cannot be before the asset's addition date (${isoToDDMMYYYY(info.dateOfAddition)}).`
+            message: `Disposal date cannot be before the asset's addition date (${isoToDDMMYYYY(info.dateOfAddition)}).`,
+            data: stringifyRowData(data)
           });
         } else {
-          classified.push({ row, farId: data.farId, status: "update" });
+          classified.push({ row, farId: data.farId, status: "update", data: stringifyRowData(data) });
         }
       }
       return mergePreviewRows(classified, errors);
@@ -138,7 +141,8 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             errors.push({
               row,
               farId: data.farId,
-              message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`
+              message: `This asset is a child of "${violatingParent}" — dispose the parent instead.`,
+              data: stringifyRowData(data)
             });
             continue;
           }
@@ -151,7 +155,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             [data.farId]
           );
           if (scopeCheckRows[0] && !isCenterInScope(req.user!, scopeCheckRows[0].revised_location ?? scopeCheckRows[0].location)) {
-            errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+            errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
             continue;
           }
           try {
@@ -177,7 +181,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
               } else {
                 message = `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(check[0]!.date_acquired)}).`;
               }
-              errors.push({ row, farId: data.farId, message });
+              errors.push({ row, farId: data.farId, message, data: stringifyRowData(data) });
               continue;
             }
             await client.query("COMMIT");
@@ -196,7 +200,12 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             });
           } catch (err) {
             await client.query("ROLLBACK");
-            errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
+            errors.push({
+              row,
+              farId: data.farId,
+              message: err instanceof Error ? err.message : "Could not save this row.",
+              data: stringifyRowData(data)
+            });
           }
         }
       } finally {
@@ -204,7 +213,8 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       }
     }
 
-    // Disposals never create a new asset — every processed row is an update.
-    return { totalRows, processed, added: 0, updated: processed, errors };
+    // Disposals never create a new asset — every processed row is an update. Commit path
+    // keeps its existing response shape — data is preview-only.
+    return { totalRows, processed, added: 0, updated: processed, errors: errors.map(({ data, ...e }) => e) };
   });
 }

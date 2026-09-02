@@ -106,6 +106,22 @@ export interface RowError {
   row: number;
   farId: string | null;
   message: string;
+  /** The raw, as-typed cell values for this row (before schema validation), keyed by
+   *  header — so the preview grid can still show what was actually in the file even for
+   *  a row that failed validation. Every value from parseWorksheetRows's `record` is
+   *  already a plain string (toCellString), so no further stringifying is needed here. */
+  data: Record<string, string>;
+}
+
+/** Stringifies a parsed row's fields for preview display — `String(value)` per field,
+ *  blank for null/undefined (rather than the literal text "null"/"undefined"). Preview
+ *  display only; the commit path (BulkUploadResult/BulkUploadError) is untouched. */
+export function stringifyRowData(data: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data)) {
+    out[key] = value === null || value === undefined ? "" : String(value);
+  }
+  return out;
 }
 
 /** Reads the header row, then validates every data row against `schema`. Keeps the
@@ -143,7 +159,8 @@ export function parseWorksheetRows<S extends z.ZodTypeAny>(
       errors.push({
         row: rowNumber,
         farId,
-        message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+        message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+        data: record as Record<string, string>
       });
       return;
     }
@@ -158,6 +175,7 @@ export interface BulkPreviewRow {
   farId: string | null;
   status: "new" | "update" | "error";
   message?: string;
+  data: Record<string, string>;
 }
 
 export interface BulkPreviewResult {
@@ -171,12 +189,12 @@ export interface BulkPreviewResult {
  *  ID), and this merges that with the schema errors from parseWorksheetRows into one
  *  row-ordered list, so the UI can show every row's fate before Confirm Upload commits. */
 export function mergePreviewRows(
-  classified: Array<{ row: number; farId: string; status: "new" | "update"; message?: string }>,
+  classified: Array<{ row: number; farId: string; status: "new" | "update"; message?: string; data: Record<string, string> }>,
   errors: RowError[]
 ): BulkPreviewResult {
   const rows: BulkPreviewRow[] = [
     ...classified,
-    ...errors.map((e) => ({ row: e.row, farId: e.farId, status: "error" as const, message: e.message }))
+    ...errors.map((e) => ({ row: e.row, farId: e.farId, status: "error" as const, message: e.message, data: e.data }))
   ].sort((a, b) => a.row - b.row);
   const summary = {
     new: rows.filter((r) => r.status === "new").length,

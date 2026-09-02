@@ -3,7 +3,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
-import { bulkActive, loadWorksheet, mergePreviewRows, parseWorksheetRows, type RowError } from "./bulkParse.js";
+import { bulkActive, loadWorksheet, mergePreviewRows, parseWorksheetRows, stringifyRowData, type RowError } from "./bulkParse.js";
 import {
   MasterError,
   createCenter,
@@ -98,14 +98,24 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
     const key = config.getKey(data);
     const normalized = key.toLowerCase();
     if (seenKeys.has(normalized)) {
-      errors.push({ row, farId: key, message: `Duplicate ${config.keyLabel} "${key}" — already appears earlier in this file.` });
+      errors.push({
+        row,
+        farId: key,
+        message: `Duplicate ${config.keyLabel} "${key}" — already appears earlier in this file.`,
+        data: stringifyRowData(data)
+      });
       continue;
     }
     seenKeys.add(normalized);
 
     const existing = existingByKey.get(normalized);
     if (existing && config.isSystemManaged?.(existing)) {
-      errors.push({ row, farId: key, message: `'${key}' is system-managed and cannot be modified via Bulk Upload.` });
+      errors.push({
+        row,
+        farId: key,
+        message: `'${key}' is system-managed and cannot be modified via Bulk Upload.`,
+        data: stringifyRowData(data)
+      });
       continue;
     }
     classified.push({ row, data, existing, key });
@@ -118,10 +128,11 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
           row,
           farId: key,
           status: "update" as const,
-          message: `Will deactivate — currently used by ${existing.usageCount} asset${existing.usageCount === 1 ? "" : "s"}.`
+          message: `Will deactivate — currently used by ${existing.usageCount} asset${existing.usageCount === 1 ? "" : "s"}.`,
+          data: stringifyRowData(data)
         };
       }
-      return { row, farId: key, status: (existing ? "update" : "new") as "new" | "update" };
+      return { row, farId: key, status: (existing ? "update" : "new") as "new" | "update", data: stringifyRowData(data) };
     });
     return mergePreviewRows(previewRows, errors);
   }
@@ -153,11 +164,17 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
       }
       processed++;
     } catch (err) {
-      errors.push({ row, farId: key, message: err instanceof MasterError ? err.message : err instanceof Error ? err.message : "Could not save this row." });
+      errors.push({
+        row,
+        farId: key,
+        message: err instanceof MasterError ? err.message : err instanceof Error ? err.message : "Could not save this row.",
+        data: stringifyRowData(data)
+      });
     }
   }
 
-  return { totalRows, processed, added, updated, errors };
+  // Commit path keeps its existing response shape — data is preview-only.
+  return { totalRows, processed, added, updated, errors: errors.map(({ data, ...e }) => e) };
 }
 
 export default async function bulkMastersRoutes(app: FastifyInstance) {

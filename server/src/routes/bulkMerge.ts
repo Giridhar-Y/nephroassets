@@ -218,9 +218,10 @@ export default async function bulkMergeRoutes(app: FastifyInstance) {
         row: o.row,
         farId: `${o.parentFarId} ← ${o.childFarId}`,
         status: o.errors.length > 0 ? ("error" as const) : ("update" as const),
-        message: o.errors.length > 0 ? o.errors.join(" ") : o.warnings.length > 0 ? `Warning: ${o.warnings.join(" ")}` : undefined
+        message: o.errors.length > 0 ? o.errors.join(" ") : o.warnings.length > 0 ? `Warning: ${o.warnings.join(" ")}` : undefined,
+        data: { parentFarId: o.parentFarId, childFarId: o.childFarId }
       })),
-      ...schemaErrors.map((e) => ({ row: e.row, farId: e.farId, status: "error" as const, message: e.message }))
+      ...schemaErrors.map((e) => ({ row: e.row, farId: e.farId, status: "error" as const, message: e.message, data: e.data }))
     ].sort((a, b) => a.row - b.row);
 
     const summary = {

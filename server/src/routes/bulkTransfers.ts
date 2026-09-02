@@ -2,7 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type pg from "pg";
 import { getPool } from "../db/pool.js";
-import { bulkDate, isoToDDMMYYYY, loadActiveMasterMaps, loadWorksheet, lookupCanonical, mergePreviewRows, parseWorksheetRows } from "./bulkParse.js";
+import {
+  bulkDate,
+  isoToDDMMYYYY,
+  loadActiveMasterMaps,
+  loadWorksheet,
+  lookupCanonical,
+  mergePreviewRows,
+  parseWorksheetRows,
+  stringifyRowData
+} from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
@@ -99,7 +108,12 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       for (const { row, data } of validRows) {
         const canonicalLocation = lookupCanonical(maps.centers, data.toLocation);
         if (!canonicalLocation) {
-          errors.push({ row, farId: data.farId, message: `Location "${data.toLocation}" not recognized — see Masters for valid values.` });
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `Location "${data.toLocation}" not recognized — see Masters for valid values.`,
+            data: stringifyRowData(data)
+          });
           continue;
         }
         // Center-scoped access: the destination is a center the user is actively
@@ -108,7 +122,12 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
         // exist. Applied once here, ahead of the preview/commit split, so both paths
         // agree.
         if (!isCenterInScope(req.user!, canonicalLocation)) {
-          errors.push({ row, farId: data.farId, message: `"${canonicalLocation}" is outside your assigned center access.` });
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `"${canonicalLocation}" is outside your assigned center access.`,
+            data: stringifyRowData(data)
+          });
           continue;
         }
         stillValid.push({ row, data: { ...data, toLocation: canonicalLocation } });
@@ -137,7 +156,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       const childViolations = new Map(
         (await findDirectChildActionViolations(db, farIds)).map((v) => [v.farId, v.parentFarId])
       );
-      const classified: Array<{ row: number; farId: string; status: "update" }> = [];
+      const classified: Array<{ row: number; farId: string; status: "update"; data: Record<string, string> }> = [];
       for (const { row, data } of validRows) {
         const asset = assetLookup.get(data.farId);
         const violatingParent = childViolations.get(data.farId);
@@ -149,18 +168,20 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
           errors.push({
             row,
             farId: data.farId,
-            message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`
+            message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`,
+            data: stringifyRowData(data)
           });
         } else if (asset === undefined || !isCenterInScope(req.user!, asset.currentLocation)) {
-          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+          errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
         } else if (data.transactionDate < asset.dateAcquired) {
           errors.push({
             row,
             farId: data.farId,
-            message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(asset.dateAcquired)}).`
+            message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(asset.dateAcquired)}).`,
+            data: stringifyRowData(data)
           });
         } else {
-          classified.push({ row, farId: data.farId, status: "update" });
+          classified.push({ row, farId: data.farId, status: "update", data: stringifyRowData(data) });
         }
       }
       return mergePreviewRows(classified, errors);
@@ -193,7 +214,8 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             errors.push({
               row,
               farId: data.farId,
-              message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`
+              message: `This asset is a child of "${violatingParent}" — transfer the parent instead.`,
+              data: stringifyRowData(data)
             });
             continue;
           }
@@ -204,14 +226,15 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
           // Center-scoped access: same "out of scope folds into not-found" treatment
           // as the preview loop above.
           if (exists.length === 0 || !isCenterInScope(req.user!, exists[0]!.revised_location ?? exists[0]!.location)) {
-            errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+            errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
             continue;
           }
           if (data.transactionDate < exists[0]!.date_acquired) {
             errors.push({
               row,
               farId: data.farId,
-              message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(exists[0]!.date_acquired)}).`
+              message: `Transfer date cannot be before the asset's capitalization date (${isoToDDMMYYYY(exists[0]!.date_acquired)}).`,
+              data: stringifyRowData(data)
             });
             continue;
           }
@@ -222,7 +245,12 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             processed++;
           } catch (err) {
             await client.query("ROLLBACK");
-            errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
+            errors.push({
+              row,
+              farId: data.farId,
+              message: err instanceof Error ? err.message : "Could not save this row.",
+              data: stringifyRowData(data)
+            });
           }
         }
       } finally {
@@ -230,7 +258,8 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       }
     }
 
-    // Transfers never create a new asset — every processed row is an update.
-    return { totalRows, processed, added: 0, updated: processed, errors };
+    // Transfers never create a new asset — every processed row is an update. Commit path
+    // keeps its existing response shape — data is preview-only.
+    return { totalRows, processed, added: 0, updated: processed, errors: errors.map(({ data, ...e }) => e) };
   });
 }

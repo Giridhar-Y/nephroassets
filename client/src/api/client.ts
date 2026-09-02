@@ -463,6 +463,7 @@ export interface BulkPreviewRow {
   farId: string | null;
   status: "new" | "update" | "error";
   message?: string;
+  data: Record<string, string>;
 }
 
 export interface BulkPreviewResult {

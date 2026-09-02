@@ -7,6 +7,7 @@ import {
   lookupCanonical,
   mergePreviewRows,
   parseWorksheetRows,
+  stringifyRowData,
   validateKnownColumns,
   type RowError
 } from "./bulkParse.js";
@@ -44,11 +45,16 @@ async function rejectOutOfScopeRows(
   for (const { row, data } of validRows) {
     const currentLocation = currentLocationByFarId.get(data.farId);
     if (currentLocation !== undefined && !isCenterInScope(user, currentLocation)) {
-      allErrors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".` });
+      allErrors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
       continue;
     }
     if (!isCenterInScope(user, data.location)) {
-      allErrors.push({ row, farId: data.farId, message: `"${data.location}" is outside your assigned center access.` });
+      allErrors.push({
+        row,
+        farId: data.farId,
+        message: `"${data.location}" is outside your assigned center access.`,
+        data: stringifyRowData(data)
+      });
       continue;
     }
     stillValid.push({ row, data });
@@ -83,7 +89,7 @@ async function validateAgainstMasters(
       messages.push(blockingAssetMessage(data.farId, canonicalSubClass));
     }
     if (messages.length > 0) {
-      allErrors.push({ row, farId: data.farId, message: messages.join("; ") });
+      allErrors.push({ row, farId: data.farId, message: messages.join("; "), data: stringifyRowData(data) });
       continue;
     }
     stillValid.push({ row, data: { ...data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! } });
@@ -107,7 +113,12 @@ function rejectDuplicateFarIds(
   for (const { row, data } of validRows) {
     const key = data.farId.toLowerCase();
     if (seen.has(key)) {
-      allErrors.push({ row, farId: data.farId, message: `Duplicate FAR ID "${data.farId}" — already appears earlier in this file.` });
+      allErrors.push({
+        row,
+        farId: data.farId,
+        message: `Duplicate FAR ID "${data.farId}" — already appears earlier in this file.`,
+        data: stringifyRowData(data)
+      });
       continue;
     }
     seen.add(key);
@@ -143,7 +154,8 @@ async function rejectDeletedFarIds(
       allErrors.push({
         row,
         farId: data.farId,
-        message: `FAR ID "${data.farId}" was previously used by a deleted asset — it can't be reused. Contact a Global Admin.`
+        message: `FAR ID "${data.farId}" was previously used by a deleted asset — it can't be reused. Contact a Global Admin.`,
+        data: stringifyRowData(data)
       });
       continue;
     }
@@ -192,7 +204,8 @@ async function rejectDisposalFieldsOnExistingAssets(
       allErrors.push({
         row,
         farId: data.farId,
-        message: `Asset "${data.farId}" has already been disposed — its particulars can no longer be changed via this upload.`
+        message: `Asset "${data.farId}" has already been disposed — its particulars can no longer be changed via this upload.`,
+        data: stringifyRowData(data)
       });
       continue;
     }
@@ -202,7 +215,8 @@ async function rejectDisposalFieldsOnExistingAssets(
       allErrors.push({
         row,
         farId: data.farId,
-        message: `Asset "${data.farId}" already exists — disposing it must go through Bulk Disposals (or the single-item Disposal action), not this upload. Clear dateOfDisposal/deletionsC1/deletionsC2/saleValue for this row.`
+        message: `Asset "${data.farId}" already exists — disposing it must go through Bulk Disposals (or the single-item Disposal action), not this upload. Clear dateOfDisposal/deletionsC1/deletionsC2/saleValue for this row.`,
+        data: stringifyRowData(data)
       });
       continue;
     }
@@ -271,7 +285,8 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       const classified = validRows.map(({ row, data }) => ({
         row,
         farId: data.farId,
-        status: existing.has(data.farId) ? ("update" as const) : ("new" as const)
+        status: existing.has(data.farId) ? ("update" as const) : ("new" as const),
+        data: stringifyRowData(data)
       }));
       return mergePreviewRows(classified, errors);
     }
@@ -320,11 +335,18 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
           }
           processed++;
         } catch (err) {
-          errors.push({ row, farId: data.farId, message: err instanceof Error ? err.message : "Could not save this row." });
+          errors.push({
+            row,
+            farId: data.farId,
+            message: err instanceof Error ? err.message : "Could not save this row.",
+            data: stringifyRowData(data)
+          });
         }
       }
     }
 
-    return { totalRows, processed, added, updated, errors };
+    // Commit path keeps its existing response shape — data is preview-only, so it's
+    // dropped here rather than sent back on a commit-time error.
+    return { totalRows, processed, added, updated, errors: errors.map(({ data, ...e }) => e) };
   });
 }

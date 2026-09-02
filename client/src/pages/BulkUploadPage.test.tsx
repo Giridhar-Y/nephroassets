@@ -41,7 +41,8 @@ describe("BulkUploadPage preview: virtualization", () => {
       row: i + 2,
       farId: `FAR-${i}`,
       status: "error" as const,
-      message: "No asset found."
+      message: "No asset found.",
+      data: { farId: `FAR-${i}` }
     }));
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse({
@@ -90,7 +91,8 @@ describe("BulkUploadPage preview: virtualization", () => {
       row: i + 2,
       farId: `FAR-${i}`,
       status: "error" as const,
-      message: "No asset found."
+      message: "No asset found.",
+      data: { farId: `FAR-${i}` }
     }));
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse({

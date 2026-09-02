@@ -235,11 +235,17 @@ const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "merge",
 // Fixed row height + fixed column widths (rather than the browser's table auto-layout)
 // are required for virtualization: only the rows actually in the viewport ever mount, so
 // nothing is on-screen to measure content-based column widths against. Same tradeoff
-// AssetGrid already makes for Register. A row's Details/Problem text is truncated to one
-// line with a title tooltip for the full text, rather than wrapping — wrapping would make
-// row height variable, which the virtualizer can't size ahead of a row being rendered.
+// AssetGrid already makes for Register. A row's cell text is truncated to one line with a
+// title tooltip for the full value, rather than wrapping — wrapping would make row height
+// variable, which the virtualizer can't size ahead of a row being rendered.
 const PREVIEW_ROW_HEIGHT = 28;
-const PREVIEW_GRID_COLS = "grid-cols-[56px_180px_100px_1fr]";
+// Preview shows one column per uploaded field (~21 for Assets), so unlike the old fixed
+// 4-column grid this needs an explicit pixel width per column plus horizontal scroll —
+// see the gridTemplateColumns/width built from these below.
+const PREVIEW_ROW_COL_WIDTH = 56;
+const PREVIEW_STATUS_COL_WIDTH = 104;
+const PREVIEW_FIELD_COL_WIDTH = 128;
+const PREVIEW_MESSAGE_COL_WIDTH = 220;
 const RESULT_GRID_COLS = "grid-cols-[56px_180px_1fr]";
 
 export function BulkUploadPage() {
@@ -340,6 +346,14 @@ export function BulkUploadPage() {
     estimateSize: () => PREVIEW_ROW_HEIGHT,
     overscan: 12
   });
+  // Same field list "Expected Columns" and the downloaded template already use — Row and
+  // Status stay pinned/narrow on the left, then one column per uploaded field, then
+  // Message last (a flexible minimum so it still fills spare width on a narrow config
+  // like Disposals/Transfers, same as the old grid's 1fr last column).
+  const previewFields = [...config.required, ...config.optional];
+  const previewGridTemplate = `${PREVIEW_ROW_COL_WIDTH}px ${PREVIEW_STATUS_COL_WIDTH}px repeat(${previewFields.length}, ${PREVIEW_FIELD_COL_WIDTH}px) minmax(${PREVIEW_MESSAGE_COL_WIDTH}px, 1fr)`;
+  const previewGridWidth =
+    PREVIEW_ROW_COL_WIDTH + PREVIEW_STATUS_COL_WIDTH + previewFields.length * PREVIEW_FIELD_COL_WIDTH + PREVIEW_MESSAGE_COL_WIDTH;
 
   const resultErrors = result?.errors ?? [];
   const resultVirtualizer = useVirtualizer({
@@ -498,15 +512,22 @@ export function BulkUploadPage() {
             )}
 
             <div ref={previewScrollRef} className="mt-3 max-h-80 overflow-auto rounded-md border border-gray-200 text-xs">
-              <div className={`sticky top-0 z-10 grid ${PREVIEW_GRID_COLS} bg-gray-50`}>
+              <div
+                className="sticky top-0 z-10 grid bg-gray-50"
+                style={{ gridTemplateColumns: previewGridTemplate, width: previewGridWidth, minWidth: "100%" }}
+              >
                 <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</div>
-                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">{config.keyColumnLabel}</div>
                 <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</div>
-                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Details</div>
+                {previewFields.map((field) => (
+                  <div key={field} className="truncate px-3 py-1.5 text-left font-semibold text-gray-600" title={field}>
+                    {field}
+                  </div>
+                ))}
+                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Message</div>
               </div>
               <div
                 data-testid="bulk-preview-scroll-spacer"
-                style={{ height: previewVirtualizer.getTotalSize(), position: "relative" }}
+                style={{ height: previewVirtualizer.getTotalSize(), width: previewGridWidth, minWidth: "100%", position: "relative" }}
               >
                 {previewVirtualizer.getVirtualItems().map((virtualRow) => {
                   const r = previewRows[virtualRow.index]!;
@@ -514,16 +535,27 @@ export function BulkUploadPage() {
                     <div
                       key={r.row}
                       data-testid="bulk-preview-row"
-                      className={`absolute left-0 top-0 grid w-full ${PREVIEW_GRID_COLS} border-t border-gray-100`}
-                      style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                      className="absolute left-0 top-0 grid border-t border-gray-100"
+                      style={{
+                        gridTemplateColumns: previewGridTemplate,
+                        width: previewGridWidth,
+                        minWidth: "100%",
+                        height: virtualRow.size,
+                        transform: `translateY(${virtualRow.start}px)`
+                      }}
                     >
                       <div className="flex items-center px-3 py-1.5 text-gray-500">{r.row}</div>
-                      <div className="flex items-center truncate px-3 py-1.5 font-medium text-ink" title={r.farId ?? undefined}>
-                        {r.farId ?? "—"}
-                      </div>
                       <div className="flex items-center px-3 py-1.5">
                         <PreviewStatusBadge status={r.status} />
                       </div>
+                      {previewFields.map((field) => {
+                        const value = r.data?.[field] ?? "—";
+                        return (
+                          <div key={field} className="flex items-center truncate px-3 py-1.5 text-gray-700" title={value}>
+                            {value}
+                          </div>
+                        );
+                      })}
                       <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={r.message}>
                         {r.message ?? "—"}
                       </div>
