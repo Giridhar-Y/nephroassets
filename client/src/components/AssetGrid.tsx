@@ -368,7 +368,17 @@ export function AssetGrid({
               {bandSegments.map((seg, i) => {
                 const group = COLUMN_GROUPS.find((g) => g.id === seg.groupId)!;
                 const isLast = i === bandSegments.length - 1;
-                const divider = isLast ? "" : GROUP_DIVIDER;
+                // A divider only belongs at a real group boundary. A pinned column (e.g.
+                // FAR ID) splits its own group into two segments — an unlabeled pinned
+                // one plus the labeled continuation right after it (see
+                // buildBandSegments' own comment) — and giving the FIRST of those its
+                // own GROUP_DIVIDER read as a stray floating line: an empty bordered box
+                // with no visible fill/text before the label, since the divider was
+                // applied to every non-last segment regardless of whether the next one
+                // was still the same group. Only divide when the next segment is a
+                // genuinely different group.
+                const nextGroupId = bandSegments[i + 1]?.groupId;
+                const divider = isLast || nextGroupId !== seg.groupId ? GROUP_DIVIDER : "";
                 const clickable = seg.showLabel && group.collapsible;
                 return (
                   <div

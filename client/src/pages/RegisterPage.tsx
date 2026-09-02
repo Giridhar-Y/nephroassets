@@ -334,7 +334,7 @@ export function RegisterPage() {
             onChange={(e) => (e.target.value ? setFilter("globalSearch", e.target.value) : clearFilter("globalSearch"))}
           />
           <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
-            <Tooltip text="Searches FAR ID, Description, Sub Classification, Status, and Location.">
+            <Tooltip text="Searches FAR ID, Description, Sub Classification, Status, and Location." placement="bottom">
               <></>
             </Tooltip>
           </span>
