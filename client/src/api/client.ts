@@ -604,9 +604,8 @@ export interface DashboardNbvTrendPoint {
   nbv: number;
 }
 
-export interface DashboardExceptionResult<T> {
+export interface DashboardExceptionResult {
   count: number;
-  sample: T[];
 }
 
 export interface DashboardSummary {
@@ -627,13 +626,11 @@ export interface DashboardSummary {
     disposalCount: number;
   };
   nbvTrend: DashboardNbvTrendPoint[];
-  exceptions: {
-    negativeNbv: DashboardExceptionResult<{ farId: string; assetDescription: string; nbv: number }>;
-    fullyDepreciatedActive: DashboardExceptionResult<{ farId: string; assetDescription: string; nbv: number; grossBlock: number }>;
-    pastUsefulLifeActive: DashboardExceptionResult<{ farId: string; assetDescription: string; expiryDate: string }>;
-    bigDisposalSwings: DashboardExceptionResult<{ farId: string; assetDescription: string; profitLoss: number }>;
-    missingData: DashboardExceptionResult<{ farId: string; assetDescription: string; serialNo: string | null; subClassification: string }>;
-  };
+  // Counts only — a tile's drill-through opens Register itself
+  // (GET /api/assets?exception=<key>, the same shared predicate) for the actual rows,
+  // with real pagination/sorting/export, rather than this endpoint carrying a second,
+  // capped copy of them.
+  exceptions: Record<import("../lib/exceptions.js").ExceptionKey, DashboardExceptionResult>;
 }
 
 export function fetchDashboardSummary(

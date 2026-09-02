@@ -10,11 +10,11 @@ import {
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
-import { DashboardIcon, DismissIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
 import { Badge, StatusBadge } from "../components/ui/Badge.js";
-import { Modal } from "../components/ui/Modal.js";
+import { EXCEPTION_KEYS, EXCEPTION_LABELS, EXCEPTION_TONES } from "../lib/exceptions.js";
 
 // Top 5 by value + one "Other" row summing the rest — the server returns every row (it
 // doesn't know how many the client wants to show), this is purely a display fold.
@@ -134,78 +134,6 @@ function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
   );
 }
 
-type ExceptionKey = keyof DashboardSummary["exceptions"];
-type ExceptionSampleRow = DashboardSummary["exceptions"][ExceptionKey]["sample"][number];
-
-// Tones reuse the design system's existing vocabulary (Badge's TONE_CLASSES) rather than
-// inventing new severity colors.
-const EXCEPTION_TILES: { key: ExceptionKey; label: string; tone: "danger" | "warning" | "info" | "neutral" }[] = [
-  { key: "negativeNbv", label: "Negative NBV", tone: "danger" },
-  { key: "fullyDepreciatedActive", label: "Fully Depreciated, Still Active", tone: "warning" },
-  { key: "pastUsefulLifeActive", label: "Past Useful Life, Still Active", tone: "warning" },
-  { key: "bigDisposalSwings", label: "Big Disposal Swings (> ₹1L)", tone: "info" },
-  { key: "missingData", label: "Missing Data", tone: "neutral" }
-];
-
-// Each exception category's sample rows carry a different "relevant figure" field — this
-// picks the one present on `row` rather than switching on the category key, so it stays
-// correct even if a category's own field set changes.
-function renderExceptionFigure(row: ExceptionSampleRow): ReactNode {
-  if ("nbv" in row && "grossBlock" in row) {
-    return (
-      <>
-        <div className="tabular-nums">{formatCurrency(row.nbv)}</div>
-        <div className="text-[10px] text-gray-400">of {formatCurrency(row.grossBlock)}</div>
-      </>
-    );
-  }
-  if ("nbv" in row) return <span className="tabular-nums">{formatCurrency(row.nbv)}</span>;
-  if ("expiryDate" in row) return <span>Expired {formatDateDDMMYYYY(row.expiryDate)}</span>;
-  if ("profitLoss" in row) return <span className="tabular-nums">{formatCurrency(row.profitLoss)}</span>;
-  if ("serialNo" in row) return <span>{row.serialNo ? "Sub Classification" : "Serial No"} missing</span>;
-  return null;
-}
-
-function ExceptionModal({
-  exceptionKey,
-  exceptions,
-  onClose
-}: {
-  exceptionKey: ExceptionKey;
-  exceptions: DashboardSummary["exceptions"];
-  onClose: () => void;
-}) {
-  const category = exceptions[exceptionKey];
-  const label = EXCEPTION_TILES.find((t) => t.key === exceptionKey)!.label;
-  return (
-    <Modal onClose={onClose} widthClassName="max-w-lg">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink">{label}</h2>
-        <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="Close">
-          <DismissIcon fontSize={16} />
-        </button>
-      </div>
-      <p className="mt-1 text-xs text-gray-500">
-        {category.count} asset{category.count === 1 ? "" : "s"}
-        {category.count > category.sample.length ? ` — showing the first ${category.sample.length}` : ""}.
-      </p>
-      <ul className="mt-3 max-h-80 space-y-2 overflow-auto">
-        {category.sample.map((row) => (
-          <li key={row.farId} className="flex items-center justify-between gap-3 rounded-md border border-gray-100 px-3 py-2 text-sm">
-            <div className="min-w-0">
-              <Link to={`/assets/${row.farId}`} className="font-semibold text-accent hover:underline">
-                {row.farId}
-              </Link>
-              <div className="truncate text-xs text-gray-500">{row.assetDescription}</div>
-            </div>
-            <div className="shrink-0 text-right text-xs font-medium text-ink">{renderExceptionFigure(row)}</div>
-          </li>
-        ))}
-      </ul>
-    </Modal>
-  );
-}
-
 export function DashboardPage() {
   const { settings } = useSettings();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -218,7 +146,6 @@ export function DashboardPage() {
   const [subClassification, setSubClassification] = useState("");
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<string[]>([]);
-  const [openException, setOpenException] = useState<ExceptionKey | null>(null);
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -379,26 +306,40 @@ export function DashboardPage() {
             </div>
 
             <div className="grid grid-cols-5 gap-3">
-              {EXCEPTION_TILES.map((t) => {
-                const category = summary.exceptions[t.key];
-                return (
-                  <button
-                    key={t.key}
-                    type="button"
-                    onClick={() => category.count > 0 && setOpenException(t.key)}
-                    disabled={category.count === 0}
-                    className="rounded-xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-accent disabled:cursor-default disabled:opacity-50 disabled:hover:border-gray-200"
+              {EXCEPTION_KEYS.map((key) => {
+                const category = summary.exceptions[key];
+                const tileContent = (
+                  <>
+                    <Badge tone={EXCEPTION_TONES[key]}>{category.count}</Badge>
+                    <div className="mt-1.5 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
+                  </>
+                );
+                // A real anchor (not a programmatic navigation) opened in a new tab —
+                // same reasoning as AssetGrid's own "View Lifecycle" link: right-click/
+                // middle-click/Ctrl+click all need to work, and it needs to survive
+                // outside React Router's own client-side history. Register's own
+                // GET /api/assets?exception=<key> re-derives the exact row set from the
+                // same shared predicate this tile's count came from — see
+                // exceptionPredicates.ts — so the two can never silently disagree.
+                return category.count > 0 ? (
+                  <Link
+                    key={key}
+                    to={`/register?exception=${key}&asAt=${summary.asAt}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
+                    title="Open in Register (new tab)"
+                    className="rounded-xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-accent"
                   >
-                    <Badge tone={t.tone}>{category.count}</Badge>
-                    <div className="mt-1.5 text-xs font-medium text-gray-600">{t.label}</div>
-                  </button>
+                    {tileContent}
+                  </Link>
+                ) : (
+                  <div key={key} className="rounded-xl border border-gray-200 bg-white p-3 text-left opacity-50 shadow-sm">
+                    {tileContent}
+                  </div>
                 );
               })}
             </div>
-
-            {openException && (
-              <ExceptionModal exceptionKey={openException} exceptions={summary.exceptions} onClose={() => setOpenException(null)} />
-            )}
           </div>
         ) : null}
       </div>

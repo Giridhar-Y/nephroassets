@@ -121,4 +121,10 @@ export interface AssetFilters {
    *  every field above (AND'd in), not a replacement — Register uses this for every
    *  column beyond the handful the named fields above already cover. */
   conditions?: import("./columnFilters.js").ColumnCondition[];
+  /** Finance FAR Dashboard drill-through — a single server-side predicate key (see
+   *  lib/exceptions.ts), not a client-composed condition. Deliberately never persisted
+   *  into FiltersContext: RegisterPage reads this straight from the URL (?exception=...)
+   *  and merges it in only at the point of calling useAssetList, so it never survives a
+   *  navigation away the way the rest of `filters` does. */
+  exception?: string;
 }

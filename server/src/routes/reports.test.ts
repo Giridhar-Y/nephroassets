@@ -3,6 +3,7 @@ import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
+import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -1291,6 +1292,11 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     app.addHook("preHandler", authGateHook);
     await app.register(cookie);
     await app.register(reportsRoutes);
+    // Also registered here (not just reportsRoutes) so the exceptions test below can
+    // prove dashboard-summary's count and GET /api/assets?exception=<key>'s row set are
+    // the exact same answer — the property that actually matters, not two independently
+    // "look right" assertions against two separately-maintained queries.
+    await app.register(assetsRoutes);
     await app.ready();
   });
 
@@ -1340,31 +1346,57 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     expect(unscopedRes.json().totals.assetCount).toBe(2);
   });
 
-  it("each exception category catches exactly the fixture rows engineered to trip it, and none of the ones that shouldn't", async () => {
+  it("each exception category's dashboard-summary count matches exactly the fixture rows engineered to trip it, and none of the ones that shouldn't", async () => {
     const res = await authedInject(app, {
       method: "GET",
       url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
     });
     expect(res.statusCode).toBe(200);
     const { exceptions } = res.json();
-    const farIds = (category: { sample: { farId: string }[] }) => category.sample.map((r) => r.farId);
 
     expect(exceptions.negativeNbv.count).toBe(1);
-    expect(farIds(exceptions.negativeNbv)).toEqual(["DASH-NEGNBV"]);
-
     // See the DASH-PASTLIFE fixture comment above: past-useful-life-but-Active assets are
     // expected to also show up here, ordered by Gross Block descending.
     expect(exceptions.fullyDepreciatedActive.count).toBe(2);
-    expect(farIds(exceptions.fullyDepreciatedActive)).toEqual(["DASH-FULLDEP", "DASH-PASTLIFE"]);
-
     expect(exceptions.pastUsefulLifeActive.count).toBe(1);
-    expect(farIds(exceptions.pastUsefulLifeActive)).toEqual(["DASH-PASTLIFE"]);
-
     expect(exceptions.bigDisposalSwings.count).toBe(1);
-    expect(farIds(exceptions.bigDisposalSwings)).toEqual(["DASH-BIGSWING"]);
-    expect(exceptions.bigDisposalSwings.sample[0].profitLoss).toBeGreaterThan(100000);
-
     expect(exceptions.missingData.count).toBe(1);
-    expect(farIds(exceptions.missingData)).toEqual(["DASH-MISSING"]);
+  });
+
+  // The property that actually matters (Part A of the drill-through rework): a
+  // dashboard tile's count and Register's own row count/FAR-ID set for the same
+  // `exception` key must be the exact same answer, because both are now computed by the
+  // one shared predicate in exceptionPredicates.ts — not two independently-maintained
+  // queries that could silently drift apart.
+  it("GET /api/assets?exception=<key> returns exactly the rows dashboard-summary counted, for every category", async () => {
+    const EXPECTED: Record<string, string[]> = {
+      negativeNbv: ["DASH-NEGNBV"],
+      fullyDepreciatedActive: ["DASH-FULLDEP", "DASH-PASTLIFE"],
+      pastUsefulLifeActive: ["DASH-PASTLIFE"],
+      bigDisposalSwings: ["DASH-BIGSWING"],
+      missingData: ["DASH-MISSING"]
+    };
+
+    const summaryRes = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
+    });
+    const { exceptions } = summaryRes.json();
+
+    for (const [key, expectedFarIds] of Object.entries(EXPECTED)) {
+      const registerRes = await authedInject(app, {
+        method: "GET",
+        url: `/api/assets?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions", exception: key, includeTotal: "true" })}`
+      });
+      expect(registerRes.statusCode).toBe(200);
+      const body = registerRes.json();
+      const farIds = body.items.map((i: { asset: { farId: string } }) => i.asset.farId).sort();
+
+      // Same count dashboard-summary reported for this key...
+      expect(exceptions[key].count).toBe(expectedFarIds.length);
+      // ...and Register's own total/row set agrees exactly — not just "looks similar".
+      expect(body.total).toBe(expectedFarIds.length);
+      expect(farIds).toEqual([...expectedFarIds].sort());
+    }
   });
 });

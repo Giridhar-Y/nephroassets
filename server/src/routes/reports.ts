@@ -17,8 +17,7 @@ import {
   transferDepreciationConditionsQuerySchema,
   type RawCondition
 } from "./reportColumnFilters.js";
-
-const EPSILON = 0.01; // one paisa — guards against currency-display rounding only
+import { buildExceptionPredicate, EPSILON, EXCEPTION_KEYS, type ExceptionKey } from "./exceptionPredicates.js";
 
 async function requireFySettings(
   db: Awaited<ReturnType<typeof getPool>>,
@@ -940,11 +939,6 @@ const dashboardSummaryQuerySchema = z.object({
   subClassification: z.string().min(1).optional()
 });
 
-// ₹1L — a disposal P&L swing beyond this is exception-worthy. Named so the threshold has
-// one place to tune, not a magic number buried in a WHERE clause.
-const BIG_DISPOSAL_SWING_THRESHOLD = 100_000;
-const EXCEPTION_SAMPLE_LIMIT = 25;
-
 interface DashboardFilters {
   center?: string;
   subClassification?: string;
@@ -1031,25 +1025,33 @@ function trailingQuarterEnds(asAt: string, count: number): string[] {
   return dates;
 }
 
-interface ExceptionResult<T> {
-  count: number;
-  sample: T[];
-}
-
 async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
   const totalsBase = buildDashboardCalcCte(fy, user, filters);
   const fyStartIdx = totalsBase.params.push(fy.fyStart);
   const asAtIdx = totalsBase.params.push(fy.asAt);
-  const totalsPromise = db.query<{
-    asset_count: string;
-    gross_block: string;
-    closing_acc_dep: string;
-    nbv: string;
-    dep_fytd: string;
-    disposal_count: string;
-    gains: string;
-    losses: string;
-  }>(
+  // The same 5 predicates GET /api/assets?exception= and the Register export use for
+  // drill-through — computed here as plain COUNT(*) FILTER clauses in the one totals
+  // query rather than 5 separate sample-row queries, since the tiles only need a count
+  // now (drill-through opens Register itself for the actual rows). Aliased positionally
+  // (exception_count_0, ...), not by key name — an unquoted mixed-case alias like
+  // "exception_negativeNbv_count" comes back from Postgres lowercased to
+  // "exception_negativenbv_count", silently breaking a camelCase lookup; the read-back
+  // below zips the same EXCEPTION_KEYS order back onto these positions instead.
+  const exceptionCountColumns = EXCEPTION_KEYS.map(
+    (key, i) => `COUNT(*) FILTER (WHERE ${buildExceptionPredicate(key, totalsBase.params, fy)}) AS exception_count_${i}`
+  ).join(",\n       ");
+  const totalsPromise = db.query<
+    {
+      asset_count: string;
+      gross_block: string;
+      closing_acc_dep: string;
+      nbv: string;
+      dep_fytd: string;
+      disposal_count: string;
+      gains: string;
+      losses: string;
+    } & Record<string, string>
+  >(
     `${totalsBase.cteSql}
      SELECT
        COUNT(*) AS asset_count,
@@ -1059,7 +1061,8 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
        COALESCE(SUM((c1).period_depreciation + (c2).period_depreciation), 0) AS dep_fytd,
        COUNT(*) FILTER (WHERE date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date) AS disposal_count,
        COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss > 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS gains,
-       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS losses
+       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS losses,
+       ${exceptionCountColumns}
      FROM calc`,
     totalsBase.params
   );
@@ -1103,90 +1106,12 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     })
   );
 
-  const negativeNbvBase = buildDashboardCalcCte(fy, user, filters);
-  const negativeNbvPromise = db.query<{ far_id: string; asset_description: string; nbv: string; total_count: string }>(
-    `${negativeNbvBase.cteSql}
-     SELECT far_id, asset_description, (c1).nbv + (c2).nbv AS nbv, COUNT(*) OVER() AS total_count
-     FROM calc WHERE (c1).nbv + (c2).nbv < ${-EPSILON} AND status = 'Active'
-     ORDER BY (c1).nbv + (c2).nbv ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
-    negativeNbvBase.params
-  );
-
-  const fullyDepreciatedBase = buildDashboardCalcCte(fy, user, filters);
-  const fullyDepreciatedPromise = db.query<{
-    far_id: string;
-    asset_description: string;
-    nbv: string;
-    gross_block: string;
-    total_count: string;
-  }>(
-    `${fullyDepreciatedBase.cteSql}
-     SELECT far_id, asset_description, (c1).nbv + (c2).nbv AS nbv, (c1).gross_block + (c2).gross_block AS gross_block,
-       COUNT(*) OVER() AS total_count
-     FROM calc WHERE (c1).nbv + (c2).nbv BETWEEN 0 AND ${EPSILON} AND status = 'Active'
-     ORDER BY (c1).gross_block + (c2).gross_block DESC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
-    fullyDepreciatedBase.params
-  );
-
-  const pastUsefulLifeBase = buildDashboardCalcCte(fy, user, filters);
-  const pastUsefulLifeAsAtIdx = pastUsefulLifeBase.params.push(fy.asAt);
-  const pastUsefulLifePromise = db.query<{ far_id: string; asset_description: string; expiry_date: string; total_count: string }>(
-    `${pastUsefulLifeBase.cteSql}
-     SELECT far_id, asset_description, GREATEST(expiry_date_c1, expiry_date_c2) AS expiry_date, COUNT(*) OVER() AS total_count
-     FROM calc WHERE GREATEST(expiry_date_c1, expiry_date_c2) < $${pastUsefulLifeAsAtIdx}::date AND status = 'Active'
-     ORDER BY GREATEST(expiry_date_c1, expiry_date_c2) ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
-    pastUsefulLifeBase.params
-  );
-
-  const bigSwingsBase = buildDashboardCalcCte(fy, user, filters);
-  const bigSwingsFyStartIdx = bigSwingsBase.params.push(fy.fyStart);
-  const bigSwingsAsAtIdx = bigSwingsBase.params.push(fy.asAt);
-  const bigSwingsPromise = db.query<{ far_id: string; asset_description: string; profit_loss: string; total_count: string }>(
-    `${bigSwingsBase.cteSql}
-     SELECT far_id, asset_description, profit_loss, COUNT(*) OVER() AS total_count
-     FROM calc WHERE date_of_disposal BETWEEN $${bigSwingsFyStartIdx}::date AND $${bigSwingsAsAtIdx}::date
-       AND ABS(profit_loss) > ${BIG_DISPOSAL_SWING_THRESHOLD}
-     ORDER BY ABS(profit_loss) DESC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
-    bigSwingsBase.params
-  );
-
-  const missingDataBase = buildDashboardCalcCte(fy, user, filters);
-  const missingDataPromise = db.query<{
-    far_id: string;
-    asset_description: string;
-    serial_no: string | null;
-    sub_classification: string;
-    total_count: string;
-  }>(
-    `${missingDataBase.cteSql}
-     SELECT far_id, asset_description, serial_no, sub_classification, COUNT(*) OVER() AS total_count
-     FROM calc WHERE serial_no IS NULL OR serial_no = '' OR sub_classification IS NULL OR sub_classification = ''
-     ORDER BY far_id ASC LIMIT ${EXCEPTION_SAMPLE_LIMIT}`,
-    missingDataBase.params
-  );
-
-  const [
-    totalsRows,
-    statusRows,
-    subClassRows,
-    locationRows,
-    nbvTrend,
-    negativeNbvRows,
-    fullyDepreciatedRows,
-    pastUsefulLifeRows,
-    bigSwingsRows,
-    missingDataRows
-  ] = await Promise.all([
+  const [totalsRows, statusRows, subClassRows, locationRows, nbvTrend] = await Promise.all([
     totalsPromise,
     statusPromise,
     subClassPromise,
     locationPromise,
-    trendPromise,
-    negativeNbvPromise,
-    fullyDepreciatedPromise,
-    pastUsefulLifePromise,
-    bigSwingsPromise,
-    missingDataPromise
+    trendPromise
   ]);
 
   const t = totalsRows.rows[0]!;
@@ -1211,46 +1136,13 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
       disposalCount: Number(t.disposal_count)
     },
     nbvTrend,
-    exceptions: {
-      negativeNbv: {
-        count: negativeNbvRows.rows[0] ? Number(negativeNbvRows.rows[0].total_count) : 0,
-        sample: negativeNbvRows.rows.map((r) => ({ farId: r.far_id, assetDescription: r.asset_description, nbv: Number(r.nbv) }))
-      } satisfies ExceptionResult<{ farId: string; assetDescription: string; nbv: number }>,
-      fullyDepreciatedActive: {
-        count: fullyDepreciatedRows.rows[0] ? Number(fullyDepreciatedRows.rows[0].total_count) : 0,
-        sample: fullyDepreciatedRows.rows.map((r) => ({
-          farId: r.far_id,
-          assetDescription: r.asset_description,
-          nbv: Number(r.nbv),
-          grossBlock: Number(r.gross_block)
-        }))
-      } satisfies ExceptionResult<{ farId: string; assetDescription: string; nbv: number; grossBlock: number }>,
-      pastUsefulLifeActive: {
-        count: pastUsefulLifeRows.rows[0] ? Number(pastUsefulLifeRows.rows[0].total_count) : 0,
-        sample: pastUsefulLifeRows.rows.map((r) => ({
-          farId: r.far_id,
-          assetDescription: r.asset_description,
-          expiryDate: r.expiry_date
-        }))
-      } satisfies ExceptionResult<{ farId: string; assetDescription: string; expiryDate: string }>,
-      bigDisposalSwings: {
-        count: bigSwingsRows.rows[0] ? Number(bigSwingsRows.rows[0].total_count) : 0,
-        sample: bigSwingsRows.rows.map((r) => ({
-          farId: r.far_id,
-          assetDescription: r.asset_description,
-          profitLoss: Number(r.profit_loss)
-        }))
-      } satisfies ExceptionResult<{ farId: string; assetDescription: string; profitLoss: number }>,
-      missingData: {
-        count: missingDataRows.rows[0] ? Number(missingDataRows.rows[0].total_count) : 0,
-        sample: missingDataRows.rows.map((r) => ({
-          farId: r.far_id,
-          assetDescription: r.asset_description,
-          serialNo: r.serial_no,
-          subClassification: r.sub_classification
-        }))
-      } satisfies ExceptionResult<{ farId: string; assetDescription: string; serialNo: string | null; subClassification: string }>
-    }
+    // Counts only — the sample rows this used to carry are gone: a tile's drill-through
+    // now opens Register itself (GET /api/assets?exception=<key>, the same predicate),
+    // which has real pagination/sorting/export instead of a capped read-only list.
+    exceptions: Object.fromEntries(EXCEPTION_KEYS.map((key, i) => [key, { count: Number(t[`exception_count_${i}`]) }])) as Record<
+      ExceptionKey,
+      { count: number }
+    >
   };
 }
 

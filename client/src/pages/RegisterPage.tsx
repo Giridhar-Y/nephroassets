@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.js";
 import { useFilters } from "../lib/FiltersContext.js";
 import { useSettings } from "../lib/SettingsContext.js";
@@ -24,6 +25,7 @@ import { isConditionComplete, OPERATORS_BY_TYPE, type ColumnCondition, type Colu
 import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
 import { hasPermission } from "../lib/permissions.js";
 import { FilterChips, type FilterChip } from "../components/ui/FilterChips.js";
+import { EXCEPTION_LABELS, isExceptionKey } from "../lib/exceptions.js";
 
 // Every Register column that gets a plain Excel-style custom-condition filter (operator
 // + value, no "distinct values" checklist) — the four columns that also get a checklist
@@ -97,7 +99,34 @@ export function RegisterPage() {
   const { filters, setFilter, clearFilter, clearAll } = useFilters();
   const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
-  const asAt = settings?.asAt ?? null;
+
+  // Finance FAR Dashboard drill-through: a tile links here with ?exception=<key>&asAt=...
+  // — read straight from the URL, deliberately kept OUT of FiltersContext (that's
+  // Register's own persisted filter state; this is a single server-side predicate key
+  // tied to one navigation, not a client-composed condition — see lib/types.ts's
+  // AssetFilters.exception). `asAt` on this request pins the drill-through to the exact
+  // date shown on the dashboard when the tile was clicked, even if the org's global
+  // "Figures as of" changes a moment later.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const exceptionParam = searchParams.get("exception");
+  const exceptionKey = exceptionParam && isExceptionKey(exceptionParam) ? exceptionParam : null;
+  const exceptionAsAt = searchParams.get("asAt");
+  const clearException = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("exception");
+    next.delete("asAt");
+    setSearchParams(next, { replace: true });
+  };
+
+  const asAt = exceptionKey && exceptionAsAt ? exceptionAsAt : (settings?.asAt ?? null);
+  const effectiveSettings = useMemo(
+    () => (exceptionKey && exceptionAsAt && settings ? { ...settings, asAt: exceptionAsAt } : settings),
+    [settings, exceptionKey, exceptionAsAt]
+  );
+  const assetListFilters = useMemo(
+    () => (exceptionKey ? { ...filters, exception: exceptionKey } : filters),
+    [filters, exceptionKey]
+  );
 
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
@@ -109,7 +138,10 @@ export function RegisterPage() {
     fetchStatuses().then(setStatuses).catch(() => {});
   }, []);
 
-  const { items, nextCursor, total, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
+  const { items, nextCursor, total, loading, loadingMore, error, reload, loadMore } = useAssetList(
+    effectiveSettings,
+    assetListFilters
+  );
   const [density, setDensity] = useDensity();
   const [selectionState, setSelectionState] = useState<SelectionState>({
     selected: new Set(),
@@ -164,6 +196,15 @@ export function RegisterPage() {
   // matching how the toolbar's own "N filters applied" count already treats it as a
   // single filter regardless of how many values are checked.
   const filterChips: FilterChip[] = [
+    ...(exceptionKey
+      ? [
+          {
+            key: "exception",
+            label: `Dashboard: ${EXCEPTION_LABELS[exceptionKey]}${total !== null ? ` (${total})` : ""}`,
+            onRemove: clearException
+          }
+        ]
+      : []),
     ...(filters.globalSearch ? [{ key: "globalSearch", label: `Search: "${filters.globalSearch}"`, onRemove: () => clearFilter("globalSearch") }] : []),
     ...(filters.subClassification?.length
       ? [{ key: "subClassification", label: `Sub Classification: ${filters.subClassification.join(", ")}`, onRemove: () => clearFilter("subClassification") }]
@@ -312,7 +353,14 @@ export function RegisterPage() {
               <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
                 {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"} applied
               </span>
-              <button type="button" className="font-medium text-accent hover:underline" onClick={clearAll}>
+              <button
+                type="button"
+                className="font-medium text-accent hover:underline"
+                onClick={() => {
+                  clearAll();
+                  if (exceptionKey) clearException();
+                }}
+              >
                 Clear all filters
               </button>
             </>
@@ -329,7 +377,7 @@ export function RegisterPage() {
               onMerge={() => setMergeOpen(true)}
             />
           )}
-          <ExportButton url={asAt ? getExportUrl({ asAt, ...filters }) : undefined} />
+          <ExportButton url={asAt ? getExportUrl({ asAt, ...assetListFilters }) : undefined} />
           <ColumnPicker prefs={columnPrefs} />
           <div className="flex items-center gap-1 rounded-md border border-gray-300 p-0.5 text-gray-600">
             <button

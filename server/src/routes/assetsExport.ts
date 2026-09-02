@@ -17,6 +17,7 @@ import {
   TOTAL_WDV_AND_PROFIT_LOSS_SQL
 } from "./assetColumnFilters.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { buildExceptionPredicate, EXCEPTION_KEYS, EXCEPTION_LABELS } from "./exceptionPredicates.js";
 
 // Every Component 2 export column key — mirrors client/src/lib/columns.ts's
 // C2_COLUMN_IDS (minus expiryDateC1/C2, which are Register-screen-only, never
@@ -64,7 +65,10 @@ const exportQuerySchema = z.object({
   // Excel-style per-column custom filter conditions — same mechanism and validation as
   // GET /api/assets (see assetColumnFilters.ts). Required so the export reflects
   // exactly the filtered result set Register's grid is showing, not the whole table.
-  conditions: conditionsQuerySchema
+  conditions: conditionsQuerySchema,
+  // Finance FAR Dashboard drill-through — same shared predicate as GET /api/assets, so
+  // "Export to Excel" from a drill-through view exports exactly those rows.
+  exception: z.enum(EXCEPTION_KEYS).optional()
 });
 
 interface LabelContext {
@@ -535,8 +539,12 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       }
       computedConditions.push(built.sql);
     }
+    if (q.exception) {
+      computedConditions.push(buildExceptionPredicate(q.exception, params, { fyStart: fy.fyStart, asAt }));
+    }
     const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
-    const filterSummaryText = buildFilterSummaryText(q, q.conditions);
+    const filterSummaryText =
+      buildFilterSummaryText(q, q.conditions) + (q.exception ? `; Dashboard Exception: ${EXCEPTION_LABELS[q.exception]}` : "");
     // DD-MM-YYYY HH:MM, matching the app's own date convention (ddmmyyyy() above) —
     // built from Intl's individual parts rather than trusting a locale's default
     // separator (en-IN renders DD/MM/YYYY with slashes, not the dashes used everywhere

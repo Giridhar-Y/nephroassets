@@ -16,6 +16,7 @@ import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
+import { buildExceptionPredicate, EXCEPTION_KEYS } from "./exceptionPredicates.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -140,7 +141,12 @@ const querySchema = z.object({
   // Excel-style per-column custom filter conditions (Register's column-header
   // filters) — see assetColumnFilters.ts. AND'd with every filter above, and with each
   // other, same as every existing condition in this route.
-  conditions: conditionsQuerySchema
+  conditions: conditionsQuerySchema,
+  // Finance FAR Dashboard drill-through: a tile links here with its own key, ANDed on
+  // top of every other filter above via the same predicate dashboard-summary counted
+  // with — see exceptionPredicates.ts for why this is a shared function, not a second
+  // hand-copied condition.
+  exception: z.enum(EXCEPTION_KEYS).optional()
 });
 
 function decodeCursor(cursor: string | undefined): [string, string] | null {
@@ -301,6 +307,9 @@ export default async function assetsRoutes(app: FastifyInstance) {
       }
       computedConditions.push(built.sql);
     }
+    if (q.exception) {
+      computedConditions.push(buildExceptionPredicate(q.exception, params, { fyStart: fySettings.fy_start, asAt }));
+    }
     const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
 
     const calcExtras = buildCalcCteExtras(params, asAt, {
@@ -376,7 +385,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
     let total: number | undefined;
     if (q.includeTotal === "true") {
       const totalWhereClause = filterConditions.length > 0 ? `WHERE ${filterConditions.join(" AND ")}` : "";
-      if (q.conditions.length === 0) {
+      if (q.conditions.length === 0 && !q.exception) {
         // Cheap path — no Excel-style computed-column condition is active, so the count
         // can run directly against the table without paying for the calc CTE at all.
         const { rows: countRows } = await db.query<{ count: string }>(
@@ -399,6 +408,9 @@ export default async function assetsRoutes(app: FastifyInstance) {
           const built = buildConditionSql(cond, totalParams, { fyStart: fySettings.fy_start, fyEnd: fySettings.fy_end });
           return "error" in built ? "" : built.sql;
         });
+        if (q.exception) {
+          totalComputedConditions.push(buildExceptionPredicate(q.exception, totalParams, { fyStart: fySettings.fy_start, asAt }));
+        }
         const totalComputedWhereClause =
           totalComputedConditions.length > 0 ? `WHERE ${totalComputedConditions.join(" AND ")}` : "";
         const totalSql = `WITH calc_base AS (
