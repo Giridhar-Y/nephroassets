@@ -8,6 +8,11 @@ import { ExportButton } from "../components/ui/ExportButton.js";
 
 const PAGE_SIZE = 50;
 
+// Timestamp / Category / FAR ID (flexible) / Actor / Details-button — shared by the
+// sticky header row and every data row (plain divs, not a <table>) so columns line up
+// without needing a shared table layout to keep them aligned.
+const GRID_COLUMNS = "190px 140px minmax(140px,1fr) 160px 100px";
+
 const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   capitalization: "Capitalization",
   addition: "Addition",
@@ -263,9 +268,17 @@ export function ActivityLogPage() {
       )}
 
       <div
-        className="min-h-0 flex-1 overflow-auto px-6 py-4"
+        className="min-h-0 flex-1 overflow-auto px-6"
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
       >
+        {/* py-4 lives here, one level in from the scrolling element, not on it — a
+            sticky child's `top: 0` resolves against the nearest SCROLLING ancestor's own
+            padding box, so top padding on the scroll container itself leaves a permanent
+            gap above the "stuck" header that scrolled-past content peeks through
+            (reproduced live: a sliver of the previous row visible above the header at
+            any scrollTop > 0). Padding one level in avoids that gap entirely while still
+            giving the same visual inset. */}
+        <div className="py-4">
         {loading && items.length === 0 ? (
           <div className="space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -283,62 +296,64 @@ export function ActivityLogPage() {
             </p>
           </div>
         ) : (
-          <table className="w-full text-sm">
-            {/* Sticky is on each <th> individually, not the <thead>/<tr> — position:
-                sticky on a row with no opaque background baked into each cell doesn't
-                reliably stick across browsers. A shadow (not just the border) lifts it
-                above scrolled content once there's something to lift above. */}
-            <thead>
-              <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                {["Timestamp", "Category", "FAR ID", "Actor", ""].map((label) => (
-                  <th
-                    key={label}
-                    className={`sticky top-0 z-10 border-b-2 border-gray-300 bg-white py-2 pr-3 transition-shadow duration-150 ${
-                      scrolled ? "shadow-md" : ""
-                    }`}
+          // A plain <table>'s sticky header is unreliable here: position:sticky on
+          // individual <th> cells (rather than the whole <thead>/<tr>) can let a later
+          // <tbody> row paint over the "stuck" header, because native table
+          // layout/painting order doesn't cleanly handle a row that stays in normal flow
+          // while only its child cells are pulled into sticky positioning — reproduced
+          // live (a row from further down the list rendering above the header once
+          // scrolled). Same reasoning AssetGrid (Register's own grid) already uses a
+          // div/CSS-Grid layout instead of a native table for its own sticky header —
+          // matched here rather than continuing to chase table-sticky quirks.
+          <div className="w-full text-sm">
+            <div
+              className={`sticky top-0 z-10 grid items-center gap-3 border-b-2 border-gray-300 bg-white py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500 transition-shadow duration-150 ${
+                scrolled ? "shadow-md" : ""
+              }`}
+              style={{ gridTemplateColumns: GRID_COLUMNS }}
+            >
+              <div>Timestamp</div>
+              <div>Category</div>
+              <div>FAR ID</div>
+              <div>Actor</div>
+              <div />
+            </div>
+            {items.map((entry) => {
+              const rowKey = `${entry.source}-${entry.id}`;
+              const expanded = expandedId === rowKey;
+              return (
+                <Fragment key={rowKey}>
+                  <div
+                    className="grid items-center gap-3 border-b border-gray-100 py-2 odd:bg-white even:bg-gray-50/60 hover:bg-brand-blue/5"
+                    style={{ gridTemplateColumns: GRID_COLUMNS }}
                   >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((entry) => {
-                const rowKey = `${entry.source}-${entry.id}`;
-                const expanded = expandedId === rowKey;
-                return (
-                  <Fragment key={rowKey}>
-                    <tr className="border-b border-gray-100 odd:bg-white even:bg-gray-50/60 hover:bg-brand-blue/5">
-                      <td className="whitespace-nowrap py-2 pr-3 text-gray-600">{formatDateTime(entry.createdAt)}</td>
-                      <td className="py-2 pr-3">
-                        <Badge tone={CATEGORY_TONES[entry.category]}>{CATEGORY_LABELS[entry.category]}</Badge>
-                      </td>
-                      <td className="py-2 pr-3 font-medium text-ink">{entry.farId ?? "—"}</td>
-                      <td className="py-2 pr-3 text-gray-600">{entry.actorUsername ?? "Unknown user"}</td>
-                      <td className="py-2 pr-3">
-                        <button
-                          type="button"
-                          aria-expanded={expanded}
-                          className="flex items-center gap-1 whitespace-nowrap text-xs font-medium text-accent hover:underline"
-                          onClick={() => setExpandedId(expanded ? null : rowKey)}
-                        >
-                          <ChevronDownIcon fontSize={13} className={expanded ? "" : "-rotate-90"} />
-                          Details
-                        </button>
-                      </td>
-                    </tr>
-                    {expanded && (
-                      <tr className="border-b border-gray-100 bg-gray-50">
-                        <td colSpan={5} className="px-3 py-2 text-xs">
-                          <DetailsSummary details={entry.details} />
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+                    <div className="whitespace-nowrap text-gray-600">{formatDateTime(entry.createdAt)}</div>
+                    <div>
+                      <Badge tone={CATEGORY_TONES[entry.category]}>{CATEGORY_LABELS[entry.category]}</Badge>
+                    </div>
+                    <div className="truncate font-medium text-ink">{entry.farId ?? "—"}</div>
+                    <div className="truncate text-gray-600">{entry.actorUsername ?? "Unknown user"}</div>
+                    <div>
+                      <button
+                        type="button"
+                        aria-expanded={expanded}
+                        className="flex items-center gap-1 whitespace-nowrap text-xs font-medium text-accent hover:underline"
+                        onClick={() => setExpandedId(expanded ? null : rowKey)}
+                      >
+                        <ChevronDownIcon fontSize={13} className={expanded ? "" : "-rotate-90"} />
+                        Details
+                      </button>
+                    </div>
+                  </div>
+                  {expanded && (
+                    <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-xs">
+                      <DetailsSummary details={entry.details} />
+                    </div>
+                  )}
+                </Fragment>
+              );
+            })}
+          </div>
         )}
         {!loading && nextCursor && (
           <div className="flex justify-center py-4">
@@ -352,6 +367,7 @@ export function ActivityLogPage() {
             </button>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
