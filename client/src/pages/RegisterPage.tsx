@@ -15,6 +15,7 @@ import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { SearchIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
+import { useExport } from "../hooks/useExport.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 import { GridViewControls } from "../components/ui/GridViewControls.js";
@@ -128,6 +129,30 @@ export function RegisterPage() {
     () => (exceptionKey ? { ...filters, exception: exceptionKey } : filters),
     [filters, exceptionKey]
   );
+  const exportUrl = asAt ? getExportUrl({ asAt, ...assetListFilters }) : undefined;
+  // Lifted up here (rather than left inside ExportButton) so the Ctrl+Shift+E shortcut
+  // below and the toolbar button share one `exporting` state — see ExportButton's own
+  // exporting/onExport props for why two independent copies would be a race.
+  const { exporting: exportingRegister, runExport: runRegisterExport } = useExport(exportUrl);
+
+  // FAR module keyboard shortcut: Ctrl+Shift+E (Cmd+Shift+E on Mac) triggers the same
+  // export the toolbar button does. Suppressed while focus is inside an editable field
+  // (typing "E" while filtering the FAR ID search box shouldn't trigger a download) and
+  // preventDefault'd unconditionally on match so it can't fall through to a browser/OS
+  // binding on the same combination. runRegisterExport itself already no-ops while an
+  // export is in flight (see useExport) or when there's no asAt yet to export against.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key.toLowerCase() !== "e" || !e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+      e.preventDefault();
+      runRegisterExport();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [runRegisterExport]);
 
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
@@ -378,7 +403,12 @@ export function RegisterPage() {
               onMerge={() => setMergeOpen(true)}
             />
           )}
-          <ExportButton url={asAt ? getExportUrl({ asAt, ...assetListFilters }) : undefined} />
+          <ExportButton
+            url={exportUrl}
+            shortcutHint="Export to Excel (Ctrl+Shift+E)"
+            exporting={exportingRegister}
+            onExport={runRegisterExport}
+          />
           <ColumnPicker prefs={columnPrefs} />
           <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
         </div>
