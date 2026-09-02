@@ -3,6 +3,7 @@ import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import assetsExportRoutes from "./assetsExport.js";
+import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -62,6 +63,12 @@ describe("Register Export: GET /api/assets/export", () => {
     app.addHook("preHandler", authGateHook);
     await app.register(cookie);
     await app.register(assetsExportRoutes);
+    // Also registered here (not just assetsExportRoutes) so the exception drill-through
+    // tests below can prove the export's row set matches GET /api/assets's for the same
+    // ?exception=<key> — the same "same predicate, same answer" property
+    // reports.test.ts's dashboard-summary/GET /api/assets cross-check already proves,
+    // extended to the third and last consumer of exceptionPredicates.ts.
+    await app.register(assetsRoutes);
     await app.ready();
 
     const db = await getPool();
@@ -416,6 +423,69 @@ describe("Register Export: GET /api/assets/export", () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  // Finance FAR Dashboard drill-through: exceptionPredicates.ts's buildExceptionPredicate
+  // is shared by dashboard-summary's counts, GET /api/assets?exception=, and this export
+  // route — these tests are the export route's share of "same predicate, same answer",
+  // proving its row set agrees exactly with GET /api/assets's for the same key, rather
+  // than trusting that wiring the same import in also means it's wired correctly.
+  describe("exception=<key> drill-through (shared with GET /api/assets and dashboard-summary)", () => {
+    it("filters to exactly the rows matching exception=missingData, same row set GET /api/assets returns", async () => {
+      await insertAsset("EXP-EXC-MISSING", { serial_no: null });
+      await insertAsset("EXP-EXC-HEALTHY", { serial_no: "SN-1" });
+
+      const exportRes = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=missingData" });
+      expect(exportRes.statusCode).toBe(200);
+      const worksheet = await readWorkbook(exportRes.rawPayload);
+      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW);
+      expect(worksheet.getRow(FIRST_DATA_ROW).getCell(1).value).toBe("EXP-EXC-MISSING");
+
+      const registerRes = await authedInject(app, { method: "GET", url: "/api/assets?exception=missingData" });
+      const registerFarIds = registerRes.json().items.map((i: { asset: { farId: string } }) => i.asset.farId);
+      expect(registerFarIds).toEqual(["EXP-EXC-MISSING"]);
+    });
+
+    it("filters to exactly the rows matching exception=pastUsefulLifeActive, same row set GET /api/assets returns", async () => {
+      // Default fixture (useful_life_c1/c2_years: 5, date_acquired: 2020-01-01) has
+      // already expired by AS_AT (2026-08-17) — a real, not contrived, past-life case.
+      await insertAsset("EXP-EXC-EXPIRED");
+      await insertAsset("EXP-EXC-NOTEXPIRED", { useful_life_c1_years: 20, useful_life_c2_years: 20 });
+
+      const exportRes = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=pastUsefulLifeActive" });
+      expect(exportRes.statusCode).toBe(200);
+      const worksheet = await readWorkbook(exportRes.rawPayload);
+      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW);
+      expect(worksheet.getRow(FIRST_DATA_ROW).getCell(1).value).toBe("EXP-EXC-EXPIRED");
+
+      const registerRes = await authedInject(app, { method: "GET", url: "/api/assets?exception=pastUsefulLifeActive" });
+      const registerFarIds = registerRes.json().items.map((i: { asset: { farId: string } }) => i.asset.farId);
+      expect(registerFarIds).toEqual(["EXP-EXC-EXPIRED"]);
+    });
+
+    it("names the exception in the filter-summary note, so the file is never mistaken for the full register", async () => {
+      await insertAsset("EXP-EXC-NOTE", { serial_no: null });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=missingData" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toMatch(/Dashboard Exception: Missing Data/);
+    });
+
+    it("combines with a named filter in the note, semicolon-separated, same as an Excel-style condition would", async () => {
+      await insertAsset("EXP-EXC-COMBINED", { serial_no: null, status: "Active" });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export?status=Active&exception=missingData" });
+      const worksheet = await readWorkbook(res.rawPayload);
+      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      expect(note).toMatch(/Status: Active/);
+      expect(note).toMatch(/Dashboard Exception: Missing Data/);
+    });
+
+    it("rejects an unknown exception key with 400, matching GET /api/assets", async () => {
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=notARealException" });
+      expect(res.statusCode).toBe(400);
     });
   });
 });
