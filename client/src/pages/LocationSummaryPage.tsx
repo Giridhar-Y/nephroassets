@@ -11,6 +11,8 @@ import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { ErrorIcon, LocationIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { GridViewControls } from "../components/ui/GridViewControls.js";
+import { useDensity } from "../hooks/useDensity.js";
 
 // A focused subset for this single-location summary view — Register's full 39-column
 // default would overwhelm what's meant to be a quick "what's here" list.
@@ -67,6 +69,8 @@ export function LocationSummaryPage() {
 
   const listFilters = useMemo(() => (location ? { center: [location] } : {}), [location]);
   const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(location ? settings : null, listFilters);
+  const [density, setDensity] = useDensity();
+  const [gridExpanded, setGridExpanded] = useState(false);
 
   return (
     <div className="flex h-full flex-col">
@@ -127,18 +131,27 @@ export function LocationSummaryPage() {
           <p className="text-xs text-gray-400">You'll get a count and total Gross Block, plus the full list below.</p>
         </div>
       ) : (
-        <AssetGrid
-          items={items}
-          columns={COLUMNS}
-          loading={loading}
-          loadingMore={loadingMore}
-          error={error}
-          hasMore={!!nextCursor}
-          onLoadMore={loadMore}
-          onRetry={reload}
-          emptyTitle="No assets are currently at this location."
-          emptyHint="Try a different location, or check the AS_AT date."
-        />
+        <>
+          <div className="flex items-center justify-end border-b border-gray-200 bg-white px-6 py-2">
+            <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
+          </div>
+          <AssetGrid
+            items={items}
+            columns={COLUMNS}
+            loading={loading}
+            loadingMore={loadingMore}
+            error={error}
+            hasMore={!!nextCursor}
+            onLoadMore={loadMore}
+            onRetry={reload}
+            emptyTitle="No assets are currently at this location."
+            emptyHint="Try a different location, or check the AS_AT date."
+            density={density}
+            onDensityChange={setDensity}
+            expanded={gridExpanded}
+            onExpandedChange={setGridExpanded}
+          />
+        </>
       )}
     </div>
   );

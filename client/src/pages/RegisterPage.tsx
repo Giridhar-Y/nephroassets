@@ -13,10 +13,11 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { CollapseExpandIcon, DensityIcon, ExpandIcon, SearchIcon } from "../lib/icons.js";
+import { SearchIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { GridViewControls } from "../components/ui/GridViewControls.js";
 import { formatCompactIndianCount } from "../lib/format.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
@@ -379,26 +380,7 @@ export function RegisterPage() {
           )}
           <ExportButton url={asAt ? getExportUrl({ asAt, ...assetListFilters }) : undefined} />
           <ColumnPicker prefs={columnPrefs} />
-          <div className="flex items-center gap-1 rounded-md border border-gray-300 p-0.5 text-gray-600">
-            <button
-              type="button"
-              aria-label={density === "compact" ? "Switch to comfortable row height" : "Switch to compact row height"}
-              title={density === "compact" ? "Comfortable rows" : "Compact rows"}
-              onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")}
-              className={`flex items-center rounded px-1.5 py-1 hover:bg-gray-50 ${density === "compact" ? "bg-accent-light text-accent-hover" : ""}`}
-            >
-              <DensityIcon fontSize={14} />
-            </button>
-            <button
-              type="button"
-              aria-label={gridExpanded ? "Exit full screen" : "Expand table to full screen"}
-              title={gridExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
-              onClick={() => setGridExpanded((e) => !e)}
-              className="flex items-center rounded px-1.5 py-1 hover:bg-gray-50"
-            >
-              {gridExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
-            </button>
-          </div>
+          <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
         </div>
       </div>
 

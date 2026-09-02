@@ -14,6 +14,8 @@ import type { ColumnCondition, ColumnFilterType } from "../lib/columnFilters.js"
 import { buildConditionHeaderFilters, makeSetCondition } from "../lib/conditionHeaderFilters.js";
 import { AdditionIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { GridViewControls } from "../components/ui/GridViewControls.js";
+import { useDensity } from "../hooks/useDensity.js";
 import { fetchSubClassifications, undoAddition, type SubClassificationOption } from "../api/client.js";
 import { hasPermission } from "../lib/permissions.js";
 
@@ -119,6 +121,8 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
   const { items, nextCursor, loading, loadingMore, error, reload, loadMore } = useAssetList(settings, filters);
   // Addition undo (Global Admin only) — holds the FAR ID pending confirmation.
   const [undoTargetFarId, setUndoTargetFarId] = useState<string | null>(null);
+  const [density, setDensity] = useDensity();
+  const [gridExpanded, setGridExpanded] = useState(false);
 
   // No multi-select Sub Classification filter on this tab (unlike Register) — only an
   // "Equals" custom condition can name an exact classification, same detection
@@ -131,6 +135,9 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
 
   return (
     <>
+      <div className="flex items-center justify-end border-b border-gray-200 bg-white px-6 py-2">
+        <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
+      </div>
       <AssetGrid
         items={items}
         columns={COLUMNS}
@@ -146,6 +153,10 @@ function AdditionLogTab({ subClassifications }: { subClassifications: SubClassif
         headerFilters={headerFilters}
         onDeleteAsset={hasPermission(user, "additions", "undo") ? (farId) => setUndoTargetFarId(farId) : undefined}
         deleteActionLabel="Undo Addition (Global Admin)"
+        density={density}
+        onDensityChange={setDensity}
+        expanded={gridExpanded}
+        onExpandedChange={setGridExpanded}
       />
       {undoTargetFarId && (
         <DeleteConfirmModal

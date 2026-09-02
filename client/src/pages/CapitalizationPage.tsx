@@ -23,6 +23,8 @@ import { AddCircleIcon, ErrorIcon, UploadIcon } from "../lib/icons.js";
 import { hasPermission } from "../lib/permissions.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
+import { GridViewControls } from "../components/ui/GridViewControls.js";
+import { useDensity } from "../hooks/useDensity.js";
 
 type Tab = "add" | "log";
 
@@ -133,6 +135,8 @@ export function CapitalizationPage() {
     reload: reloadLog,
     loadMore: loadMoreLog
   } = useAssetList(settings, logFilters, logSort);
+  const [density, setDensity] = useDensity();
+  const [gridExpanded, setGridExpanded] = useState(false);
 
   useEffect(() => {
     fetchCenters().then(setCenters).catch(() => {});
@@ -505,6 +509,9 @@ export function CapitalizationPage() {
 
       {tab === "log" && (
         <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex items-center justify-end border-b border-gray-200 bg-white px-6 py-2">
+            <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
+          </div>
           {logFilterCount > 0 && (
             <div className="flex items-center gap-2 border-b border-gray-200 bg-white px-6 py-2">
               <span className="flex items-center gap-1 rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-white">
@@ -534,6 +541,10 @@ export function CapitalizationPage() {
             getAssetHref={(farId) => `/assets/${encodeURIComponent(farId)}`}
             onDeleteAsset={hasPermission(user, "capitalization", "delete") ? (farId) => setDeleteTargetFarId(farId) : undefined}
             deleteActionLabel="Delete (Global Admin)"
+            density={density}
+            onDensityChange={setDensity}
+            expanded={gridExpanded}
+            onExpandedChange={setGridExpanded}
           />
         </div>
       )}
