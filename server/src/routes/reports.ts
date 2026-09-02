@@ -1101,22 +1101,6 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     statusBase.params
   );
 
-  const subClassBase = buildDashboardCalcCte(fy, user, filters);
-  const subClassPromise = db.query<{ sub_classification: string; gross_block: string }>(
-    `${subClassBase.cteSql}
-     SELECT sub_classification, COALESCE(SUM((c1).gross_block + (c2).gross_block), 0) AS gross_block
-     FROM calc GROUP BY sub_classification ORDER BY gross_block DESC`,
-    subClassBase.params
-  );
-
-  const locationBase = buildDashboardCalcCte(fy, user, filters);
-  const locationPromise = db.query<{ location: string; nbv: string }>(
-    `${locationBase.cteSql}
-     SELECT effective_location AS location, COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv
-     FROM calc GROUP BY effective_location ORDER BY nbv DESC`,
-    locationBase.params
-  );
-
   // NBV trend — 6 trailing calendar-quarter-ends, current FY's fy_start/fy_end/days_in_fy
   // held fixed (only asAt varies per point). A point before the current FY's start
   // therefore reflects this FY's opening balance rather than a true replay of an earlier
@@ -1134,13 +1118,7 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     })
   );
 
-  const [totalsRows, statusRows, subClassRows, locationRows, nbvTrend] = await Promise.all([
-    totalsPromise,
-    statusPromise,
-    subClassPromise,
-    locationPromise,
-    trendPromise
-  ]);
+  const [totalsRows, statusRows, nbvTrend] = await Promise.all([totalsPromise, statusPromise, trendPromise]);
 
   const t = totalsRows.rows[0]!;
   return {
@@ -1155,11 +1133,6 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
       qtyTotal: Number(t.qty_total)
     },
     statusCounts: statusRows.rows.map((r) => ({ status: r.status, count: Number(r.count) })),
-    subClassificationBreakdown: subClassRows.rows.map((r) => ({
-      subClassification: r.sub_classification,
-      grossBlock: Number(r.gross_block)
-    })),
-    locationBreakdown: locationRows.rows.map((r) => ({ location: r.location, nbv: Number(r.nbv) })),
     depreciationFytd: Number(t.dep_fytd),
     disposalPL: {
       gains: Number(t.gains),

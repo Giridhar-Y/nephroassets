@@ -33,6 +33,18 @@ export function formatCompactIndianCount(n: number): string {
   return `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(1)}${suffix}`;
 }
 
+// ₹-prefixed sibling of formatCompactIndianCount above, same K/L/Cr shorthand and 1
+// decimal place — for a KPI headline figure inside a fixed-width card, where
+// formatCurrency's full-precision string (e.g. "₹81,06,68,314") can genuinely overflow a
+// bold, large-font tile and get silently clipped by `truncate`. Sign-aware: divisor
+// selection above only ever matches non-negative magnitudes, so a negative value is
+// formatted on its absolute value with the "-" re-applied after. Pair this with
+// `title={formatCurrency(value)}` on the same element so the exact rupee figure is still
+// one hover/tap away — this is a display fix, not a precision cut.
+export function formatCurrencyCompact(value: number): string {
+  return value < 0 ? `-₹${formatCompactIndianCount(-value)}` : `₹${formatCompactIndianCount(value)}`;
+}
+
 export function formatDate(value: string | null): string {
   if (!value) return "—";
   const d = new Date(value + "T00:00:00Z");

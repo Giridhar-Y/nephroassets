@@ -1441,7 +1441,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     expect(disposalPL.allTime.disposalCount).not.toBe(disposalPL.disposalCount);
   });
 
-  it("center scoping narrows totals and the location breakdown to the user's own centers", async () => {
+  it("center scoping narrows totals to the user's own centers", async () => {
     const scopedUser = await createTestUser({ username: "dash-scope-user", role: "editor", centerAccess: ["Dash-Center-A"] });
     const scopedRes = await app.inject({
       method: "GET",
@@ -1451,7 +1451,6 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     expect(scopedRes.statusCode).toBe(200);
     const scopedBody = scopedRes.json();
     expect(scopedBody.totals.assetCount).toBe(1);
-    expect(scopedBody.locationBreakdown.map((r: { location: string }) => r.location)).toEqual(["Dash-Center-A"]);
 
     const unscopedRes = await authedInject(app, {
       method: "GET",

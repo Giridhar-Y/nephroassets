@@ -7,7 +7,7 @@ import {
 } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
-import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
+import { formatCurrency, formatCurrencyCompact, formatDateDDMMYYYY } from "../lib/format.js";
 import { ChevronDownIcon, ChevronUpIcon, DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
@@ -18,53 +18,6 @@ import { EXCEPTION_KEYS, EXCEPTION_LABELS, EXCEPTION_TONES } from "../lib/except
 // (translate up 2px + a slightly deeper shadow) — a small, consistent "alive" touch
 // rather than a per-section one-off.
 const CARD_HOVER = "transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md";
-
-// Top 5 by value + one "Other" row summing the rest — the server returns every row (it
-// doesn't know how many the client wants to show), this is purely a display fold.
-function foldTop5(rows: { label: string; value: number }[]): { label: string; value: number }[] {
-  const sorted = [...rows].sort((a, b) => b.value - a.value);
-  const top = sorted.slice(0, 5);
-  const rest = sorted.slice(5);
-  return rest.length > 0 ? [...top, { label: "Other", value: rest.reduce((sum, r) => sum + r.value, 0) }] : top;
-}
-
-// `total` is the whole-scope figure this breakdown's values are a share of (e.g. overall
-// Gross Block for the Sub Classification panel) — used only for the "(N%)" next to each
-// value; omit it and the percentage is simply not shown, rather than dividing by a wrong
-// stand-in total.
-function BarPanel({ title, rows, total }: { title: string; rows: { label: string; value: number }[]; total?: number }) {
-  const max = Math.max(1, ...rows.map((r) => r.value));
-  return (
-    <Card className={`p-6 ${CARD_HOVER}`}>
-      <h2 className="font-heading text-sm font-bold text-ink">{title}</h2>
-      {rows.length === 0 ? (
-        <p className="mt-3 text-sm text-gray-400">Nothing in scope.</p>
-      ) : (
-        <div className="mt-4 space-y-3">
-          {rows.map((row) => (
-            <div key={row.label}>
-              <div className="flex items-baseline justify-between gap-2 text-xs">
-                <span className="truncate text-gray-600">{row.label}</span>
-                <span className="shrink-0 tabular-nums">
-                  <span className="font-semibold text-ink">{formatCurrency(row.value)}</span>
-                  {!!total && (
-                    <span className="ml-1.5 text-gray-400">({Math.round((row.value / total) * 100)}%)</span>
-                  )}
-                </span>
-              </div>
-              <div className="mt-1 h-2 rounded-full bg-gray-100">
-                <div
-                  className="h-2 rounded-full bg-brand-blue"
-                  style={{ width: `${Math.max(2, (row.value / max) * 100)}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
 
 // Cost-side (Gross Block) / depreciation-side (Acc Dep) / net (Net Block, the headline
 // figure) / count (Asset Count, not a financial "side" at all) — a tint + border per
@@ -82,12 +35,19 @@ const KPI_TONE_CLASSES: Record<"cost" | "depreciation" | "net" | "count", string
 function KpiTile({
   label,
   value,
+  fullValue,
   tone = "count",
   size = "normal",
   children
 }: {
   label: string;
+  /** The displayed headline — compact (formatCurrencyCompact) for a currency figure, so
+   *  it always fits a fixed-width card without truncation; a plain short string (e.g.
+   *  Asset Count) needs no compacting and can just be the same as fullValue. */
   value: string;
+  /** Full-precision text for the `title` attribute (hover/tap) — defaults to `value`
+   *  when the two are already the same (a non-currency tile has nothing to compact). */
+  fullValue?: string;
   tone?: "cost" | "depreciation" | "net" | "count";
   size?: "normal" | "lg";
   children?: ReactNode;
@@ -96,8 +56,8 @@ function KpiTile({
     <Card className={`px-6 py-5 ${KPI_TONE_CLASSES[tone]} ${CARD_HOVER}`}>
       <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
       <div
-        className={`mt-1 truncate font-heading font-extrabold text-ink ${size === "lg" ? "text-3xl" : "text-xl"}`}
-        title={value}
+        className={`mt-1 whitespace-nowrap font-heading font-extrabold text-ink ${size === "lg" ? "text-3xl" : "text-xl"}`}
+        title={fullValue ?? value}
       >
         {value}
       </div>
@@ -122,12 +82,12 @@ function OpeningAdditionsBar({ opening, additions }: { opening: number; addition
         <div className="h-2 bg-brand-teal" style={{ width: `${100 - openingPct}%` }} />
       </div>
       <div className="mt-1.5 flex flex-wrap justify-between gap-x-2 text-[10px] font-medium text-gray-500">
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1 whitespace-nowrap" title={formatCurrency(opening)}>
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-blue" />
-          Opening {formatCurrency(opening)}
+          Opening {formatCurrencyCompact(opening)}
         </span>
-        <span className="flex items-center gap-1">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-teal" />+Additions {formatCurrency(additions)} FYTD
+        <span className="flex items-center gap-1 whitespace-nowrap" title={formatCurrency(additions)}>
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-teal" />+Additions {formatCurrencyCompact(additions)} FYTD
         </span>
       </div>
     </div>
@@ -333,11 +293,27 @@ export function DashboardPage() {
             }`}
           >
             <div className="grid grid-cols-4 gap-5">
-              <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} tone="cost">
+              <KpiTile
+                label="Gross Block"
+                value={formatCurrencyCompact(summary.totals.grossBlock)}
+                fullValue={formatCurrency(summary.totals.grossBlock)}
+                tone="cost"
+              >
                 <OpeningAdditionsBar opening={summary.totals.openingGrossBlock} additions={summary.totals.additionsFytd} />
               </KpiTile>
-              <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} tone="depreciation" />
-              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)} tone="net" size="lg">
+              <KpiTile
+                label="Accumulated Depreciation"
+                value={formatCurrencyCompact(summary.totals.closingAccDep)}
+                fullValue={formatCurrency(summary.totals.closingAccDep)}
+                tone="depreciation"
+              />
+              <KpiTile
+                label="Net Block"
+                value={formatCurrencyCompact(summary.totals.nbv)}
+                fullValue={formatCurrency(summary.totals.nbv)}
+                tone="net"
+                size="lg"
+              >
                 <NetBlockDelta trend={summary.nbvTrend} />
               </KpiTile>
               <KpiTile label="Asset Count" value={String(summary.totals.assetCount)} tone="count">
@@ -346,25 +322,15 @@ export function DashboardPage() {
               </KpiTile>
             </div>
 
-            <div className="grid grid-cols-2 gap-5">
-              <BarPanel
-                title="By Sub Classification (Gross Block)"
-                total={summary.totals.grossBlock}
-                rows={foldTop5(
-                  summary.subClassificationBreakdown.map((r) => ({ label: r.subClassification, value: r.grossBlock }))
-                )}
-              />
-              <BarPanel
-                title="By Location (Net Block)"
-                total={summary.totals.nbv}
-                rows={foldTop5(summary.locationBreakdown.map((r) => ({ label: r.location, value: r.nbv })))}
-              />
-            </div>
-
             <div className="grid grid-cols-3 gap-5">
               <Card className={`p-6 ${CARD_HOVER}`}>
                 <h2 className="font-heading text-sm font-bold text-ink">Depreciation Run-Rate (FYTD)</h2>
-                <div className="mt-1 text-2xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
+                <div
+                  className="mt-1 whitespace-nowrap text-2xl font-semibold text-ink"
+                  title={formatCurrency(summary.depreciationFytd)}
+                >
+                  {formatCurrencyCompact(summary.depreciationFytd)}
+                </div>
                 <div className="mt-3 text-brand-blue">
                   <LineChart
                     points={[

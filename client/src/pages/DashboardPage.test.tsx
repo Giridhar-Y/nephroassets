@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage.js";
 import type { DashboardSummary } from "../api/client.js";
-import { formatCurrency } from "../lib/format.js";
+import { formatCurrency, formatCurrencyCompact } from "../lib/format.js";
 
 // Expected currency text always comes from the app's own formatCurrency, never
 // hand-typed — Intl's actual digit grouping for large values isn't the plain
@@ -49,8 +49,6 @@ const SUMMARY: DashboardSummary = {
     { status: "Active", count: 3000 },
     { status: "Disposed", count: 18 }
   ],
-  subClassificationBreakdown: [{ subClassification: "IT Equipment", grossBlock: 81066831400 }],
-  locationBreakdown: [{ location: "Center-001", nbv: 59241165800 }],
   depreciationFytd: 5000000,
   disposalPL: {
     gains: 100000,
@@ -116,12 +114,17 @@ describe("DashboardPage: new KPI fields", () => {
     expect(screen.getByText(/Σ Qty:\s*3,019/)).toBeTruthy();
   });
 
-  it("shows the Opening + Additions breakdown under Gross Block", async () => {
+  it("shows the Opening + Additions breakdown under Gross Block, compact but with full precision on hover", async () => {
     await renderDashboard();
-    const opening = escapeRegExp(formatCurrency(SUMMARY.totals.openingGrossBlock));
-    const additions = escapeRegExp(formatCurrency(SUMMARY.totals.additionsFytd));
-    expect(screen.getByText(new RegExp(`Opening ${opening}`))).toBeTruthy();
-    expect(screen.getByText(new RegExp(`\\+Additions ${additions} FYTD`))).toBeTruthy();
+    const openingCompact = escapeRegExp(formatCurrencyCompact(SUMMARY.totals.openingGrossBlock));
+    const additionsCompact = escapeRegExp(formatCurrencyCompact(SUMMARY.totals.additionsFytd));
+    const openingEl = screen.getByText(new RegExp(`Opening ${openingCompact}`));
+    const additionsEl = screen.getByText(new RegExp(`\\+Additions ${additionsCompact} FYTD`));
+    expect(openingEl).toBeTruthy();
+    expect(additionsEl).toBeTruthy();
+    // Full-precision figure is still there, just moved to the title (hover/tap), not lost.
+    expect(openingEl.title).toBe(formatCurrency(SUMMARY.totals.openingGrossBlock));
+    expect(additionsEl.title).toBe(formatCurrency(SUMMARY.totals.additionsFytd));
   });
 
   it("shows FYTD Disposal P&L by default and switches to Since Inception via the toggle", async () => {
@@ -152,5 +155,54 @@ describe("DashboardPage: new KPI fields", () => {
 
     expect(screen.getByText(deletions)).toBeTruthy();
     expect(screen.getByText(proceeds)).toBeTruthy();
+  });
+});
+
+// Regression coverage for a real display bug: the KPI tiles' headline values used to
+// render formatCurrency's full-precision string (e.g. "₹81,06,68,314") at text-3xl/text-xl
+// inside a narrow grid-cols-4 card with `truncate` — genuinely wide enough to overflow and
+// get silently clipped, which reads as a wrong number rather than a display bug. These
+// assert the compact string is what's actually shown, and that the full-precision figure
+// is still reachable (via `title`), not simply dropped.
+describe("DashboardPage: KPI headline values are compact, not full-precision", () => {
+  it("shows Gross Block, Accumulated Depreciation, and Net Block as compact currency", async () => {
+    await renderDashboard();
+    const grossBlockEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.grossBlock));
+    const accDepEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.closingAccDep));
+    const nbvEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.nbv));
+
+    expect(grossBlockEl.title).toBe(formatCurrency(SUMMARY.totals.grossBlock));
+    expect(accDepEl.title).toBe(formatCurrency(SUMMARY.totals.closingAccDep));
+    expect(nbvEl.title).toBe(formatCurrency(SUMMARY.totals.nbv));
+
+    // The old full-precision strings should be nowhere in the visible text — only in
+    // the title attributes just asserted above.
+    expect(screen.queryByText(formatCurrency(SUMMARY.totals.grossBlock))).toBeNull();
+    expect(screen.queryByText(formatCurrency(SUMMARY.totals.closingAccDep))).toBeNull();
+    expect(screen.queryByText(formatCurrency(SUMMARY.totals.nbv))).toBeNull();
+  });
+
+  it("uses whitespace-nowrap, not truncate, on the KPI headline values", async () => {
+    await renderDashboard();
+    const nbvEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.nbv));
+    expect(nbvEl.className).toContain("whitespace-nowrap");
+    expect(nbvEl.className).not.toContain("truncate");
+  });
+
+  it("shows the Depreciation Run-Rate headline as compact currency too", async () => {
+    await renderDashboard();
+    const el = screen.getByText(formatCurrencyCompact(SUMMARY.depreciationFytd));
+    expect(el.title).toBe(formatCurrency(SUMMARY.depreciationFytd));
+  });
+});
+
+// Regression coverage for the removed By Sub Classification / By Location panels — both
+// the panels themselves and the fields that fed them (subClassificationBreakdown/
+// locationBreakdown) are gone from the page and the DashboardSummary type.
+describe("DashboardPage: Sub Classification/Location breakdown panels removed", () => {
+  it("renders neither breakdown panel", async () => {
+    await renderDashboard();
+    expect(screen.queryByText(/By Sub Classification/)).toBeNull();
+    expect(screen.queryByText(/By Location/)).toBeNull();
   });
 });

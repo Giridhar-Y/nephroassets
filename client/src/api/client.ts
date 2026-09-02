@@ -602,16 +602,6 @@ export interface DashboardStatusCount {
   count: number;
 }
 
-export interface DashboardSubClassificationBreakdown {
-  subClassification: string;
-  grossBlock: number;
-}
-
-export interface DashboardLocationBreakdown {
-  location: string;
-  nbv: number;
-}
-
 export interface DashboardNbvTrendPoint {
   asAt: string;
   nbv: number;
@@ -633,8 +623,6 @@ export interface DashboardSummary {
     qtyTotal: number;
   };
   statusCounts: DashboardStatusCount[];
-  subClassificationBreakdown: DashboardSubClassificationBreakdown[];
-  locationBreakdown: DashboardLocationBreakdown[];
   depreciationFytd: number;
   disposalPL: {
     gains: number;
