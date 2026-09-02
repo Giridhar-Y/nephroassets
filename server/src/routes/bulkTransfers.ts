@@ -10,7 +10,8 @@ import {
   lookupCanonical,
   mergePreviewRows,
   parseWorksheetRows,
-  stringifyRowData
+  stringifyRowData,
+  todayIsoIST
 } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
@@ -104,8 +105,23 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     // validation bulkUpload.ts applies to Assets & Capitalization rows.
     {
       const maps = await loadActiveMasterMaps(await getPool());
+      // No future-dated transfers — checked once here, ahead of the preview/commit
+      // split, so both paths agree (same convention the toLocation/scope checks below
+      // already follow). IST (Asia/Kolkata), not the server process's own timezone —
+      // see todayIsoIST's own comment (bulkParse.ts) for why a raw UTC "today" would
+      // false-reject a genuinely same-day transfer during IST's early-morning window.
+      const today = todayIsoIST();
       const stillValid: typeof validRows = [];
       for (const { row, data } of validRows) {
+        if (data.transactionDate > today) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `Transfer date cannot be in the future (today is ${isoToDDMMYYYY(today)}).`,
+            data: stringifyRowData(data)
+          });
+          continue;
+        }
         const canonicalLocation = lookupCanonical(maps.centers, data.toLocation);
         if (!canonicalLocation) {
           errors.push({
@@ -140,14 +156,23 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
     if ((req.query as Record<string, string>).preview === "true") {
       const db = await getPool();
       const farIds = validRows.map(({ data }) => data.farId);
-      const assetLookup = new Map<string, { dateAcquired: string; currentLocation: string }>(
+      const assetLookup = new Map<string, { dateAcquired: string; currentLocation: string; disposed: boolean }>(
         farIds.length > 0
           ? (
-              await db.query<{ far_id: string; date_acquired: string; location: string; revised_location: string | null }>(
-                `SELECT far_id, date_acquired, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+              await db.query<{
+                far_id: string;
+                date_acquired: string;
+                location: string;
+                revised_location: string | null;
+                date_of_disposal: string | null;
+              }>(
+                `SELECT far_id, date_acquired, location, revised_location, date_of_disposal FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
                 [farIds]
               )
-            ).rows.map((r) => [r.far_id, { dateAcquired: r.date_acquired, currentLocation: r.revised_location ?? r.location }])
+            ).rows.map((r) => [
+              r.far_id,
+              { dateAcquired: r.date_acquired, currentLocation: r.revised_location ?? r.location, disposed: r.date_of_disposal !== null }
+            ])
           : []
       );
       // Rule 1 (2026-08-28): a child asset can't be transferred directly via a bulk row —
@@ -173,6 +198,20 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
           });
         } else if (asset === undefined || !isCenterInScope(req.user!, asset.currentLocation)) {
           errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
+        } else if (asset.disposed) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `Asset "${data.farId}" has already been disposed.`,
+            data: stringifyRowData(data)
+          });
+        } else if (data.toLocation === asset.currentLocation) {
+          errors.push({
+            row,
+            farId: data.farId,
+            message: `"${data.toLocation}" is already the current location for "${data.farId}".`,
+            data: stringifyRowData(data)
+          });
         } else if (data.transactionDate < asset.dateAcquired) {
           errors.push({
             row,
@@ -219,14 +258,38 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
             });
             continue;
           }
-          const { rows: exists } = await client.query<{ date_acquired: string; location: string; revised_location: string | null }>(
-            `SELECT date_acquired, location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+          const { rows: exists } = await client.query<{
+            date_acquired: string;
+            location: string;
+            revised_location: string | null;
+            date_of_disposal: string | null;
+          }>(
+            `SELECT date_acquired, location, revised_location, date_of_disposal FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
             [data.farId]
           );
           // Center-scoped access: same "out of scope folds into not-found" treatment
           // as the preview loop above.
           if (exists.length === 0 || !isCenterInScope(req.user!, exists[0]!.revised_location ?? exists[0]!.location)) {
             errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
+            continue;
+          }
+          if (exists[0]!.date_of_disposal !== null) {
+            errors.push({
+              row,
+              farId: data.farId,
+              message: `Asset "${data.farId}" has already been disposed.`,
+              data: stringifyRowData(data)
+            });
+            continue;
+          }
+          const currentLocation = exists[0]!.revised_location ?? exists[0]!.location;
+          if (data.toLocation === currentLocation) {
+            errors.push({
+              row,
+              farId: data.farId,
+              message: `"${data.toLocation}" is already the current location for "${data.farId}".`,
+              data: stringifyRowData(data)
+            });
             continue;
           }
           if (data.transactionDate < exists[0]!.date_acquired) {

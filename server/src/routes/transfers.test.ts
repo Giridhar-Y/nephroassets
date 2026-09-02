@@ -136,6 +136,76 @@ describe("Transfers", () => {
     expect(rows.every((r) => r.revised_location === null)).toBe(true);
   });
 
+  it("rejects a transfer to the asset's own current (capitalized) location", async () => {
+    await insertAsset("XFER-SAMELOC-1", "Transfer History Asset", "2020-01-01", "Center-A");
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-SAMELOC-1"], toLocation: "Center-A", transactionDate: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/"Center-A" is already the current location/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-SAMELOC-1'`);
+    expect(rows[0].revised_location).toBeNull(); // no transfer row/location update happened
+  });
+
+  it("rejects a transfer to the asset's own current location after a prior transfer (revised_location, not just capitalized location)", async () => {
+    await insertAsset("XFER-SAMELOC-2", "Transfer History Asset", "2020-01-01", "Center-A");
+    const first = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-SAMELOC-2"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    expect(first.statusCode).toBe(200);
+
+    // Now at Center-B (via revised_location) — transferring to Center-B again should be
+    // rejected too, not just a transfer back to the original capitalized Center-A.
+    const second = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-SAMELOC-2"], toLocation: "Center-B", transactionDate: "2026-06-01" }
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json().error).toMatch(/"Center-B" is already the current location/);
+  });
+
+  it("rejects transferring an already-disposed asset", async () => {
+    await insertAsset("XFER-DISPOSED-1", "Transfer History Asset", "2020-01-01", "Center-A");
+    const db = await getPool();
+    await db.query(`UPDATE assets SET date_of_disposal = '2026-04-01', status = 'Disposed' WHERE far_id = 'XFER-DISPOSED-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-DISPOSED-1"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/already been disposed/);
+
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-DISPOSED-1'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
+  it("rejects a transfer dated in the future", async () => {
+    await insertAsset("XFER-FUTURE-1", "Transfer History Asset", "2020-01-01", "Center-A");
+    // Computed relative to the real clock (not a hardcoded date) so this stays correct
+    // indefinitely — a comfortable 30-day margin avoids any IST/UTC boundary flakiness.
+    const farFuture = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-FUTURE-1"], toLocation: "Center-B", transactionDate: farFuture }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Transfer date cannot be in the future/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'XFER-FUTURE-1'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
   it("rejects a toLocation that isn't an active Masters center", async () => {
     await insertAsset("XFER-BADCENTER");
     const res = await authedInject(app, {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import type { SettingsRow } from "../db/mappers.js";
-import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
+import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical, todayIsoIST } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
@@ -68,6 +68,20 @@ export default async function transfersRoutes(app: FastifyInstance) {
     }
     const { transactionDate } = parsed.data;
 
+    // No future-dated transfers — checked against IST (Asia/Kolkata), not whatever
+    // timezone the server process itself happens to run in (same reasoning
+    // assetsExport.ts's exportedAtText already documents): comparing against the
+    // server's raw UTC `new Date()` would false-reject a genuinely same-day transfer
+    // entered during IST's early-morning window (00:00-05:30 IST), when the UTC
+    // calendar date is still "yesterday". Scoped to this one field only — reports.ts
+    // treats a future AS_AT as legitimate for depreciation calc elsewhere, so this
+    // isn't a global "no future dates" rule.
+    const today = todayIsoIST();
+    if (transactionDate > today) {
+      reply.code(400);
+      return { error: `Transfer date cannot be in the future (today is ${isoToDDMMYYYY(today)}).` };
+    }
+
     // Rule 1 (2026-08-28): a child asset can't be transferred directly on its own — but
     // explicitly selecting a child ALONGSIDE its own parent in this same request is not
     // "directly," it's equivalent to letting the cascade below handle it (and is already
@@ -103,11 +117,14 @@ export default async function transfersRoutes(app: FastifyInstance) {
       date_acquired: string;
       location: string;
       revised_location: string | null;
-    }>(`SELECT far_id, date_acquired, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`, [
-      farIds
-    ]);
+      date_of_disposal: string | null;
+    }>(
+      `SELECT far_id, date_acquired, location, revised_location, date_of_disposal FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+      [farIds]
+    );
     const dateAcquiredByFarId = new Map(assetRows.map((r) => [r.far_id, r.date_acquired]));
     const currentLocationByFarId = new Map(assetRows.map((r) => [r.far_id, r.revised_location ?? r.location]));
+    const disposalDateByFarId = new Map(assetRows.map((r) => [r.far_id, r.date_of_disposal]));
     const missing = farIds.filter((id) => !dateAcquiredByFarId.has(id));
     if (missing.length > 0) {
       reply.code(404);
@@ -122,6 +139,25 @@ export default async function transfersRoutes(app: FastifyInstance) {
     if (outOfScopeSource.length > 0) {
       reply.code(404);
       return { error: `No asset found with FAR ID ${outOfScopeSource.map((id) => `"${id}"`).join(", ")}.` };
+    }
+    const alreadyDisposed = farIds.filter((id) => disposalDateByFarId.get(id) !== null);
+    if (alreadyDisposed.length > 0) {
+      reply.code(409);
+      return {
+        error: `Cannot transfer an asset that's already been disposed — ${alreadyDisposed
+          .map((id) => `"${id}"`)
+          .join(", ")}.`
+      };
+    }
+    // Same-location restriction: a transfer to the location an asset is already at isn't
+    // a move, just a no-op transfer history row (and a stale-looking "last transaction
+    // date" bump) — reject it rather than silently recording nothing meaningful.
+    const sameLocation = farIds.filter((id) => toLocation === currentLocationByFarId.get(id));
+    if (sameLocation.length > 0) {
+      reply.code(400);
+      return {
+        error: `"${toLocation}" is already the current location — ${sameLocation.map((id) => `"${id}"`).join(", ")}.`
+      };
     }
     const tooEarly = farIds.filter((id) => transactionDate < dateAcquiredByFarId.get(id)!);
     if (tooEarly.length > 0) {

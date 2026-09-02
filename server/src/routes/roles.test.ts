@@ -57,7 +57,10 @@ describe("Role-based authorization", () => {
     await db.query(`DELETE FROM centers`);
     await db.query(`DELETE FROM sub_classifications`);
     await db.query(`DELETE FROM statuses`);
-    await db.query(`INSERT INTO centers (code) VALUES ('Center-Test')`);
+    // Center-Test-2 exists so a transfer test can move ROLE-TEST-1 (capitalized at
+    // Center-Test) somewhere genuinely different — transferring "to" the location it's
+    // already at is now rejected as a no-op (see transfers.ts's same-location check).
+    await db.query(`INSERT INTO centers (code) VALUES ('Center-Test'), ('Center-Test-2')`);
     await db.query(`INSERT INTO sub_classifications (name) VALUES ('Test-Sub')`);
     await db.query(`INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE), ('Disposed', TRUE)`);
     await db.query(
@@ -188,7 +191,7 @@ describe("Role-based authorization", () => {
         method: "POST",
         url: "/api/transfers",
         headers: { cookie: editorCookie },
-        payload: { farIds: ["ROLE-TEST-1"], toLocation: "Center-Test", transactionDate: "2026-08-01" }
+        payload: { farIds: ["ROLE-TEST-1"], toLocation: "Center-Test-2", transactionDate: "2026-08-01" }
       });
       expect(create.statusCode).toBe(200);
 
@@ -261,7 +264,7 @@ describe("Role-based authorization", () => {
         method: "POST",
         url: "/api/transfers",
         headers: { cookie: adminCookie },
-        payload: { farIds: ["ROLE-TEST-1"], toLocation: "Center-Test", transactionDate: "2026-08-01" }
+        payload: { farIds: ["ROLE-TEST-1"], toLocation: "Center-Test-2", transactionDate: "2026-08-01" }
       });
       expect(transfer.statusCode).toBe(200);
 

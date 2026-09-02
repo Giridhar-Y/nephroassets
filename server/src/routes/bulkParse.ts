@@ -36,6 +36,18 @@ export function isoToDDMMYYYY(value: string): string {
   return `${d}-${m}-${y}`;
 }
 
+// Today's date as YYYY-MM-DD, pinned to IST (Asia/Kolkata) rather than whatever timezone
+// the server process itself happens to run in — same reasoning assetsExport.ts's
+// exportedAtText already documents. A raw server-local `new Date()` would be wrong here:
+// Vercel's serverless functions run in UTC, and UTC's calendar date lags IST's by a full
+// day during IST's early-morning window (00:00-05:30 IST) — comparing a user's genuinely
+// same-day date against a naive UTC "today" would false-reject it as "in the future".
+// en-CA's default date format is already YYYY-MM-DD, so no manual part-assembly is needed
+// (unlike exportedAtText, which needs day-first DD-MM-YYYY and so builds it from parts).
+export function todayIsoIST(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+}
+
 // Bulk upload's date columns are DD-MM-YYYY, matching the rest of the app's day-first
 // display convention — parsed positionally (day, then month) rather than via `Date` or
 // any locale-dependent parsing, so "01-02-2026" always means 1 February, never 2 January.

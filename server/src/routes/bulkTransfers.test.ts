@@ -155,6 +155,73 @@ describe("Bulk Transfers: POST /api/transfers/bulk-upload", () => {
     expect(res.json().processed).toBe(1);
   });
 
+  it("rejects a row transferring to the asset's own current location, in both preview and commit", async () => {
+    await insertAsset("BXFER-SAMELOC-1");
+    const csv = [HEADER, "BXFER-SAMELOC-1,Center-A,2026-05-01"].join("\n");
+
+    const preview = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers/bulk-upload?preview=true",
+      ...csvPayload(csv)
+    });
+    expect(preview.json().rows[0].message).toMatch(/"Center-A" is already the current location/);
+
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/"Center-A" is already the current location/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-SAMELOC-1'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
+  it("rejects a row transferring an already-disposed asset, in both preview and commit", async () => {
+    await insertAsset("BXFER-DISPOSED-1");
+    const db = await getPool();
+    await db.query(`UPDATE assets SET date_of_disposal = '2026-01-01', status = 'Disposed' WHERE far_id = 'BXFER-DISPOSED-1'`);
+    const csv = [HEADER, "BXFER-DISPOSED-1,Center-B,2026-05-01"].join("\n");
+
+    const preview = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers/bulk-upload?preview=true",
+      ...csvPayload(csv)
+    });
+    expect(preview.json().rows[0].message).toMatch(/already been disposed/);
+
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/already been disposed/);
+
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-DISPOSED-1'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
+  it("rejects a row dated in the future, in both preview and commit", async () => {
+    await insertAsset("BXFER-FUTURE-1");
+    // Computed relative to the real clock (not a hardcoded date) so this stays correct
+    // indefinitely — a comfortable 30-day margin avoids any IST/UTC boundary flakiness.
+    const farFuture = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const csv = [HEADER, `BXFER-FUTURE-1,Center-B,${farFuture}`].join("\n");
+
+    const preview = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers/bulk-upload?preview=true",
+      ...csvPayload(csv)
+    });
+    expect(preview.json().rows[0].message).toMatch(/Transfer date cannot be in the future/);
+
+    const res = await authedInject(app, { method: "POST", url: "/api/transfers/bulk-upload", ...csvPayload(csv) });
+    const body = res.json();
+    expect(body.processed).toBe(0);
+    expect(body.errors[0].message).toMatch(/Transfer date cannot be in the future/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT revised_location FROM assets WHERE far_id = 'BXFER-FUTURE-1'`);
+    expect(rows[0].revised_location).toBeNull();
+  });
+
   it("rejects a toLocation that isn't an active Masters center", async () => {
     await insertAsset("BXFER-BADCENTER");
     const csv = [HEADER, "BXFER-BADCENTER,Not-A-Real-Center,2026-05-01"].join("\n");
