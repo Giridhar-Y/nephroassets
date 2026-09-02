@@ -13,6 +13,23 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === UNIQUE_VIOLATION;
 }
 
+/** Only the fields `patch` actually sets AND that differ from `existing`'s current
+ *  value — skips no-op fields (e.g. resubmitting the same code) so the Activity Log's
+ *  old -> new diff never shows a field that didn't actually change. `existing` must
+ *  already be keyed the same way as `patch` (camelCase, matching the patch schema) —
+ *  callers with snake_case DB columns map them first. Returned alongside each
+ *  `update*ById` function's own result, for routes/masters.ts's PATCH handlers to fold
+ *  into `logMasterActivity`'s `details.previous`. */
+function diffPrevious(existing: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const previous: Record<string, unknown> = {};
+  for (const [key, newValue] of Object.entries(patch)) {
+    if (newValue === undefined) continue;
+    const oldValue = existing[key];
+    if (oldValue !== newValue) previous[key] = oldValue;
+  }
+  return previous;
+}
+
 /** Thrown by the write functions below instead of touching `reply` directly, so the same
  *  functions serve both the HTTP handlers (which map status/message straight to the
  *  response) and the Masters bulk-upload route (routes/bulkMasters.ts, which maps it to a
@@ -68,13 +85,24 @@ export async function updateCenterById(
   db: pg.Pool,
   id: number,
   patch: { code?: string; description?: string; active?: boolean }
-): Promise<{ id: number; code: string; description: string; active: boolean; assetsUpdated: number; transfersUpdated: number }> {
+): Promise<{
+  id: number;
+  code: string;
+  description: string;
+  active: boolean;
+  assetsUpdated: number;
+  transfersUpdated: number;
+  previous: Record<string, unknown>;
+}> {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const { rows: existingRows } = await client.query(`SELECT code FROM centers WHERE id = $1 FOR UPDATE`, [id]);
+    const { rows: existingRows } = await client.query(`SELECT code, description, active FROM centers WHERE id = $1 FOR UPDATE`, [
+      id
+    ]);
     const existing = existingRows[0];
     if (!existing) throw new MasterError(404, "No center found with that id.");
+    const previous = diffPrevious(existing, patch);
 
     let assetsUpdated = 0;
     let transfersUpdated = 0;
@@ -117,7 +145,7 @@ export async function updateCenterById(
       values
     );
     await client.query("COMMIT");
-    return { ...rows[0], assetsUpdated, transfersUpdated };
+    return { ...rows[0], assetsUpdated, transfersUpdated, previous };
   } catch (err) {
     await client.query("ROLLBACK");
     if (isUniqueViolation(err)) throw new MasterError(409, `A center with code "${patch.code}" already exists.`);
@@ -203,11 +231,22 @@ export async function updateSubClassificationById(
   try {
     await client.query("BEGIN");
     const { rows: existingRows } = await client.query(
-      `SELECT name, has_component2 FROM sub_classifications WHERE id = $1 FOR UPDATE`,
+      `SELECT name, default_useful_life_c1_years, default_useful_life_c2_years, has_component2, active
+       FROM sub_classifications WHERE id = $1 FOR UPDATE`,
       [id]
     );
     const existing = existingRows[0];
     if (!existing) throw new MasterError(404, "No sub classification found with that id.");
+    const previous = diffPrevious(
+      {
+        name: existing.name,
+        defaultUsefulLifeC1Years: existing.default_useful_life_c1_years === null ? null : Number(existing.default_useful_life_c1_years),
+        defaultUsefulLifeC2Years: existing.default_useful_life_c2_years === null ? null : Number(existing.default_useful_life_c2_years),
+        hasComponent2: existing.has_component2,
+        active: existing.active
+      },
+      patch
+    );
 
     // Blocking rule: can't turn Component 2 off while any asset under this
     // classification (by its CURRENT name — the rename above, if any, hasn't been
@@ -268,7 +307,8 @@ export async function updateSubClassificationById(
       defaultUsefulLifeC2Years: r.default_useful_life_c2_years === null ? null : Number(r.default_useful_life_c2_years),
       hasComponent2: r.has_component2,
       active: r.active,
-      assetsUpdated
+      assetsUpdated,
+      previous
     };
   } catch (err) {
     await client.query("ROLLBACK");
@@ -317,12 +357,14 @@ export async function updateStatusById(db: pg.Pool, id: number, patch: { name?: 
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const { rows: existingRows } = await client.query(`SELECT name, system_managed FROM statuses WHERE id = $1 FOR UPDATE`, [
-      id
-    ]);
+    const { rows: existingRows } = await client.query(
+      `SELECT name, active, system_managed FROM statuses WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
     const existing = existingRows[0];
     if (!existing) throw new MasterError(404, "No status found with that id.");
     if (existing.system_managed) throw new MasterError(409, `"${existing.name}" is a system-managed status and cannot be edited.`);
+    const previous = diffPrevious({ name: existing.name, active: existing.active }, patch);
 
     let assetsUpdated = 0;
     if (patch.name !== undefined && patch.name !== existing.name) {
@@ -350,7 +392,7 @@ export async function updateStatusById(db: pg.Pool, id: number, patch: { name?: 
       values
     );
     await client.query("COMMIT");
-    return { ...rows[0], systemManaged: rows[0].system_managed, assetsUpdated };
+    return { ...rows[0], systemManaged: rows[0].system_managed, assetsUpdated, previous };
   } catch (err) {
     await client.query("ROLLBACK");
     if (isUniqueViolation(err)) throw new MasterError(409, `A status named "${patch.name}" already exists.`);
@@ -444,16 +486,27 @@ export async function updateRoleById(
   db: pg.Pool,
   id: number,
   patch: { name?: string; active?: boolean }
-): Promise<{ id: number; name: string; active: boolean; systemManaged: boolean; usersUpdated: number }> {
+): Promise<{
+  id: number;
+  name: string;
+  active: boolean;
+  systemManaged: boolean;
+  usersUpdated: number;
+  previous: Record<string, unknown>;
+}> {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const { rows: existingRows } = await client.query(`SELECT name, system_managed FROM roles WHERE id = $1 FOR UPDATE`, [id]);
+    const { rows: existingRows } = await client.query(
+      `SELECT name, active, system_managed FROM roles WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
     const existing = existingRows[0];
     if (!existing) throw new MasterError(404, "No role found with that id.");
     if (existing.system_managed) {
       throw new MasterError(409, `"${existing.name}" is a built-in role and cannot be renamed or deactivated.`);
     }
+    const previous = diffPrevious({ name: existing.name, active: existing.active }, patch);
 
     let usersUpdated = 0;
     if (patch.name !== undefined && patch.name !== existing.name) {
@@ -479,7 +532,7 @@ export async function updateRoleById(
     );
     await client.query("COMMIT");
     const r = rows[0];
-    return { id: r.id, name: r.name, active: r.active, systemManaged: r.system_managed, usersUpdated };
+    return { id: r.id, name: r.name, active: r.active, systemManaged: r.system_managed, usersUpdated, previous };
   } catch (err) {
     await client.query("ROLLBACK");
     if (isUniqueViolation(err)) throw new MasterError(409, `A role named "${patch.name}" already exists.`);
@@ -592,6 +645,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
           ...bodyParsed.data,
           assetsUpdated: result.assetsUpdated,
           transfersUpdated: result.transfersUpdated,
+          previous: result.previous,
           source: "single"
         }
       });
@@ -648,7 +702,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "sub_classification_update",
-        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, source: "single" }
+        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {
@@ -697,7 +751,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "status_update",
-        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, source: "single" }
+        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {
@@ -752,7 +806,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "role_update",
-        details: { ...bodyParsed.data, usersUpdated: result.usersUpdated, source: "single" }
+        details: { ...bodyParsed.data, usersUpdated: result.usersUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {

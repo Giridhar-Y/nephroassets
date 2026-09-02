@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import cookie from "@fastify/cookie";
+import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import transfersRoutes from "./transfers.js";
@@ -384,5 +385,104 @@ describe("Activity Log", () => {
   it("rejects a malformed cursor with 400", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity?cursor=not-a-real-cursor" });
     expect(res.statusCode).toBe(400);
+  });
+
+  // GET /api/audit-log/activity/export — permission gating (activityLog:export) is
+  // covered by permissionEnforcement.test.ts's shared registry; these tests cover that
+  // the export actually contains the right rows and columns, sharing the same
+  // buildActivityLogConditions/shapeRow the list endpoint uses.
+  describe("Export to Excel (GET /api/audit-log/activity/export)", () => {
+    async function readSheet(payload: Buffer) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(payload as any);
+      return workbook.worksheets[0]!;
+    }
+
+    it("streams every matching row with the expected columns, headers, and no filters applied", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      expect(res.headers["content-disposition"]).toMatch(/attachment; filename="activity-log-\d{4}-\d{2}-\d{2}\.xlsx"/);
+
+      const sheet = await readSheet(res.rawPayload);
+      const headerRow = sheet.getRow(1).values as unknown[];
+      expect(headerRow.slice(1)).toEqual([
+        "Timestamp (IST)",
+        "Category",
+        "Type / Action",
+        "FAR ID",
+        "Actor",
+        "Reason",
+        "Changed",
+        "Other Details"
+      ]);
+      const dataRow = sheet.getRow(2).values as unknown[];
+      expect(dataRow[2]).toBe("Capitalization");
+      expect(dataRow[3]).toBe("Capitalization Create");
+      expect(dataRow[4]).toBe("ACT-TEST-1");
+      expect(sheet.rowCount).toBe(2);
+    });
+
+    it("the Changed column humanizes a Masters update's old -> new diff, and Other Details carries the rest", async () => {
+      const create = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/centers",
+        payload: { code: "Center-ExportDiff", description: "Old description" }
+      });
+      const { id } = create.json();
+      await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/centers/${id}`,
+        payload: { description: "New description" }
+      });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?category=masters" });
+      const sheet = await readSheet(res.rawPayload);
+      // Newest-first isn't guaranteed by the export (it streams oldest-first for keyset
+      // pagination) — the update is the second Masters row written, so the second data row.
+      const updateRow = sheet.getRow(3).values as unknown[];
+      expect(updateRow[3]).toBe("Center Updated");
+      expect(updateRow[7]).toBe("Description: Old description → New description");
+      expect(updateRow[8]).toMatch(/Source: single/);
+      expect(updateRow[8]).not.toMatch(/Description/); // already in Changed, not repeated here
+    });
+
+    it("the Reason column is populated for a Delete entry and empty for a create", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      await authedInject(app, {
+        method: "DELETE",
+        url: "/api/assets/ACT-TEST-1",
+        payload: { reason: "created by mistake" }
+      });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
+      const sheet = await readSheet(res.rawPayload);
+      const createRow = sheet.getRow(2).values as unknown[];
+      const deleteRow = sheet.getRow(3).values as unknown[];
+      // ExcelJS round-trips a written "" as undefined on read-back (no <v> element for an
+      // empty inline string) — both mean "blank cell" to a reader opening the file.
+      expect(createRow[6]).toBeFalsy();
+      expect(deleteRow[3]).toBe("Capitalization Delete");
+      expect(deleteRow[6]).toBe("created by mistake");
+    });
+
+    it("respects the same category/farId filters as the list endpoint", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-ExportFilter" } });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?category=capitalization" });
+      const sheet = await readSheet(res.rawPayload);
+      expect(sheet.rowCount).toBe(2);
+      expect((sheet.getRow(2).values as unknown[])[2]).toBe("Capitalization");
+    });
+
+    it("an empty result still returns a valid workbook with just the header row", async () => {
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
+      expect(res.statusCode).toBe(200);
+      const sheet = await readSheet(res.rawPayload);
+      expect(sheet.rowCount).toBe(1);
+    });
   });
 });

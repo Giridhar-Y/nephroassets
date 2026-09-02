@@ -77,6 +77,7 @@ const GATED: Record<string, RouteCase[]> = {
     { method: "GET", url: "/api/reports/transfer-depreciation/export" }
   ],
   "activityLog:view": [{ method: "GET", url: "/api/audit-log/activity" }],
+  "activityLog:export": [{ method: "GET", url: "/api/audit-log/activity/export" }],
   "masters:view": [
     { method: "GET", url: "/api/masters/centers" },
     { method: "GET", url: "/api/masters/sub-classifications" },

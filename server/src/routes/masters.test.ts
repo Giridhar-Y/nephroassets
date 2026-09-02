@@ -450,4 +450,99 @@ describe("Masters", () => {
       }
     });
   });
+
+  // Activity Log old -> new diff: each update*ById function's `previous` field (returned
+  // straight through in the PATCH response, and folded into logMasterActivity's details
+  // by the route handler) — see diffPrevious's own comment for why it's keyed to `patch`,
+  // not every column on the row.
+  describe("Activity Log old -> new diff (previous)", () => {
+    it("Center: previous carries only the fields the patch actually changed, skipping a resubmitted no-op value", async () => {
+      const created = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/centers",
+        payload: { code: "Center-Diff", description: "Old description" }
+      });
+      const { id } = created.json();
+
+      const patch = await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/centers/${id}`,
+        // code resubmitted unchanged (no-op) alongside a real description change.
+        payload: { code: "Center-Diff", description: "New description" }
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().previous).toEqual({ description: "Old description" });
+    });
+
+    it("Sub Classification: previous captures a rename and an active toggle together", async () => {
+      const created = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/sub-classifications",
+        payload: { name: "Sub-Diff-Old" }
+      });
+      const { id } = created.json();
+
+      const patch = await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/sub-classifications/${id}`,
+        payload: { name: "Sub-Diff-New", active: false }
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().previous).toEqual({ name: "Sub-Diff-Old", active: true });
+    });
+
+    it("Status: previous carries the old name only, not an untouched field", async () => {
+      const created = await authedInject(app, { method: "POST", url: "/api/masters/statuses", payload: { name: "Status-Diff-Old" } });
+      const { id } = created.json();
+
+      const patch = await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/statuses/${id}`,
+        payload: { name: "Status-Diff-New" }
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().previous).toEqual({ name: "Status-Diff-Old" });
+    });
+
+    it("Role: previous carries the old name, and flows into the Activity Log entry's details.previous", async () => {
+      const created = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/roles",
+        payload: { name: "Role-Diff-Old", grants: [] }
+      });
+      const { id } = created.json();
+
+      const patch = await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/roles/${id}`,
+        payload: { name: "Role-Diff-New" }
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().previous).toEqual({ name: "Role-Diff-Old" });
+
+      const db = await getPool();
+      const { rows } = await db.query(
+        `SELECT details FROM master_activity_log WHERE action = 'role_update' ORDER BY id DESC LIMIT 1`
+      );
+      expect(rows[0].details.previous).toEqual({ name: "Role-Diff-Old" });
+    });
+
+    it("an update that changes nothing relative to the existing row logs an empty previous, not every field", async () => {
+      const created = await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/centers",
+        payload: { code: "Center-NoOp", description: "Same" }
+      });
+      const { id } = created.json();
+
+      // Resubmits the exact current values — a real PATCH request, just not a change.
+      const patch = await authedInject(app, {
+        method: "PATCH",
+        url: `/api/masters/centers/${id}`,
+        payload: { code: "Center-NoOp", description: "Same" }
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json().previous).toEqual({});
+    });
+  });
 });

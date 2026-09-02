@@ -24,7 +24,7 @@ export const PERMISSION_REGISTRY = {
   // be trusted to bulk-transfer without also being trusted to bulk-dispose.
   bulkUpload: ["capitalization", "transfers", "disposals", "merge"],
   reports: ["view", "export"],
-  activityLog: ["view"],
+  activityLog: ["view", "export"],
   masters: ["view", "edit"],
   // FY-structural (AS_AT/FY start-end) and Depreciation Formula (DAYS_FY) collapse into
   // one `edit` action — the code already bundles all four settings endpoints under one
@@ -75,7 +75,7 @@ const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[
     ...grants("disposals", "view", "create"),
     ...grants("bulkUpload", "capitalization", "transfers", "disposals", "merge"),
     ...grants("reports", "view", "export"),
-    ...grants("activityLog", "view"),
+    ...grants("activityLog", "view", "export"),
     ...grants("masters", "view", "edit"),
     ...grants("settings", "view")
   ],
@@ -88,7 +88,7 @@ const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[
     ...grants("disposals", "view", "create", "undo"),
     ...grants("bulkUpload", "capitalization", "transfers", "disposals", "merge"),
     ...grants("reports", "view", "export"),
-    ...grants("activityLog", "view"),
+    ...grants("activityLog", "view", "export"),
     ...grants("masters", "view", "edit"),
     ...grants("settings", "view", "edit"),
     ...grants("admin", "view", "create", "edit", "resetPassword", "managePermissions")

@@ -14,7 +14,7 @@ export const PERMISSION_REGISTRY = {
   disposals: ["view", "create", "undo"],
   bulkUpload: ["capitalization", "transfers", "disposals", "merge"],
   reports: ["view", "export"],
-  activityLog: ["view"],
+  activityLog: ["view", "export"],
   masters: ["view", "edit"],
   settings: ["view", "edit"],
   admin: ["view", "create", "edit", "resetPassword", "managePermissions"]

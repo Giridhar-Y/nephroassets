@@ -366,6 +366,18 @@ export function fetchActivityLog(
   return request(`/api/audit-log/activity?${search}`);
 }
 
+// Same pattern as the Register/Audit Reconciliation's own getExportUrl — the browser
+// downloads it directly via the Content-Disposition header, this just builds the URL.
+// No cursor/limit (the export always covers every matching row, not one page).
+export function getActivityLogExportUrl(params: Pick<FetchActivityLogParams, "farId" | "category" | "dateFrom" | "dateTo"> = {}): string {
+  const search = new URLSearchParams();
+  if (params.farId) search.set("farId", params.farId);
+  if (params.category) search.set("category", params.category);
+  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
+  if (params.dateTo) search.set("dateTo", params.dateTo);
+  return `/api/audit-log/activity/export?${search}`;
+}
+
 // Bulk merge from Register: link one or more existing assets as children of one existing
 // parent in a single request — same validation Edit already applies one-at-a-time.
 export function mergeAssets(

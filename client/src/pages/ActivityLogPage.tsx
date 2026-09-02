@@ -1,8 +1,10 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { fetchActivityLog, type ActivityCategory, type ActivityLogEntry } from "../api/client.js";
+import { fetchActivityLog, getActivityLogExportUrl, type ActivityCategory, type ActivityLogEntry } from "../api/client.js";
 import { formatDateTime } from "../lib/format.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { Badge } from "../components/ui/Badge.js";
+import { ExportButton } from "../components/ui/ExportButton.js";
 
 const PAGE_SIZE = 50;
 
@@ -13,6 +15,17 @@ const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   disposal: "Disposal",
   delete: "Delete",
   masters: "Masters"
+};
+
+// One of each tone Badge offers, so every category reads as visually distinct rather
+// than a flat gray list — not a severity scale (Masters isn't "worse" than Addition).
+const CATEGORY_TONES: Record<ActivityCategory, "info" | "success" | "brand" | "warning" | "danger" | "neutral"> = {
+  capitalization: "info",
+  addition: "success",
+  transfer: "brand",
+  disposal: "warning",
+  delete: "danger",
+  masters: "neutral"
 };
 
 // "additionsC1" -> "Additions C1", "cascadedFromParentFarId" -> "Cascaded From Parent Far
@@ -33,14 +46,37 @@ function formatDetailValue(value: unknown): string {
   return String(value);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Masters update actions (center/sub-classification/status/role) carry a `previous`
+// object alongside the flat entered values — see server/src/routes/masters.ts's
+// diffPrevious. Only the fields the patch actually changed appear there, keyed the same
+// as their flat counterpart, so a field present in `previous` renders as
+// "Field: old → new" instead of just the flat new-value line every other field still
+// gets. `previous` itself, and every field it already covers, are skipped from the flat
+// list below so nothing renders twice.
 function DetailsSummary({ details }: { details: Record<string, unknown> | null }) {
   if (!details || Object.keys(details).length === 0) {
     return <span className="text-gray-400">No details recorded.</span>;
   }
+  const previous = isPlainObject(details.previous) ? details.previous : null;
+  const changedEntries = previous ? Object.entries(previous) : [];
+  const flatEntries = Object.entries(details).filter(([key]) => key !== "previous" && !(previous && key in previous));
+
   return (
-    <ul className="space-y-0.5">
-      {Object.entries(details).map(([key, value]) => (
-        <li key={key}>
+    <ul className="space-y-1">
+      {changedEntries.map(([key, oldValue]) => (
+        <li key={key} className="break-words">
+          <span className="font-medium text-gray-500">{humanizeKey(key)}:</span>{" "}
+          <span className="text-gray-400 line-through">{formatDetailValue(oldValue)}</span>
+          <span className="mx-1 text-gray-400">→</span>
+          <span className="font-semibold text-ink">{formatDetailValue(details[key])}</span>
+        </li>
+      ))}
+      {flatEntries.map(([key, value]) => (
+        <li key={key} className="break-words">
           <span className="font-medium text-gray-500">{humanizeKey(key)}:</span>{" "}
           <span className="text-gray-700">{formatDetailValue(value)}</span>
         </li>
@@ -64,6 +100,10 @@ export function ActivityLogPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Lifts the sticky header row visually above the scrolling content once there's
+  // something to lift above — a shadow, not another border, so it reads as elevation.
+  // Same technique as AssetGrid's own sticky header.
+  const [scrolled, setScrolled] = useState(false);
 
   const [farIdInput, setFarIdInput] = useState("");
   const [farId, setFarId] = useState("");
@@ -132,6 +172,16 @@ export function ActivityLogPage() {
         title="Activity Log"
         subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
           bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
+        actions={
+          <ExportButton
+            url={getActivityLogExportUrl({
+              farId: farId || undefined,
+              category: category || undefined,
+              dateFrom: dateFrom || undefined,
+              dateTo: dateTo || undefined
+            })}
+          />
+        }
       >
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
@@ -212,7 +262,10 @@ export function ActivityLogPage() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+      <div
+        className="min-h-0 flex-1 overflow-auto px-6 py-4"
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+      >
         {loading && items.length === 0 ? (
           <div className="space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -231,13 +284,22 @@ export function ActivityLogPage() {
           </div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-white">
-              <tr className="border-b-2 border-gray-300 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                <th className="py-2 pr-3">Timestamp</th>
-                <th className="py-2 pr-3">Category</th>
-                <th className="py-2 pr-3">FAR ID</th>
-                <th className="py-2 pr-3">Actor</th>
-                <th className="py-2 pr-3" />
+            {/* Sticky is on each <th> individually, not the <thead>/<tr> — position:
+                sticky on a row with no opaque background baked into each cell doesn't
+                reliably stick across browsers. A shadow (not just the border) lifts it
+                above scrolled content once there's something to lift above. */}
+            <thead>
+              <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                {["Timestamp", "Category", "FAR ID", "Actor", ""].map((label) => (
+                  <th
+                    key={label}
+                    className={`sticky top-0 z-10 border-b-2 border-gray-300 bg-white py-2 pr-3 transition-shadow duration-150 ${
+                      scrolled ? "shadow-md" : ""
+                    }`}
+                  >
+                    {label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -246,9 +308,11 @@ export function ActivityLogPage() {
                 const expanded = expandedId === rowKey;
                 return (
                   <Fragment key={rowKey}>
-                    <tr className="border-b border-gray-100 odd:bg-white even:bg-gray-50/60">
+                    <tr className="border-b border-gray-100 odd:bg-white even:bg-gray-50/60 hover:bg-brand-blue/5">
                       <td className="whitespace-nowrap py-2 pr-3 text-gray-600">{formatDateTime(entry.createdAt)}</td>
-                      <td className="py-2 pr-3 text-gray-600">{CATEGORY_LABELS[entry.category]}</td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={CATEGORY_TONES[entry.category]}>{CATEGORY_LABELS[entry.category]}</Badge>
+                      </td>
                       <td className="py-2 pr-3 font-medium text-ink">{entry.farId ?? "—"}</td>
                       <td className="py-2 pr-3 text-gray-600">{entry.actorUsername ?? "Unknown user"}</td>
                       <td className="py-2 pr-3">
