@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { BulkUploadPage } from "./BulkUploadPage.js";
@@ -122,5 +122,161 @@ describe("BulkUploadPage preview: virtualization", () => {
     const ROW_HEIGHT = 28;
     const spacer = document.querySelector('[data-testid="bulk-preview-scroll-spacer"]') as HTMLElement;
     expect(spacer.style.height).toBe(`${totalRows * ROW_HEIGHT}px`);
+  });
+});
+
+// Regression coverage for the fullscreen expand toggle: the inline and expanded views
+// call the exact same render function (renderPreviewTable in BulkUploadPage.tsx) so they
+// can never show different data, but the two are still separate DOM subtrees (unmount/
+// remount, not mounted-but-hidden) — these tests catch a version where that render
+// function silently diverges, or where the portal/listener/scroll-lock isn't cleaned up
+// when leaving the expanded view.
+describe("BulkUploadPage preview: expand to full screen", () => {
+  async function renderSmallPreview() {
+    const rows = [
+      {
+        row: 2,
+        farId: "FAR-EXPAND-1",
+        status: "new" as const,
+        message: undefined,
+        data: { farId: "FAR-EXPAND-1", toLocation: "Center-002", transactionDate: "2024-03-01" }
+      },
+      {
+        row: 3,
+        farId: "FAR-EXPAND-2",
+        status: "error" as const,
+        message: "No asset found.",
+        data: { farId: "FAR-EXPAND-2", toLocation: "Center-003", transactionDate: "2024-03-02" }
+      }
+    ];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ totalRows: 2, summary: { new: 1, update: 0, error: 1 }, rows }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
+        <ToastProvider>
+          <BulkUploadPage />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    const file = new File(["farId,toLocation,transactionDate\n"], "small.csv", { type: "text/csv" });
+    const input = document.querySelector("#bulk-file-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText(/out of 2 rows/)).toBeTruthy());
+    return fetchMock;
+  }
+
+  afterEach(() => {
+    // Belt-and-suspenders: a bug that skips the effect's cleanup would otherwise leak
+    // the lock into the next test instead of failing this one.
+    document.body.style.overflow = "";
+  });
+
+  it("expands into a fullscreen overlay showing the same table, then collapses back", async () => {
+    await renderSmallPreview();
+    // react-virtual never computes a nonzero range in jsdom (no real ResizeObserver — see
+    // the virtualization describe block above), so individual row cells never mount here
+    // either way; the column headers and the virtualizer's own scroll-height output don't
+    // depend on that and are what this asserts stays identical across the toggle.
+    expect(screen.getAllByTitle("toLocation").length).toBeGreaterThan(0);
+    let spacer = document.querySelector('[data-testid="bulk-preview-scroll-spacer"]') as HTMLElement;
+    expect(spacer.style.height).toBe("56px"); // 2 rows * 28px
+    expect(document.body.style.overflow).not.toBe("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /expand table to full screen/i }));
+
+    // Same field columns and the same virtualized height — rendered by the same function,
+    // not a second, potentially-stale copy.
+    expect(screen.getAllByTitle("toLocation").length).toBeGreaterThan(0);
+    spacer = document.querySelector('[data-testid="bulk-preview-scroll-spacer"]') as HTMLElement;
+    expect(spacer.style.height).toBe("56px");
+    expect(document.body.style.overflow).toBe("hidden");
+    // Confirm/Cancel stay reachable without collapsing back first.
+    expect(screen.getByRole("button", { name: /confirm upload/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /exit full screen/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /exit full screen/i }));
+
+    expect(screen.getByRole("button", { name: /expand table to full screen/i })).toBeTruthy();
+    expect(document.body.style.overflow).not.toBe("hidden");
+    expect(screen.getAllByTitle("toLocation").length).toBeGreaterThan(0);
+  });
+
+  it("closes on Escape and releases the body scroll lock", async () => {
+    await renderSmallPreview();
+
+    fireEvent.click(screen.getByRole("button", { name: /expand table to full screen/i }));
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.getByRole("button", { name: /expand table to full screen/i })).toBeTruthy();
+    expect(document.body.style.overflow).not.toBe("hidden");
+  });
+
+  // Confirm Upload moves straight from "preview" to "result" without ever flipping
+  // `expanded` back to false itself — the fullscreen view is meant to carry straight
+  // through into the result step's own error table (one `expanded` flag serves both
+  // steps) rather than snapping back to inline and losing the reviewer's place. This
+  // asserts that handoff, and that the result step's own Collapse control (not just
+  // Escape) actually leaves the overlay from there and releases the body scroll lock —
+  // a real bug hit while building this: an effect keyed only on `expanded` never
+  // re-ran on the step change, so its cleanup (removing the Escape listener, restoring
+  // body.style.overflow) never fired even after the preview portal was long gone. The
+  // fix keys the effect on `step` too.
+  it("carries the fullscreen view from preview straight into the result step, and collapsing there releases the lock", async () => {
+    const fetchMock = await renderSmallPreview();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        totalRows: 2,
+        processed: 1,
+        added: 1,
+        updated: 0,
+        errors: [{ row: 3, farId: "FAR-EXPAND-2", message: "No asset found." }]
+      })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /expand table to full screen/i }));
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm upload/i }));
+
+    await waitFor(() => expect(screen.getByText(/row.*processed successfully/i)).toBeTruthy());
+    // Still expanded — the result step's own error table, not a snap back to inline.
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(screen.getByRole("button", { name: /exit full screen/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /exit full screen/i }));
+
+    expect(document.body.style.overflow).not.toBe("hidden");
+  });
+
+  it("also expands the result step's own error table when reached without ever expanding the preview", async () => {
+    const fetchMock = await renderSmallPreview();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        totalRows: 2,
+        processed: 1,
+        added: 1,
+        updated: 0,
+        errors: [{ row: 3, farId: "FAR-EXPAND-2", message: "No asset found." }]
+      })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm upload/i }));
+    await waitFor(() => expect(screen.getByText(/row.*processed successfully/i)).toBeTruthy());
+    expect(document.body.style.overflow).not.toBe("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /expand table to full screen/i }));
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.body.style.overflow).not.toBe("hidden");
   });
 });

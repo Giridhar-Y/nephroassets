@@ -1,4 +1,5 @@
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -9,7 +10,16 @@ import {
   type BulkPreviewResult,
   type BulkUploadResult
 } from "../api/client.js";
-import { AddCircleIcon, ErrorIcon, ExportIcon, PassIcon, RetryIcon, UploadIcon } from "../lib/icons.js";
+import {
+  AddCircleIcon,
+  CollapseExpandIcon,
+  ErrorIcon,
+  ExpandIcon,
+  ExportIcon,
+  PassIcon,
+  RetryIcon,
+  UploadIcon
+} from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 
@@ -271,6 +281,37 @@ export function BulkUploadPage() {
   const [result, setResult] = useState<BulkUploadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Escape closes full screen, same as AssetGrid's own expand toggle — plus a body
+  // scroll lock so the page behind the fixed overlay can't be scrolled (AssetGrid's
+  // fullscreen doesn't need this since it already fills the page's whole content area;
+  // here it only covers one table, so the rest of the page is still visible and would
+  // otherwise scroll underneath). One `expanded` flag serves both the preview table and
+  // the result step's error table — only one of those steps is ever active at a time, so
+  // there's nothing to disambiguate, and it means staying expanded through Confirm Upload
+  // carries straight over into the result table instead of snapping back to inline.
+  //
+  // Gated on the portal actually being on screen (expanded AND still on a step with a
+  // table), not just `expanded` — Confirm Upload moves preview -> result without ever
+  // flipping `expanded` back to false itself, and this effect only re-runs (running its
+  // cleanup) when a value in its dependency array changes. Keying off `expanded` alone
+  // left a portal gone but the listener/lock stuck forever, since nothing was left to
+  // ever flip `expanded` false again. Keying off `step` too means leaving both steps for
+  // any reason — Confirm, Cancel, "Choose a different file", "Upload Another File" —
+  // releases the lock.
+  useEffect(() => {
+    if (!expanded || (step !== "preview" && step !== "result")) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setExpanded(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [expanded, step]);
 
   const config: UploadConfig = type === "masters" ? MASTER_LIST_CONFIG[masterList] : TYPE_CONFIG[type];
   const example = type === "masters" ? MASTER_EXAMPLE_ROWS[masterList] : EXAMPLE_ROWS[type];
@@ -283,6 +324,7 @@ export function BulkUploadPage() {
     setResult(null);
     setError(null);
     setShowOnlyErrors(false);
+    setExpanded(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -355,6 +397,172 @@ export function BulkUploadPage() {
   const previewGridWidth =
     PREVIEW_ROW_COL_WIDTH + PREVIEW_STATUS_COL_WIDTH + previewFields.length * PREVIEW_FIELD_COL_WIDTH + PREVIEW_MESSAGE_COL_WIDTH;
 
+  // Single source of truth for the preview table — called once for the normal in-card
+  // layout and once (wrapped in the fullscreen portal below) for the expanded view, so
+  // the two can never drift out of sync. Only the container sizing classes differ
+  // between the two: the scroll box grows to fill the fullscreen overlay via flex-1
+  // instead of being capped at max-h-80. previewScrollRef/previewVirtualizer are shared
+  // by both call sites, but only one is ever actually mounted at a time (expanded
+  // replaces the inline table rather than sitting alongside it), so the ref always
+  // points at whichever copy is currently on screen — same unmount/remount approach
+  // AssetGrid's own fullscreen toggle already relies on.
+  function renderPreviewTable(isExpanded: boolean) {
+    if (!preview) return null;
+    return (
+      <div className={isExpanded ? "flex h-full min-h-0 flex-col" : "mt-4"}>
+        <div className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm text-ink">
+            <UploadIcon fontSize={15} className="text-gray-400" />
+            <span className="font-medium">{file?.name}</span>
+            <span className="text-gray-400">{file ? `(${formatFileSize(file.size)})` : ""}</span>
+          </div>
+          <button type="button" className="text-xs font-medium text-gray-500 hover:text-ink" onClick={reset}>
+            Choose a different file
+          </button>
+        </div>
+
+        <p className="mt-4 text-sm text-gray-700">
+          <span className="font-semibold text-blue-700">{preview.summary.new} new</span>,{" "}
+          <span className="font-semibold text-amber-700">
+            {preview.summary.update} update{preview.summary.update === 1 ? "" : "s"}
+          </span>
+          ,{" "}
+          <span className="font-semibold text-red-700">
+            {preview.summary.error} error{preview.summary.error === 1 ? "" : "s"}
+          </span>{" "}
+          out of {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"}.
+        </p>
+        <p className="mt-1 text-xs text-gray-500">
+          Showing all {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"} below — scroll to review every one
+          before confirming.
+        </p>
+        {preview.summary.error > 0 && (
+          <p className="mt-1 text-xs text-gray-500">
+            {canConfirm
+              ? `Rows with errors will be skipped. Confirm Upload will process only the ${
+                  preview.summary.new + preview.summary.update
+                } valid row${preview.summary.new + preview.summary.update === 1 ? "" : "s"}; the ${
+                  preview.summary.error
+                } row${preview.summary.error === 1 ? "" : "s"} with errors will not be applied.`
+              : "Every row has an error — fix the file and choose it again."}
+          </p>
+        )}
+
+        <div className="mt-2 flex items-center justify-between">
+          {preview.summary.error > 0 ? (
+            <label className="flex w-fit items-center gap-1.5 text-xs font-medium text-gray-600">
+              <input
+                type="checkbox"
+                checked={showOnlyErrors}
+                onChange={(e) => setShowOnlyErrors(e.target.checked)}
+                className="rounded border-gray-300 text-accent focus:ring-accent"
+              />
+              Show only rows with errors
+            </label>
+          ) : (
+            <span />
+          )}
+          <button
+            type="button"
+            aria-label={isExpanded ? "Exit full screen" : "Expand table to full screen"}
+            title={isExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+            onClick={() => setExpanded(!isExpanded)}
+            className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:border-accent hover:bg-gray-50 hover:text-accent"
+          >
+            {isExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
+          </button>
+        </div>
+
+        <div
+          ref={previewScrollRef}
+          className={
+            isExpanded
+              ? "mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-gray-200 text-xs"
+              : "mt-3 max-h-80 overflow-auto rounded-md border border-gray-200 text-xs"
+          }
+        >
+          <div
+            className="sticky top-0 z-10 grid bg-gray-50"
+            style={{ gridTemplateColumns: previewGridTemplate, width: previewGridWidth, minWidth: "100%" }}
+          >
+            <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</div>
+            <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</div>
+            {previewFields.map((field) => (
+              <div key={field} className="truncate px-3 py-1.5 text-left font-semibold text-gray-600" title={field}>
+                {field}
+              </div>
+            ))}
+            <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Message</div>
+          </div>
+          <div
+            data-testid="bulk-preview-scroll-spacer"
+            style={{ height: previewVirtualizer.getTotalSize(), width: previewGridWidth, minWidth: "100%", position: "relative" }}
+          >
+            {previewVirtualizer.getVirtualItems().map((virtualRow) => {
+              const r = previewRows[virtualRow.index]!;
+              return (
+                <div
+                  key={r.row}
+                  data-testid="bulk-preview-row"
+                  className="absolute left-0 top-0 grid border-t border-gray-100"
+                  style={{
+                    gridTemplateColumns: previewGridTemplate,
+                    width: previewGridWidth,
+                    minWidth: "100%",
+                    height: virtualRow.size,
+                    transform: `translateY(${virtualRow.start}px)`
+                  }}
+                >
+                  <div className="flex items-center px-3 py-1.5 text-gray-500">{r.row}</div>
+                  <div className="flex items-center px-3 py-1.5">
+                    <PreviewStatusBadge status={r.status} />
+                  </div>
+                  {previewFields.map((field) => {
+                    const value = r.data?.[field] ?? "—";
+                    return (
+                      <div key={field} className="flex items-center truncate px-3 py-1.5 text-gray-700" title={value}>
+                        {value}
+                      </div>
+                    );
+                  })}
+                  <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={r.message}>
+                    {r.message ?? "—"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {error && (
+          <p className="mt-3 flex items-center gap-1.5 text-sm text-red-600">
+            <ErrorIcon fontSize={15} />
+            {error}
+          </p>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+            onClick={reset}
+            disabled={confirming}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={handleConfirm}
+            disabled={!canConfirm || confirming}
+          >
+            {confirming ? "Uploading…" : "Confirm Upload"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const resultErrors = result?.errors ?? [];
   const resultVirtualizer = useVirtualizer({
     count: resultErrors.length,
@@ -362,6 +570,92 @@ export function BulkUploadPage() {
     estimateSize: () => PREVIEW_ROW_HEIGHT,
     overscan: 12
   });
+
+  // Same shared-render-function approach as renderPreviewTable above, and the same
+  // `expanded` flag — the error table is the only part of this step with the same
+  // many-rows-in-a-small-box problem, so the expand button only appears once there's an
+  // error table to expand.
+  function renderResultTable(isExpanded: boolean) {
+    if (!result) return null;
+    return (
+      <div className={isExpanded ? "flex h-full min-h-0 flex-col" : "mt-6"}>
+        <p className="flex items-center gap-1.5 text-sm text-green-700">
+          <PassIcon fontSize={15} />
+          {result.processed} of {result.totalRows} row{result.totalRows === 1 ? "" : "s"} processed successfully.
+        </p>
+        <p className="mt-1 text-sm text-gray-700">
+          <span className="font-semibold text-blue-700">{result.added} added</span>,{" "}
+          <span className="font-semibold text-amber-700">{result.updated} updated</span>
+          {result.errors.length > 0 && (
+            <>
+              , <span className="font-semibold text-red-700">{result.errors.length} skipped</span>
+            </>
+          )}
+          .
+        </p>
+        {result.errors.length > 0 && (
+          <div className={isExpanded ? "mt-3 flex min-h-0 flex-1 flex-col" : "mt-3"}>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-red-700">
+                {result.errors.length} row{result.errors.length === 1 ? "" : "s"} could not be processed:
+              </p>
+              <button
+                type="button"
+                aria-label={isExpanded ? "Exit full screen" : "Expand table to full screen"}
+                title={isExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+                onClick={() => setExpanded(!isExpanded)}
+                className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:border-accent hover:bg-gray-50 hover:text-accent"
+              >
+                {isExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
+              </button>
+            </div>
+            <div
+              ref={resultScrollRef}
+              className={
+                isExpanded
+                  ? "mt-2 min-h-0 flex-1 overflow-auto rounded-md border border-red-100 text-xs"
+                  : "mt-2 max-h-64 overflow-auto rounded-md border border-red-100 text-xs"
+              }
+            >
+              <div className={`sticky top-0 z-10 grid ${RESULT_GRID_COLS} bg-red-50`}>
+                <div className="px-3 py-1.5 text-left font-semibold text-red-700">Row</div>
+                <div className="px-3 py-1.5 text-left font-semibold text-red-700">{config.keyColumnLabel}</div>
+                <div className="px-3 py-1.5 text-left font-semibold text-red-700">Problem</div>
+              </div>
+              <div style={{ height: resultVirtualizer.getTotalSize(), position: "relative" }}>
+                {resultVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const e = resultErrors[virtualRow.index]!;
+                  return (
+                    <div
+                      key={e.row}
+                      data-testid="bulk-result-error-row"
+                      className={`absolute left-0 top-0 grid w-full ${RESULT_GRID_COLS} border-t border-red-100`}
+                      style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <div className="flex items-center px-3 py-1.5 text-gray-600">{e.row}</div>
+                      <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.farId ?? undefined}>
+                        {e.farId ?? "—"}
+                      </div>
+                      <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.message}>
+                        {e.message}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+        <button
+          type="button"
+          className="mt-4 rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
+          onClick={reset}
+        >
+          Upload Another File
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
@@ -459,205 +753,25 @@ export function BulkUploadPage() {
           </>
         )}
 
-        {step === "preview" && preview && (
-          <div className="mt-4">
-            <div className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2">
-              <div className="flex items-center gap-2 text-sm text-ink">
-                <UploadIcon fontSize={15} className="text-gray-400" />
-                <span className="font-medium">{file?.name}</span>
-                <span className="text-gray-400">{file ? `(${formatFileSize(file.size)})` : ""}</span>
-              </div>
-              <button type="button" className="text-xs font-medium text-gray-500 hover:text-ink" onClick={reset}>
-                Choose a different file
-              </button>
-            </div>
+        {step === "preview" && preview && !expanded && renderPreviewTable(false)}
 
-            <p className="mt-4 text-sm text-gray-700">
-              <span className="font-semibold text-blue-700">{preview.summary.new} new</span>,{" "}
-              <span className="font-semibold text-amber-700">
-                {preview.summary.update} update{preview.summary.update === 1 ? "" : "s"}
-              </span>
-              ,{" "}
-              <span className="font-semibold text-red-700">
-                {preview.summary.error} error{preview.summary.error === 1 ? "" : "s"}
-              </span>{" "}
-              out of {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"}.
-            </p>
-            <p className="mt-1 text-xs text-gray-500">
-              Showing all {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"} below — scroll to review every one
-              before confirming.
-            </p>
-            {preview.summary.error > 0 && (
-              <p className="mt-1 text-xs text-gray-500">
-                {canConfirm
-                  ? `Rows with errors will be skipped. Confirm Upload will process only the ${
-                      preview.summary.new + preview.summary.update
-                    } valid row${preview.summary.new + preview.summary.update === 1 ? "" : "s"}; the ${
-                      preview.summary.error
-                    } row${preview.summary.error === 1 ? "" : "s"} with errors will not be applied.`
-                  : "Every row has an error — fix the file and choose it again."}
-              </p>
-            )}
+        {step === "preview" &&
+          preview &&
+          expanded &&
+          createPortal(
+            <div className="fixed inset-0 z-50 flex flex-col bg-white p-6 shadow-lg">{renderPreviewTable(true)}</div>,
+            document.body
+          )}
 
-            {preview.summary.error > 0 && (
-              <label className="mt-2 flex w-fit items-center gap-1.5 text-xs font-medium text-gray-600">
-                <input
-                  type="checkbox"
-                  checked={showOnlyErrors}
-                  onChange={(e) => setShowOnlyErrors(e.target.checked)}
-                  className="rounded border-gray-300 text-accent focus:ring-accent"
-                />
-                Show only rows with errors
-              </label>
-            )}
+        {step === "result" && result && !expanded && renderResultTable(false)}
 
-            <div ref={previewScrollRef} className="mt-3 max-h-80 overflow-auto rounded-md border border-gray-200 text-xs">
-              <div
-                className="sticky top-0 z-10 grid bg-gray-50"
-                style={{ gridTemplateColumns: previewGridTemplate, width: previewGridWidth, minWidth: "100%" }}
-              >
-                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Row</div>
-                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Status</div>
-                {previewFields.map((field) => (
-                  <div key={field} className="truncate px-3 py-1.5 text-left font-semibold text-gray-600" title={field}>
-                    {field}
-                  </div>
-                ))}
-                <div className="px-3 py-1.5 text-left font-semibold text-gray-600">Message</div>
-              </div>
-              <div
-                data-testid="bulk-preview-scroll-spacer"
-                style={{ height: previewVirtualizer.getTotalSize(), width: previewGridWidth, minWidth: "100%", position: "relative" }}
-              >
-                {previewVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const r = previewRows[virtualRow.index]!;
-                  return (
-                    <div
-                      key={r.row}
-                      data-testid="bulk-preview-row"
-                      className="absolute left-0 top-0 grid border-t border-gray-100"
-                      style={{
-                        gridTemplateColumns: previewGridTemplate,
-                        width: previewGridWidth,
-                        minWidth: "100%",
-                        height: virtualRow.size,
-                        transform: `translateY(${virtualRow.start}px)`
-                      }}
-                    >
-                      <div className="flex items-center px-3 py-1.5 text-gray-500">{r.row}</div>
-                      <div className="flex items-center px-3 py-1.5">
-                        <PreviewStatusBadge status={r.status} />
-                      </div>
-                      {previewFields.map((field) => {
-                        const value = r.data?.[field] ?? "—";
-                        return (
-                          <div key={field} className="flex items-center truncate px-3 py-1.5 text-gray-700" title={value}>
-                            {value}
-                          </div>
-                        );
-                      })}
-                      <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={r.message}>
-                        {r.message ?? "—"}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {error && (
-              <p className="mt-3 flex items-center gap-1.5 text-sm text-red-600">
-                <ErrorIcon fontSize={15} />
-                {error}
-              </p>
-            )}
-
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                onClick={reset}
-                disabled={confirming}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={handleConfirm}
-                disabled={!canConfirm || confirming}
-              >
-                {confirming ? "Uploading…" : "Confirm Upload"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "result" && result && (
-          <div className="mt-6">
-            <p className="flex items-center gap-1.5 text-sm text-green-700">
-              <PassIcon fontSize={15} />
-              {result.processed} of {result.totalRows} row{result.totalRows === 1 ? "" : "s"} processed successfully.
-            </p>
-            <p className="mt-1 text-sm text-gray-700">
-              <span className="font-semibold text-blue-700">{result.added} added</span>,{" "}
-              <span className="font-semibold text-amber-700">
-                {result.updated} updated
-              </span>
-              {result.errors.length > 0 && (
-                <>
-                  ,{" "}
-                  <span className="font-semibold text-red-700">
-                    {result.errors.length} skipped
-                  </span>
-                </>
-              )}
-              .
-            </p>
-            {result.errors.length > 0 && (
-              <div className="mt-3">
-                <p className="text-sm font-medium text-red-700">
-                  {result.errors.length} row{result.errors.length === 1 ? "" : "s"} could not be processed:
-                </p>
-                <div ref={resultScrollRef} className="mt-2 max-h-64 overflow-auto rounded-md border border-red-100 text-xs">
-                  <div className={`sticky top-0 z-10 grid ${RESULT_GRID_COLS} bg-red-50`}>
-                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">Row</div>
-                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">{config.keyColumnLabel}</div>
-                    <div className="px-3 py-1.5 text-left font-semibold text-red-700">Problem</div>
-                  </div>
-                  <div style={{ height: resultVirtualizer.getTotalSize(), position: "relative" }}>
-                    {resultVirtualizer.getVirtualItems().map((virtualRow) => {
-                      const e = resultErrors[virtualRow.index]!;
-                      return (
-                        <div
-                          key={e.row}
-                          data-testid="bulk-result-error-row"
-                          className={`absolute left-0 top-0 grid w-full ${RESULT_GRID_COLS} border-t border-red-100`}
-                          style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
-                        >
-                          <div className="flex items-center px-3 py-1.5 text-gray-600">{e.row}</div>
-                          <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.farId ?? undefined}>
-                            {e.farId ?? "—"}
-                          </div>
-                          <div className="flex items-center truncate px-3 py-1.5 text-gray-600" title={e.message}>
-                            {e.message}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-            <button
-              type="button"
-              className="mt-4 rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
-              onClick={reset}
-            >
-              Upload Another File
-            </button>
-          </div>
-        )}
+        {step === "result" &&
+          result &&
+          expanded &&
+          createPortal(
+            <div className="fixed inset-0 z-50 flex flex-col bg-white p-6 shadow-lg">{renderResultTable(true)}</div>,
+            document.body
+          )}
 
         <div className="mt-6 border-t border-gray-100 pt-4">
           <h2 className="text-sm font-semibold text-ink">Expected Columns</h2>
