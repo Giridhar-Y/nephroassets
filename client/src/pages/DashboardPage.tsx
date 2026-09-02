@@ -13,7 +13,7 @@ import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
 import { DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
-import { Badge, StatusBadge } from "../components/ui/Badge.js";
+import { StatusBadge } from "../components/ui/Badge.js";
 import { EXCEPTION_KEYS, EXCEPTION_LABELS, EXCEPTION_TONES } from "../lib/exceptions.js";
 
 // Top 5 by value + one "Other" row summing the rest — the server returns every row (it
@@ -25,24 +25,33 @@ function foldTop5(rows: { label: string; value: number }[]): { label: string; va
   return rest.length > 0 ? [...top, { label: "Other", value: rest.reduce((sum, r) => sum + r.value, 0) }] : top;
 }
 
-function BarPanel({ title, rows }: { title: string; rows: { label: string; value: number }[] }) {
+// `total` is the whole-scope figure this breakdown's values are a share of (e.g. overall
+// Gross Block for the Sub Classification panel) — used only for the "(N%)" next to each
+// value; omit it and the percentage is simply not shown, rather than dividing by a wrong
+// stand-in total.
+function BarPanel({ title, rows, total }: { title: string; rows: { label: string; value: number }[]; total?: number }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
-    <Card className="p-4">
-      <h2 className="text-sm font-semibold text-ink">{title}</h2>
+    <Card className="p-6">
+      <h2 className="font-heading text-sm font-bold text-ink">{title}</h2>
       {rows.length === 0 ? (
-        <p className="mt-2 text-sm text-gray-400">Nothing in scope.</p>
+        <p className="mt-3 text-sm text-gray-400">Nothing in scope.</p>
       ) : (
-        <div className="mt-2 space-y-1.5">
+        <div className="mt-4 space-y-3">
           {rows.map((row) => (
             <div key={row.label}>
               <div className="flex items-baseline justify-between gap-2 text-xs">
                 <span className="truncate text-gray-600">{row.label}</span>
-                <span className="shrink-0 font-medium tabular-nums text-ink">{formatCurrency(row.value)}</span>
+                <span className="shrink-0 tabular-nums">
+                  <span className="font-semibold text-ink">{formatCurrency(row.value)}</span>
+                  {!!total && (
+                    <span className="ml-1.5 text-gray-400">({Math.round((row.value / total) * 100)}%)</span>
+                  )}
+                </span>
               </div>
-              <div className="mt-0.5 h-1.5 rounded-full bg-gray-100">
+              <div className="mt-1 h-2 rounded-full bg-gray-100">
                 <div
-                  className="h-1.5 rounded-full bg-brand-blue"
+                  className="h-2 rounded-full bg-brand-blue"
                   style={{ width: `${Math.max(2, (row.value / max) * 100)}%` }}
                 />
               </div>
@@ -56,9 +65,11 @@ function BarPanel({ title, rows }: { title: string; rows: { label: string; value
 
 function KpiTile({ label, value, children }: { label: string; value: string; children?: ReactNode }) {
   return (
-    <Card className="px-4 py-3">
+    <Card className="border-transparent bg-gray-50 px-6 py-5">
       <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
-      <div className="mt-0.5 text-xl font-semibold text-ink">{value}</div>
+      <div className="mt-1 truncate font-heading text-xl font-extrabold text-ink" title={value}>
+        {value}
+      </div>
       {children}
     </Card>
   );
@@ -119,6 +130,16 @@ function DivergingBar({ gains, losses }: { gains: number; losses: number }) {
     </div>
   );
 }
+
+// Tinted background at each severity's own tone (reusing Badge's TONE_CLASSES color
+// values, not a small badge chip sitting on a white card) — the count is the dominant
+// visual element, colored and large, the label a smaller line underneath.
+const EXCEPTION_TILE_TONE_CLASSES: Record<"danger" | "warning" | "info" | "neutral", { bg: string; text: string }> = {
+  danger: { bg: "bg-accent-light", text: "text-accent-hover" },
+  warning: { bg: "bg-amber-100", text: "text-amber-800" },
+  info: { bg: "bg-brand-blue/15", text: "text-brand-deepBlue" },
+  neutral: { bg: "bg-gray-100", text: "text-gray-700" }
+};
 
 function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
   if (statusCounts.length === 0) return null;
@@ -216,9 +237,9 @@ export function DashboardPage() {
         </div>
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+      <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
         {error && (
-          <p className="mb-3 flex items-center gap-1.5 text-sm text-red-600">
+          <p className="mb-4 flex items-center gap-1.5 text-sm text-red-600">
             <ErrorIcon fontSize={15} />
             {error}{" "}
             <button className="flex items-center gap-1 font-semibold underline" onClick={load}>
@@ -229,75 +250,84 @@ export function DashboardPage() {
         )}
 
         {loading && !summary ? (
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-4 gap-5">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-100" />
+              <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-100" />
             ))}
           </div>
         ) : summary ? (
-          <div className="space-y-3">
-            <div className="grid grid-cols-4 gap-3">
+          <div className="space-y-6">
+            <div className="grid grid-cols-4 gap-5">
               <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} />
               <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} />
-              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)} />
+              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)}>
+                {/* A real trend, not a fabricated delta — the same 6-quarter series the
+                    Net Block Trend card below charts in full, reused here as a compact
+                    "which way is this moving" cue right under the headline figure. */}
+                <div className="mt-2 h-6 text-brand-blue">
+                  <LineChart points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))} height={24} />
+                </div>
+              </KpiTile>
               <KpiTile label="Asset Count" value={String(summary.totals.assetCount)}>
                 <StatusMix statusCounts={summary.statusCounts} />
               </KpiTile>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-5">
               <BarPanel
                 title="By Sub Classification (Gross Block)"
+                total={summary.totals.grossBlock}
                 rows={foldTop5(
                   summary.subClassificationBreakdown.map((r) => ({ label: r.subClassification, value: r.grossBlock }))
                 )}
               />
               <BarPanel
                 title="By Location (Net Block)"
+                total={summary.totals.nbv}
                 rows={foldTop5(summary.locationBreakdown.map((r) => ({ label: r.location, value: r.nbv })))}
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              <Card className="p-4">
-                <h2 className="text-sm font-semibold text-ink">Depreciation Run-Rate (FYTD)</h2>
-                <div className="mt-1 text-xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
-                <div className="mt-2 text-brand-blue">
+            <div className="grid grid-cols-3 gap-5">
+              <Card className="p-6">
+                <h2 className="font-heading text-sm font-bold text-ink">Depreciation Run-Rate (FYTD)</h2>
+                <div className="mt-1 text-2xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
+                <div className="mt-3 text-brand-blue">
                   <LineChart
                     points={[
                       { label: "FY Start", value: 0 },
                       { label: "Now", value: summary.depreciationFytd }
                     ]}
-                    height={20}
+                    height={24}
                   />
                 </div>
               </Card>
 
-              <Card className="p-4">
-                <h2 className="text-sm font-semibold text-ink">Disposal P&L (FYTD)</h2>
-                <div className="mt-2 flex justify-between text-[11px] text-gray-500">
+              <Card className="p-6">
+                <h2 className="font-heading text-sm font-bold text-ink">Disposal P&L (FYTD)</h2>
+                <div className="mt-3 flex justify-between text-xs text-gray-500">
                   <span>Losses {formatCurrency(summary.disposalPL.losses)}</span>
                   <span>Gains {formatCurrency(summary.disposalPL.gains)}</span>
                 </div>
                 <DivergingBar gains={summary.disposalPL.gains} losses={summary.disposalPL.losses} />
-                <div className="mt-2 flex items-baseline justify-between">
-                  <span className="text-[11px] text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
-                  <span className="text-sm font-semibold text-ink">
+                <div className="mt-3 flex items-baseline justify-between">
+                  <span className="text-xs text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
+                  <span className="text-base font-semibold text-ink">
                     Net {formatCurrency(summary.disposalPL.gains + summary.disposalPL.losses)}
                   </span>
                 </div>
               </Card>
 
-              <Card className="p-4">
-                <h2 className="text-sm font-semibold text-ink">Net Block Trend</h2>
-                <div className="mt-2 text-brand-blue">
+              <Card className="p-6">
+                <h2 className="font-heading text-sm font-bold text-ink">Net Block Trend</h2>
+                <div className="mt-3 text-brand-blue">
                   <LineChart
                     points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
-                    height={36}
+                    height={44}
                     showDots
                   />
                 </div>
-                <div className="mt-1 flex justify-between text-[9px] text-gray-400">
+                <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
                   {summary.nbvTrend.map((t) => (
                     <span key={t.asAt}>{t.asAt.slice(5, 7)}/{t.asAt.slice(2, 4)}</span>
                   ))}
@@ -305,13 +335,16 @@ export function DashboardPage() {
               </Card>
             </div>
 
-            <div className="grid grid-cols-5 gap-3">
+            <div className="grid grid-cols-5 gap-5">
               {EXCEPTION_KEYS.map((key) => {
                 const category = summary.exceptions[key];
+                const toneClasses = EXCEPTION_TILE_TONE_CLASSES[EXCEPTION_TONES[key]];
                 const tileContent = (
                   <>
-                    <Badge tone={EXCEPTION_TONES[key]}>{category.count}</Badge>
-                    <div className="mt-1.5 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
+                    <div className={`font-heading text-3xl font-extrabold ${category.count > 0 ? toneClasses.text : "text-gray-400"}`}>
+                      {category.count}
+                    </div>
+                    <div className="mt-1 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
                   </>
                 );
                 // A real anchor (not a programmatic navigation) opened in a new tab —
@@ -329,12 +362,12 @@ export function DashboardPage() {
                     rel="noopener noreferrer"
                     aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
                     title="Open in Register (new tab)"
-                    className="rounded-xl border border-gray-200 bg-white p-3 text-left shadow-sm transition-colors hover:border-accent"
+                    className={`rounded-xl p-5 text-left shadow-sm transition-transform hover:-translate-y-0.5 ${toneClasses.bg}`}
                   >
                     {tileContent}
                   </Link>
                 ) : (
-                  <div key={key} className="rounded-xl border border-gray-200 bg-white p-3 text-left opacity-50 shadow-sm">
+                  <div key={key} className="rounded-xl bg-gray-50 p-5 text-left">
                     {tileContent}
                   </div>
                 );
