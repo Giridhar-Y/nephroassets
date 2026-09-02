@@ -1043,25 +1043,53 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
   const totalsPromise = db.query<
     {
       asset_count: string;
+      qty_total: string;
       gross_block: string;
+      opening_gross_block: string;
+      additions_fytd: string;
       closing_acc_dep: string;
       nbv: string;
       dep_fytd: string;
       disposal_count: string;
       gains: string;
       losses: string;
+      total_deletions_fytd: string;
+      sale_proceeds_fytd: string;
+      disposal_count_all_time: string;
+      gains_all_time: string;
+      losses_all_time: string;
     } & Record<string, string>
   >(
     `${totalsBase.cteSql}
      SELECT
        COUNT(*) AS asset_count,
+       COALESCE(SUM(qty), 0) AS qty_total,
        COALESCE(SUM((c1).gross_block + (c2).gross_block), 0) AS gross_block,
+       -- Opening Gross Block / Additions Gross Block: fixed FY-Start snapshot and the
+       -- as-of-AS_AT addition tranche the calc engine already computes per component (see
+       -- far_calc_component's own opening_gross_block/additions_gross_block comment) —
+       -- summed the same way every other C1+C2 total on this page already is, not a new
+       -- read.
+       COALESCE(SUM((c1).opening_gross_block + (c2).opening_gross_block), 0) AS opening_gross_block,
+       COALESCE(SUM((c1).additions_gross_block + (c2).additions_gross_block), 0) AS additions_fytd,
        COALESCE(SUM((c1).closing_acc_dep + (c2).closing_acc_dep), 0) AS closing_acc_dep,
        COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv,
        COALESCE(SUM((c1).period_depreciation + (c2).period_depreciation), 0) AS dep_fytd,
        COUNT(*) FILTER (WHERE date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date) AS disposal_count,
        COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss > 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS gains,
        COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS losses,
+       -- Disposal Inputs (raw deletions/sale_value columns, same SQL the Register export's
+       -- own totals row sums them with — assetsExport.ts's SQL_SUM_EXPRESSIONS), FYTD-scoped
+       -- to match gains/losses above rather than the export's own all-time total — see
+       -- gains_all_time/losses_all_time below for the export-reconciling all-time figure.
+       COALESCE(SUM(deletions_c1 + deletions_c2) FILTER (WHERE date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS total_deletions_fytd,
+       COALESCE(SUM(sale_value) FILTER (WHERE date_of_disposal BETWEEN $${fyStartIdx}::date AND $${asAtIdx}::date), 0) AS sale_proceeds_fytd,
+       -- Since-Inception disposal P&L — every disposal effective as of AS_AT, not just this
+       -- FY's. This is what the Register export's own (unscoped) Disposal P&L columns
+       -- actually reconcile against; FYTD above answers "what happened this year" instead.
+       COUNT(*) FILTER (WHERE date_of_disposal <= $${asAtIdx}::date) AS disposal_count_all_time,
+       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss > 0 AND date_of_disposal <= $${asAtIdx}::date), 0) AS gains_all_time,
+       COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal <= $${asAtIdx}::date), 0) AS losses_all_time,
        ${exceptionCountColumns}
      FROM calc`,
     totalsBase.params
@@ -1119,9 +1147,12 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     asAt: fy.asAt,
     totals: {
       grossBlock: Number(t.gross_block),
+      openingGrossBlock: Number(t.opening_gross_block),
+      additionsFytd: Number(t.additions_fytd),
       closingAccDep: Number(t.closing_acc_dep),
       nbv: Number(t.nbv),
-      assetCount: Number(t.asset_count)
+      assetCount: Number(t.asset_count),
+      qtyTotal: Number(t.qty_total)
     },
     statusCounts: statusRows.rows.map((r) => ({ status: r.status, count: Number(r.count) })),
     subClassificationBreakdown: subClassRows.rows.map((r) => ({
@@ -1133,7 +1164,16 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     disposalPL: {
       gains: Number(t.gains),
       losses: Number(t.losses),
-      disposalCount: Number(t.disposal_count)
+      disposalCount: Number(t.disposal_count),
+      totalDeletions: Number(t.total_deletions_fytd),
+      saleProceeds: Number(t.sale_proceeds_fytd),
+      // Since-inception (all-time as of AS_AT) — what the Register export's own Disposal
+      // P&L columns reconcile against, shown alongside FYTD rather than instead of it.
+      allTime: {
+        gains: Number(t.gains_all_time),
+        losses: Number(t.losses_all_time),
+        disposalCount: Number(t.disposal_count_all_time)
+      }
     },
     nbvTrend,
     // Counts only — the sample rows this used to carry are gone: a tile's drill-through

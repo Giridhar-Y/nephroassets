@@ -1142,6 +1142,63 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
       acc_dep_c1_opening: 8000,
       date_of_disposal: null,
       location: "Dash-Center-A"
+    },
+    // qty: 2 (not 1, like the other two) so assetCount (3 rows) and qtyTotal (SUM(qty) =
+    // 4) are provably different metrics, not coincidentally equal — see the dashboard's
+    // own Asset Count tile, which shows both. A mid-year addition (after FY Start, before
+    // AS_AT) gives openingGrossBlock/additionsFytd a real, non-zero split to assert
+    // against too, rather than every fixture having zero additions.
+    {
+      far_id: "DASH-TOTALS-3",
+      sub_classification: "Dashboard-Test-Totals",
+      asset_description: "Totals fixture 3 (mid-year addition)",
+      serial_no: "DT3",
+      qty: 2,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 50000,
+      additions_c1: 30000,
+      date_of_addition: "2026-06-01",
+      deletions_c1: 0,
+      acc_dep_c1_opening: 5000,
+      date_of_disposal: null,
+      location: "Dash-Center-A"
+    }
+  ];
+
+  // FYTD vs since-inception disposal P&L reconciliation: one disposal inside this FY
+  // (FY_START..AS_AT), one disposed in a PRIOR FY — both still "disposal-effective" as of
+  // AS_AT (computeAsset/far_calc_component gate on date_of_disposal <= AS_AT, not FY
+  // Start), so the FYTD figures must exclude the prior-FY one while the all-time figures
+  // include both. This is exactly the export-reconciliation gap flagged against a real
+  // Register export: the export's own Disposal P&L columns are all-time, not FYTD.
+  const DISPOSAL_SCOPE_FIXTURES = [
+    {
+      far_id: "DASH-DISP-INFY",
+      sub_classification: "Dashboard-Test-DisposalScope",
+      asset_description: "In-FY disposal fixture",
+      serial_no: "DDI",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 100000,
+      deletions_c1: 100000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2026-06-01", // within FY_START..AS_AT
+      sale_value: 120000,
+      location: "Dash-Center-A"
+    },
+    {
+      far_id: "DASH-DISP-PRIORFY",
+      sub_classification: "Dashboard-Test-DisposalScope",
+      asset_description: "Prior-FY disposal fixture",
+      serial_no: "DDP",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-01-01", // before FY_START — a prior financial year
+      sale_value: 40000,
+      location: "Dash-Center-A"
     }
   ];
 
@@ -1155,6 +1212,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     await db.query(`INSERT INTO centers (code) VALUES ('Dash-Center-A'), ('Dash-Center-B') ON CONFLICT (LOWER(code)) DO NOTHING`);
 
     for (const row of TOTALS_FIXTURES) await insertAsset(row);
+    for (const row of DISPOSAL_SCOPE_FIXTURES) await insertAsset(row);
 
     // Center scoping: one asset at each of two centers, its own sub-classification so it
     // doesn't bleed into the totals test above.
@@ -1308,11 +1366,17 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     let expectedGrossBlock = 0;
     let expectedClosingAccDep = 0;
     let expectedNbv = 0;
+    let expectedOpeningGrossBlock = 0;
+    let expectedAdditionsFytd = 0;
+    let expectedQtyTotal = 0;
     for (const row of TOTALS_FIXTURES) {
       const result = computeAsset(mapAssetRow({ ...BASE_ASSET, ...row } as AssetRow), fy, []);
       expectedGrossBlock += result.c1.grossBlock + result.c2.grossBlock;
       expectedClosingAccDep += result.c1.closingAccDep + result.c2.closingAccDep;
       expectedNbv += result.c1.nbv + result.c2.nbv;
+      expectedOpeningGrossBlock += result.c1.openingGrossBlock + result.c2.openingGrossBlock;
+      expectedAdditionsFytd += result.c1.additionsGrossBlock + result.c2.additionsGrossBlock;
+      expectedQtyTotal += row.qty;
     }
 
     const res = await authedInject(app, {
@@ -1321,10 +1385,60 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.totals.assetCount).toBe(2);
+    expect(body.totals.assetCount).toBe(3);
     expect(body.totals.grossBlock).toBeCloseTo(expectedGrossBlock, 2);
     expect(body.totals.closingAccDep).toBeCloseTo(expectedClosingAccDep, 2);
     expect(body.totals.nbv).toBeCloseTo(expectedNbv, 2);
+    // qtyTotal (4: 1+1+2) provably differs from assetCount (3 rows) — the two metrics
+    // the dashboard's Asset Count tile shows side by side, per its own comment.
+    expect(body.totals.qtyTotal).toBe(4);
+    expect(expectedQtyTotal).toBe(4);
+    expect(body.totals.openingGrossBlock).toBeCloseTo(expectedOpeningGrossBlock, 2);
+    expect(body.totals.additionsFytd).toBeCloseTo(expectedAdditionsFytd, 2);
+    expect(expectedAdditionsFytd).toBeGreaterThan(0); // proves the mid-year-addition fixture actually exercised this path
+  });
+
+  it("disposal P&L: FYTD excludes a prior-FY disposal that since-inception (allTime) still includes", async () => {
+    const inFyFixture = DISPOSAL_SCOPE_FIXTURES[0]!;
+    const priorFyFixture = DISPOSAL_SCOPE_FIXTURES[1]!;
+    const inFy = computeAsset(mapAssetRow({ ...BASE_ASSET, ...inFyFixture } as AssetRow), fy, []);
+    const priorFy = computeAsset(mapAssetRow({ ...BASE_ASSET, ...priorFyFixture } as AssetRow), fy, []);
+    // Ground truth mirrors assetColumnFilters.ts's TOTAL_WDV_AND_PROFIT_LOSS_SQL: one
+    // combined profit_loss per asset (sale_value minus the SUM of both components' WDV),
+    // not each component's own profitLossOnDisposal summed — that per-component field
+    // independently subtracts the asset's full sale_value from each side, which would
+    // double-count it here. This is exactly what disposalPL.gains/losses filter on.
+    const inFyPL = inFyFixture.sale_value - (inFy.c1.wdvAtDisposal! + inFy.c2.wdvAtDisposal!);
+    const priorFyPL = priorFyFixture.sale_value - (priorFy.c1.wdvAtDisposal! + priorFy.c2.wdvAtDisposal!);
+
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-DisposalScope" })}`
+    });
+    expect(res.statusCode).toBe(200);
+    const { disposalPL } = res.json();
+
+    // FYTD: only the in-FY disposal.
+    expect(disposalPL.disposalCount).toBe(1);
+    expect(disposalPL.totalDeletions).toBeCloseTo(100000, 2);
+    expect(disposalPL.saleProceeds).toBeCloseTo(120000, 2);
+    if (inFyPL >= 0) {
+      expect(disposalPL.gains).toBeCloseTo(inFyPL, 2);
+      expect(disposalPL.losses).toBe(0);
+    } else {
+      expect(disposalPL.losses).toBeCloseTo(inFyPL, 2);
+      expect(disposalPL.gains).toBe(0);
+    }
+
+    // Since inception (allTime): both disposals, including the prior-FY one.
+    expect(disposalPL.allTime.disposalCount).toBe(2);
+    const expectedAllTimeGains = (inFyPL > 0 ? inFyPL : 0) + (priorFyPL > 0 ? priorFyPL : 0);
+    const expectedAllTimeLosses = (inFyPL < 0 ? inFyPL : 0) + (priorFyPL < 0 ? priorFyPL : 0);
+    expect(disposalPL.allTime.gains).toBeCloseTo(expectedAllTimeGains, 2);
+    expect(disposalPL.allTime.losses).toBeCloseTo(expectedAllTimeLosses, 2);
+    // The prior-FY disposal is the entire reason allTime and FYTD diverge here — assert
+    // that split is real, not a fixture that happened to net to the same number.
+    expect(disposalPL.allTime.disposalCount).not.toBe(disposalPL.disposalCount);
   });
 
   it("center scoping narrows totals and the location breakdown to the user's own centers", async () => {

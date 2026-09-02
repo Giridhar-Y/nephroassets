@@ -625,9 +625,12 @@ export interface DashboardSummary {
   asAt: string;
   totals: {
     grossBlock: number;
+    openingGrossBlock: number;
+    additionsFytd: number;
     closingAccDep: number;
     nbv: number;
     assetCount: number;
+    qtyTotal: number;
   };
   statusCounts: DashboardStatusCount[];
   subClassificationBreakdown: DashboardSubClassificationBreakdown[];
@@ -637,6 +640,15 @@ export interface DashboardSummary {
     gains: number;
     losses: number;
     disposalCount: number;
+    totalDeletions: number;
+    saleProceeds: number;
+    // Since-inception (all-time as of asAt) — what the Register export's own unscoped
+    // Disposal P&L columns reconcile against; the fields above stay FYTD.
+    allTime: {
+      gains: number;
+      losses: number;
+      disposalCount: number;
+    };
   };
   nbvTrend: DashboardNbvTrendPoint[];
   // Counts only — a tile's drill-through opens Register itself

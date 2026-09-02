@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  fetchCenters,
   fetchDashboardSummary,
-  fetchSubClassifications,
   type DashboardNbvTrendPoint,
   type DashboardStatusCount,
   type DashboardSummary
@@ -15,6 +13,11 @@ import { PageHeader } from "../components/ui/PageHeader.js";
 import { Card } from "../components/ui/Card.js";
 import { StatusBadge } from "../components/ui/Badge.js";
 import { EXCEPTION_KEYS, EXCEPTION_LABELS, EXCEPTION_TONES } from "../lib/exceptions.js";
+
+// Every card on this page shares the same hover-lift the exception tiles already had
+// (translate up 2px + a slightly deeper shadow) — a small, consistent "alive" touch
+// rather than a per-section one-off.
+const CARD_HOVER = "transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md";
 
 // Top 5 by value + one "Other" row summing the rest — the server returns every row (it
 // doesn't know how many the client wants to show), this is purely a display fold.
@@ -32,7 +35,7 @@ function foldTop5(rows: { label: string; value: number }[]): { label: string; va
 function BarPanel({ title, rows, total }: { title: string; rows: { label: string; value: number }[]; total?: number }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
-    <Card className="p-6">
+    <Card className={`p-6 ${CARD_HOVER}`}>
       <h2 className="font-heading text-sm font-bold text-ink">{title}</h2>
       {rows.length === 0 ? (
         <p className="mt-3 text-sm text-gray-400">Nothing in scope.</p>
@@ -63,15 +66,71 @@ function BarPanel({ title, rows, total }: { title: string; rows: { label: string
   );
 }
 
-function KpiTile({ label, value, children }: { label: string; value: string; children?: ReactNode }) {
+// Cost-side (Gross Block) / depreciation-side (Acc Dep) / net (Net Block, the headline
+// figure) / count (Asset Count, not a financial "side" at all) — a tint + border per
+// grouping instead of four identical gray tiles, using only tokens already in
+// tailwind.config.js's brand palette (brand.rose was defined but unused anywhere else in
+// the app; brand.teal/brand.blue are already this page's own chart colors). "net" also
+// gets a bigger value and a soft gradient — the one figure a controller scans for first.
+const KPI_TONE_CLASSES: Record<"cost" | "depreciation" | "net" | "count", string> = {
+  cost: "border-brand-blue/20 bg-brand-blue/5",
+  depreciation: "border-brand-rose/30 bg-brand-rose/10",
+  net: "border-brand-teal/30 bg-gradient-to-br from-brand-teal/10 via-white to-white",
+  count: "border-transparent bg-gray-50"
+};
+
+function KpiTile({
+  label,
+  value,
+  tone = "count",
+  size = "normal",
+  children
+}: {
+  label: string;
+  value: string;
+  tone?: "cost" | "depreciation" | "net" | "count";
+  size?: "normal" | "lg";
+  children?: ReactNode;
+}) {
   return (
-    <Card className="border-transparent bg-gray-50 px-6 py-5">
+    <Card className={`px-6 py-5 ${KPI_TONE_CLASSES[tone]} ${CARD_HOVER}`}>
       <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
-      <div className="mt-1 truncate font-heading text-xl font-extrabold text-ink" title={value}>
+      <div
+        className={`mt-1 truncate font-heading font-extrabold text-ink ${size === "lg" ? "text-3xl" : "text-xl"}`}
+        title={value}
+      >
         {value}
       </div>
       {children}
     </Card>
+  );
+}
+
+// Opening Gross Block (fixed FY-Start snapshot) vs Additions FYTD, as a two-segment bar —
+// the same "bar with a value/percent" visual language BarPanel already uses elsewhere on
+// this page, not a new widget. An inline mini-bar rather than a plain "Opening X +
+// Additions Y" text line, per the same "make it a small real interaction, not just more
+// static text" brief the Disposal P&L scope toggle below follows.
+function OpeningAdditionsBar({ opening, additions }: { opening: number; additions: number }) {
+  const total = opening + additions;
+  if (total <= 0) return null;
+  const openingPct = (opening / total) * 100;
+  return (
+    <div className="mt-3">
+      <div className="flex h-2 w-full overflow-hidden rounded-full bg-gray-100">
+        <div className="h-2 bg-brand-blue" style={{ width: `${openingPct}%` }} />
+        <div className="h-2 bg-brand-teal" style={{ width: `${100 - openingPct}%` }} />
+      </div>
+      <div className="mt-1.5 flex flex-wrap justify-between gap-x-2 text-[10px] font-medium text-gray-500">
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-blue" />
+          Opening {formatCurrency(opening)}
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-teal" />+Additions {formatCurrency(additions)} FYTD
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -131,15 +190,30 @@ function DivergingBar({ gains, losses }: { gains: number; losses: number }) {
   );
 }
 
-// Tinted background at each severity's own tone (reusing Badge's TONE_CLASSES color
-// values, not a small badge chip sitting on a white card) — the count is the dominant
-// visual element, colored and large, the label a smaller line underneath.
-const EXCEPTION_TILE_TONE_CLASSES: Record<"danger" | "warning" | "info" | "neutral", { bg: string; text: string }> = {
-  danger: { bg: "bg-accent-light", text: "text-accent-hover" },
-  warning: { bg: "bg-amber-100", text: "text-amber-800" },
-  info: { bg: "bg-brand-blue/15", text: "text-brand-deepBlue" },
-  neutral: { bg: "bg-gray-100", text: "text-gray-700" }
-};
+type DisposalScope = "fytd" | "allTime";
+
+// A real toggle, not a second static card — FYTD and Since Inception are both legitimate
+// scopes (finance needs "what happened this year"; a Register export total reconciles
+// against Since Inception instead), so this lets either be the one currently shown
+// without needing both spelled out permanently side by side.
+function DisposalScopeToggle({ scope, onChange }: { scope: DisposalScope; onChange: (scope: DisposalScope) => void }) {
+  return (
+    <div className="inline-flex rounded-md border border-gray-200 p-0.5 text-[10px] font-semibold">
+      {(["fytd", "allTime"] as const).map((s) => (
+        <button
+          key={s}
+          type="button"
+          onClick={() => onChange(s)}
+          className={`rounded px-2 py-0.5 transition-colors ${
+            scope === s ? "bg-ink text-white" : "text-gray-500 hover:bg-gray-50"
+          }`}
+        >
+          {s === "fytd" ? "FYTD" : "Since Inception"}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // A real "vs last quarter-end" comparison from the trend endpoint's own last two points
 // — not a sparkline. A previous attempt reused LineChart here, but LineChart's zero-based
@@ -180,87 +254,59 @@ function StatusMix({ statusCounts }: { statusCounts: DashboardStatusCount[] }) {
   );
 }
 
+// Tinted background at each severity's own tone (reusing Badge's TONE_CLASSES color
+// values, not a small badge chip sitting on a white card) — the count is the dominant
+// visual element, colored and large, the label a smaller line underneath.
+const EXCEPTION_TILE_TONE_CLASSES: Record<"danger" | "warning" | "info" | "neutral", { bg: string; text: string }> = {
+  danger: { bg: "bg-accent-light", text: "text-accent-hover" },
+  warning: { bg: "bg-amber-100", text: "text-amber-800" },
+  info: { bg: "bg-brand-blue/15", text: "text-brand-deepBlue" },
+  neutral: { bg: "bg-gray-100", text: "text-gray-700" }
+};
+
 export function DashboardPage() {
   const { settings } = useSettings();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Local, unpersisted filters — deliberately not FiltersContext (that's Register's own
-  // persisted filter state; this page's filters are its own, simpler, transient picks).
-  const [center, setCenter] = useState("");
-  const [subClassification, setSubClassification] = useState("");
-  const [centers, setCenters] = useState<string[]>([]);
-  const [subClassifications, setSubClassifications] = useState<string[]>([]);
-
-  useEffect(() => {
-    fetchCenters().then(setCenters).catch(() => {});
-    fetchSubClassifications().then((rows) => setSubClassifications(rows.map((r) => r.name))).catch(() => {});
-  }, []);
+  const [disposalScope, setDisposalScope] = useState<DisposalScope>("fytd");
+  // Entrance fade/slide-in, once — a plain two-state CSS transition (no keyframes, no
+  // animation library) rather than a per-tile stagger, restrained on purpose: this is a
+  // screen finance scans for numbers, not a marketing page.
+  const [mounted, setMounted] = useState(false);
 
   const settingsKey = fySettingsKey(settings);
 
+  // Fixed "whole register as of today" view — no Center/Sub Classification pickers.
+  // Backend filter support (dashboardSummaryQuerySchema/DashboardFilters) stays in place
+  // for Register's own use; this page simply never exercises it.
   const load = useCallback(() => {
     if (!settings) return;
     setLoading(true);
     setError(null);
-    fetchDashboardSummary(settings.asAt, {
-      center: center || undefined,
-      subClassification: subClassification || undefined
-    })
+    fetchDashboardSummary(settings.asAt)
       .then(setSummary)
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the dashboard."))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings?.asAt, settingsKey, center, subClassification]);
+  }, [settings?.asAt, settingsKey]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
+  useEffect(() => {
+    if (!summary || mounted) return;
+    const id = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(id);
+  }, [summary, mounted]);
+
+  const disposalPL = summary ? (disposalScope === "fytd" ? summary.disposalPL : summary.disposalPL.allTime) : null;
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
-      <PageHeader icon={DashboardIcon} title="Finance FAR Dashboard" subtitle="A single-screen overview of the Fixed Asset Register.">
-        <div className="mt-3 flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="dash-center" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
-              Center
-            </label>
-            <select
-              id="dash-center"
-              className="w-48 rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-              value={center}
-              onChange={(e) => setCenter(e.target.value)}
-            >
-              <option value="">All Centers</option>
-              {centers.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="dash-subclass" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
-              Sub Classification
-            </label>
-            <select
-              id="dash-subclass"
-              className="w-56 rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-              value={subClassification}
-              onChange={(e) => setSubClassification(e.target.value)}
-            >
-              <option value="">All Sub Classifications</option>
-              {subClassifications.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </PageHeader>
+      <PageHeader icon={DashboardIcon} title="Finance FAR Dashboard" subtitle="A single-screen overview of the Fixed Asset Register." />
 
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
         {error && (
@@ -280,15 +326,22 @@ export function DashboardPage() {
               <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-100" />
             ))}
           </div>
-        ) : summary ? (
-          <div className="space-y-6">
+        ) : summary && disposalPL ? (
+          <div
+            className={`space-y-6 transition-all duration-500 ease-out ${
+              mounted ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
+            }`}
+          >
             <div className="grid grid-cols-4 gap-5">
-              <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} />
-              <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} />
-              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)}>
+              <KpiTile label="Gross Block" value={formatCurrency(summary.totals.grossBlock)} tone="cost">
+                <OpeningAdditionsBar opening={summary.totals.openingGrossBlock} additions={summary.totals.additionsFytd} />
+              </KpiTile>
+              <KpiTile label="Accumulated Depreciation" value={formatCurrency(summary.totals.closingAccDep)} tone="depreciation" />
+              <KpiTile label="Net Block" value={formatCurrency(summary.totals.nbv)} tone="net" size="lg">
                 <NetBlockDelta trend={summary.nbvTrend} />
               </KpiTile>
-              <KpiTile label="Asset Count" value={String(summary.totals.assetCount)}>
+              <KpiTile label="Asset Count" value={String(summary.totals.assetCount)} tone="count">
+                <div className="mt-1 text-xs text-gray-500">Σ Qty: {summary.totals.qtyTotal.toLocaleString("en-IN")}</div>
                 <StatusMix statusCounts={summary.statusCounts} />
               </KpiTile>
             </div>
@@ -309,7 +362,7 @@ export function DashboardPage() {
             </div>
 
             <div className="grid grid-cols-3 gap-5">
-              <Card className="p-6">
+              <Card className={`p-6 ${CARD_HOVER}`}>
                 <h2 className="font-heading text-sm font-bold text-ink">Depreciation Run-Rate (FYTD)</h2>
                 <div className="mt-1 text-2xl font-semibold text-ink">{formatCurrency(summary.depreciationFytd)}</div>
                 <div className="mt-3 text-brand-blue">
@@ -323,22 +376,32 @@ export function DashboardPage() {
                 </div>
               </Card>
 
-              <Card className="p-6">
-                <h2 className="font-heading text-sm font-bold text-ink">Disposal P&L (FYTD)</h2>
-                <div className="mt-3 flex justify-between text-xs text-gray-500">
-                  <span>Losses {formatCurrency(summary.disposalPL.losses)}</span>
-                  <span>Gains {formatCurrency(summary.disposalPL.gains)}</span>
+              <Card className={`p-6 ${CARD_HOVER}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="font-heading text-sm font-bold text-ink">Disposal P&L</h2>
+                  <DisposalScopeToggle scope={disposalScope} onChange={setDisposalScope} />
                 </div>
-                <DivergingBar gains={summary.disposalPL.gains} losses={summary.disposalPL.losses} />
+                <div className="mt-3 flex justify-between text-xs text-gray-500">
+                  <span>Losses {formatCurrency(disposalPL.losses)}</span>
+                  <span>Gains {formatCurrency(disposalPL.gains)}</span>
+                </div>
+                <DivergingBar gains={disposalPL.gains} losses={disposalPL.losses} />
                 <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-xs text-gray-500">{summary.disposalPL.disposalCount} disposals</span>
-                  <span className="text-base font-semibold text-ink">
-                    Net {formatCurrency(summary.disposalPL.gains + summary.disposalPL.losses)}
+                  <span className="text-xs text-gray-500">
+                    {disposalPL.disposalCount} disposal{disposalPL.disposalCount === 1 ? "" : "s"}
                   </span>
+                  <span className="text-base font-semibold text-ink">Net {formatCurrency(disposalPL.gains + disposalPL.losses)}</span>
+                </div>
+                {/* Deletions/Sale Proceeds are only tracked FYTD (the export's own Disposal
+                    Inputs group has no all-time total either) — shown fixed regardless of
+                    the gains/losses toggle above, labelled so that's unambiguous. */}
+                <div className="mt-3 flex justify-between border-t border-gray-100 pt-3 text-[11px] text-gray-500">
+                  <span>Deletions (Cost, FYTD) {formatCurrency(summary.disposalPL.totalDeletions)}</span>
+                  <span>Sale Proceeds (FYTD) {formatCurrency(summary.disposalPL.saleProceeds)}</span>
                 </div>
               </Card>
 
-              <Card className="p-6">
+              <Card className={`p-6 ${CARD_HOVER}`}>
                 <h2 className="font-heading text-sm font-bold text-ink">Net Block Trend</h2>
                 <div className="mt-3 text-brand-blue">
                   <LineChart
@@ -386,7 +449,7 @@ export function DashboardPage() {
                     rel="noopener noreferrer"
                     aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
                     title="Open in Register (new tab)"
-                    className={`rounded-xl p-5 text-left shadow-sm transition-transform hover:-translate-y-0.5 ${toneClasses.bg}`}
+                    className={`rounded-xl p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${toneClasses.bg}`}
                   >
                     {tileContent}
                   </a>
