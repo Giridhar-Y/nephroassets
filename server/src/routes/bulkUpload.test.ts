@@ -600,4 +600,59 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       expect(body.errors[0].message).not.toMatch(/has already been disposed/i);
     });
   });
+
+  describe("Useful Life fallback (a row that omits it falls back to its Sub Classification's default)", () => {
+    it("falls back to the Sub Classification's default Useful Life C1/C2 when a row omits both", async () => {
+      const db = await getPool();
+      await db.query(
+        `INSERT INTO sub_classifications (name, default_useful_life_c1_years, default_useful_life_c2_years) VALUES ('Sub-With-Defaults', 7, 3)`
+      );
+      // usefulLifeC1Years/usefulLifeC2Years cells left blank — parseWorksheetRows omits
+      // a blank cell's key entirely, which is what the fallback logic looks for.
+      const csv = [HEADER, "BULK-UL-FALLBACK,Sub-With-Defaults,Fallback Asset,Active,2020-01-01,Center-A,,,1000,1000"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ processed: 1, added: 1, errors: [] });
+
+      const { rows } = await db.query(
+        `SELECT useful_life_c1_years, useful_life_c2_years FROM assets WHERE far_id = 'BULK-UL-FALLBACK'`
+      );
+      expect(Number(rows[0].useful_life_c1_years)).toBe(7);
+      expect(Number(rows[0].useful_life_c2_years)).toBe(3);
+    });
+
+    it("rejects a row that omits Useful Life C1 when its Sub Classification has no default set", async () => {
+      // Test-Sub (seeded in beforeEach) has no default Useful Life at all.
+      const csv = [HEADER, "BULK-UL-NO-DEFAULT-C1,Test-Sub,No Default Asset,Active,2020-01-01,Center-A,,5,1000,1000"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/Useful Life C1 is required.*Sub Classification "Test-Sub" has no default Useful Life C1 set/);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id = 'BULK-UL-NO-DEFAULT-C1'`);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("rejects a row that omits Useful Life C2 when its Sub Classification has Component 2 and no C2 default", async () => {
+      const csv = [HEADER, "BULK-UL-NO-DEFAULT-C2,Test-Sub,No Default C2 Asset,Active,2020-01-01,Center-A,5,,1000,1000"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(0);
+      expect(body.errors[0].message).toMatch(/Useful Life C2 is required.*Sub Classification "Test-Sub" has no default Useful Life C2 set/);
+    });
+
+    it("defaults Useful Life C2 to 0 (no rejection, no master lookup needed) when the Sub Classification has no Component 2", async () => {
+      // C1-Only-Sub (seeded in beforeEach) has has_component2 = FALSE and no default
+      // Useful Life either — omitting C2 here must not be treated as an error.
+      const csv = [HEADER, "BULK-UL-C1-ONLY,C1-Only-Sub,C1 Only Asset,Active,2020-01-01,Center-A,5,,1000,0"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ processed: 1, added: 1, errors: [] });
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT useful_life_c2_years FROM assets WHERE far_id = 'BULK-UL-C1-ONLY'`);
+      expect(Number(rows[0].useful_life_c2_years)).toBe(0);
+    });
+  });
 });

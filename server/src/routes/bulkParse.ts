@@ -225,6 +225,10 @@ export interface MasterLookupMaps {
    *  resolved a canonical Sub Classification (via lookupCanonical) also check whether it
    *  allows Component 2, without a second query. See routes/componentTwoGuard.ts. */
   subClassificationHasComponent2: Map<string, boolean>;
+  /** canonical Sub Classification name -> its own default Useful Life (Masters), null
+   *  meaning "no default set". The fallback bulkUpload.ts's validateAgainstMasters
+   *  applies when a row omits Useful Life C1/C2 entirely. */
+  subClassificationDefaultUsefulLife: Map<string, { c1: number | null; c2: number | null }>;
 }
 
 /** Loaded fresh per request (not cached) — the whole point is that Masters (routes/
@@ -235,14 +239,31 @@ export interface MasterLookupMaps {
 export async function loadActiveMasterMaps(db: pg.Pool): Promise<MasterLookupMaps> {
   const [centers, subClasses, statuses] = await Promise.all([
     db.query<{ code: string }>(`SELECT code FROM centers WHERE active = TRUE`),
-    db.query<{ name: string; has_component2: boolean }>(`SELECT name, has_component2 FROM sub_classifications WHERE active = TRUE`),
+    db.query<{
+      name: string;
+      has_component2: boolean;
+      default_useful_life_c1_years: string | number | null;
+      default_useful_life_c2_years: string | number | null;
+    }>(
+      `SELECT name, has_component2, default_useful_life_c1_years, default_useful_life_c2_years
+       FROM sub_classifications WHERE active = TRUE`
+    ),
     db.query<{ name: string }>(`SELECT name FROM statuses WHERE active = TRUE`)
   ]);
   return {
     centers: new Map(centers.rows.map((r) => [r.code.toLowerCase(), r.code])),
     subClassifications: new Map(subClasses.rows.map((r) => [r.name.toLowerCase(), r.name])),
     statuses: new Map(statuses.rows.map((r) => [r.name.toLowerCase(), r.name])),
-    subClassificationHasComponent2: new Map(subClasses.rows.map((r) => [r.name, r.has_component2]))
+    subClassificationHasComponent2: new Map(subClasses.rows.map((r) => [r.name, r.has_component2])),
+    subClassificationDefaultUsefulLife: new Map(
+      subClasses.rows.map((r) => [
+        r.name,
+        {
+          c1: r.default_useful_life_c1_years === null ? null : Number(r.default_useful_life_c1_years),
+          c2: r.default_useful_life_c2_years === null ? null : Number(r.default_useful_life_c2_years)
+        }
+      ])
+    )
   };
 }
 

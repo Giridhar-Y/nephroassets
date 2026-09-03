@@ -148,7 +148,14 @@ const bulkAssetRowShape = assetCreateShape.extend({
   dateOfDisposal: bulkDate.optional().nullable().default(null),
   deletionsC1: z.coerce.number().min(0).default(0),
   deletionsC2: z.coerce.number().min(0).default(0),
-  saleValue: z.coerce.number().min(0).default(0)
+  saleValue: z.coerce.number().min(0).default(0),
+  // Optional here only — unlike assetCreateShape's own (required) fields above, a bulk
+  // row may omit Useful Life entirely and fall back to its Sub Classification's default
+  // (see bulkUpload.ts's validateAgainstMasters, the only place that can resolve that
+  // fallback — it needs a Masters lookup, which a zod schema can't do). Left undefined
+  // here on purpose so that function can tell "omitted" apart from "explicitly 0".
+  usefulLifeC1Years: z.coerce.number().min(0).optional(),
+  usefulLifeC2Years: z.coerce.number().min(0).optional()
 });
 
 // The full set of column names this endpoint recognizes (spreadsheet header names) —
@@ -217,8 +224,12 @@ export const ASSET_UPSERT_COLUMNS = [
 ] as const;
 
 export function bulkAssetRowValues(input: BulkAssetRowInput): unknown[] {
+  // Non-null assertions: bulkAssetRowShape leaves Useful Life C1/C2 optional so
+  // bulkUpload.ts's validateAgainstMasters can tell "omitted" apart from "explicitly 0"
+  // and apply its Masters-default fallback — but by the time a row reaches this
+  // function (after that fallback ran), both are guaranteed to be concrete numbers.
   return [
-    ...assetCreateValues(input),
+    ...assetCreateValues({ ...input, usefulLifeC1Years: input.usefulLifeC1Years!, usefulLifeC2Years: input.usefulLifeC2Years! }),
     input.dateOfDisposal,
     input.deletionsC1,
     input.deletionsC2,

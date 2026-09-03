@@ -83,16 +83,63 @@ async function validateAgainstMasters(
       messages.push(`Sub Classification "${data.subClassification}" not recognized — see Masters for valid values.`);
     }
     if (!canonicalLocation) messages.push(`Location "${data.location}" not recognized — see Masters for valid values.`);
+
+    // Useful Life fallback: a row that omits Useful Life (bulkAssetRowShape leaves it
+    // `undefined`, unlike the Capitalization form's own always-required field) falls
+    // back to its Sub Classification's own default from Masters — resolvable only once
+    // canonicalSubClass itself is known, same gating the C2 guard below already uses. C1
+    // is required either way (row value or a master default); C2 is only required when
+    // the classification actually hasComponent2 — otherwise a missing C2 life is
+    // meaningless (see componentTwoGuard.ts's hasRealC2Data, which already excludes
+    // Useful Life C2 from "real" C2 data for the same reason) and just defaults to 0.
+    let usefulLifeC1Years = data.usefulLifeC1Years;
+    let usefulLifeC2Years = data.usefulLifeC2Years;
+    const hasComponent2 = canonicalSubClass ? maps.subClassificationHasComponent2.get(canonicalSubClass) === true : false;
+    if (canonicalSubClass) {
+      const defaultLife = maps.subClassificationDefaultUsefulLife.get(canonicalSubClass);
+      if (usefulLifeC1Years === undefined) {
+        if (defaultLife?.c1 != null) {
+          usefulLifeC1Years = defaultLife.c1;
+        } else {
+          messages.push(
+            `Useful Life C1 is required — this row didn't supply one and Sub Classification "${canonicalSubClass}" has no default Useful Life C1 set.`
+          );
+        }
+      }
+      if (hasComponent2) {
+        if (usefulLifeC2Years === undefined) {
+          if (defaultLife?.c2 != null) {
+            usefulLifeC2Years = defaultLife.c2;
+          } else {
+            messages.push(
+              `Useful Life C2 is required — this row didn't supply one and Sub Classification "${canonicalSubClass}" has no default Useful Life C2 set.`
+            );
+          }
+        }
+      } else if (usefulLifeC2Years === undefined) {
+        usefulLifeC2Years = 0;
+      }
+    }
     // Only checked once canonicalSubClass itself resolved — an unrecognized Sub
     // Classification is already rejected above, so there's no has_component2 to look up.
-    if (canonicalSubClass && maps.subClassificationHasComponent2.get(canonicalSubClass) === false && hasRealC2Data(data)) {
+    if (canonicalSubClass && !hasComponent2 && hasRealC2Data(data)) {
       messages.push(blockingAssetMessage(data.farId, canonicalSubClass));
     }
     if (messages.length > 0) {
       allErrors.push({ row, farId: data.farId, message: messages.join("; "), data: stringifyRowData(data) });
       continue;
     }
-    stillValid.push({ row, data: { ...data, status: canonicalStatus!, subClassification: canonicalSubClass!, location: canonicalLocation! } });
+    stillValid.push({
+      row,
+      data: {
+        ...data,
+        status: canonicalStatus!,
+        subClassification: canonicalSubClass!,
+        location: canonicalLocation!,
+        usefulLifeC1Years: usefulLifeC1Years!,
+        usefulLifeC2Years: usefulLifeC2Years!
+      }
+    });
   }
   return { validRows: stillValid, errors: allErrors };
 }
