@@ -7,6 +7,7 @@ import type {
   FySettings
 } from "../lib/types.js";
 import type { ColumnCondition } from "../lib/columnFilters.js";
+import { chunkCsvRows, findDuplicateFarIds, parseCsvFile, splitCsvFields } from "../lib/csvChunking.js";
 
 export class ApiError extends Error {
   status: number;
@@ -510,6 +511,112 @@ export function previewBulkUpload(path: string, file: File): Promise<BulkPreview
 
 export function commitBulkUpload(path: string, file: File): Promise<BulkUploadResult> {
   return postFile(path, file);
+}
+
+// Chunked upload for a file too big for one request — see lib/csvChunking.ts's own
+// top comment for why (Vercel's hard ~4.5MB request-body ceiling) and why this only
+// supports CSV (line-splitting the ORIGINAL bytes, not a parse/reformat round trip).
+// Same `postFile` helper below, just given a Blob + explicit filename instead of a
+// real File — loadWorksheet on the server picks its CSV reader off that filename's
+// extension, not the content, so every chunk needs one ending in ".csv".
+async function postFileBlob<T>(path: string, blob: Blob, filename: string): Promise<T> {
+  const formData = new FormData();
+  formData.append("file", blob, filename);
+  const res = await fetch(path, { method: "POST", body: formData });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+export interface ChunkProgress {
+  current: number;
+  total: number;
+}
+
+/** Re-splits a raw CSV data line into a header-keyed Record for display — used only for
+ *  the duplicate-FAR-ID rows the client itself flags (see csvChunking.ts's
+ *  findDuplicateFarIds), so they render in the preview table with real cell values
+ *  instead of blank ones, the same as a server-reported error row would. */
+function rowRecordFromCsvLine(header: string[], line: string): Record<string, string> {
+  const fields = splitCsvFields(line);
+  const record: Record<string, string> = {};
+  header.forEach((h, i) => {
+    if (h && fields[i]) record[h] = fields[i]!;
+  });
+  return record;
+}
+
+export async function previewBulkUploadChunked(
+  path: string,
+  file: File,
+  onProgress: (p: ChunkProgress) => void
+): Promise<BulkPreviewResult> {
+  const { header, dataLines } = await parseCsvFile(file);
+  const duplicates = findDuplicateFarIds(header, dataLines);
+  const duplicateRows = new Set(duplicates.map((d) => d.row));
+  // Excluded from what's actually uploaded — each chunk validates independently
+  // server-side, so a duplicate spanning two different chunks wouldn't be caught there
+  // (see csvChunking.ts's findDuplicateFarIds for the full reasoning).
+  const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
+  const chunks = chunkCsvRows(header, nonDuplicateLines);
+
+  const rows: BulkPreviewRow[] = duplicates.map((d) => ({
+    row: d.row,
+    farId: d.farId,
+    status: "error" as const,
+    message: d.message,
+    data: rowRecordFromCsvLine(header, dataLines[d.row - 2]!)
+  }));
+  let newCount = 0;
+  let updateCount = 0;
+  let errorCount = duplicates.length;
+
+  onProgress({ current: 0, total: chunks.length });
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const result = await postFileBlob<BulkPreviewResult>(`${path}?preview=true`, chunk.blob, "chunk.csv");
+    for (const r of result.rows) rows.push({ ...r, row: r.row + chunk.rowOffset });
+    newCount += result.summary.new;
+    updateCount += result.summary.update;
+    errorCount += result.summary.error;
+    onProgress({ current: i + 1, total: chunks.length });
+  }
+
+  rows.sort((a, b) => a.row - b.row);
+  return { totalRows: dataLines.length, summary: { new: newCount, update: updateCount, error: errorCount }, rows };
+}
+
+export async function commitBulkUploadChunked(
+  path: string,
+  file: File,
+  onProgress: (p: ChunkProgress) => void
+): Promise<BulkUploadResult> {
+  const { header, dataLines } = await parseCsvFile(file);
+  const duplicates = findDuplicateFarIds(header, dataLines);
+  const duplicateRows = new Set(duplicates.map((d) => d.row));
+  const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
+  const chunks = chunkCsvRows(header, nonDuplicateLines);
+
+  const errors: BulkUploadError[] = duplicates.map((d) => ({ row: d.row, farId: d.farId, message: d.message }));
+  let processed = 0;
+  let added = 0;
+  let updated = 0;
+
+  onProgress({ current: 0, total: chunks.length });
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const result = await postFileBlob<BulkUploadResult>(path, chunk.blob, "chunk.csv");
+    processed += result.processed;
+    added += result.added;
+    updated += result.updated;
+    for (const e of result.errors) errors.push({ ...e, row: e.row + chunk.rowOffset });
+    onProgress({ current: i + 1, total: chunks.length });
+  }
+
+  errors.sort((a, b) => a.row - b.row);
+  return { totalRows: dataLines.length, processed, added, updated, errors };
 }
 
 export interface LocationSummary {

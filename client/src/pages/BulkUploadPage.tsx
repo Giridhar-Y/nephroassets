@@ -6,10 +6,14 @@ import {
   BULK_UPLOAD_PATHS,
   MASTERS_BULK_UPLOAD_PATHS,
   commitBulkUpload,
+  commitBulkUploadChunked,
   previewBulkUpload,
+  previewBulkUploadChunked,
   type BulkPreviewResult,
-  type BulkUploadResult
+  type BulkUploadResult,
+  type ChunkProgress
 } from "../api/client.js";
+import { CHUNK_THRESHOLD_BYTES } from "../lib/csvChunking.js";
 import {
   AddCircleIcon,
   CollapseExpandIcon,
@@ -240,6 +244,22 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
   );
 }
 
+// Only rendered for a chunked (large CSV) Assets upload — see csvChunking.ts. `total`
+// is 0 for the brief moment before the file's been fully read and split into chunks.
+function ChunkProgressBar({ progress, verb }: { progress: ChunkProgress; verb: "Validating" | "Uploading" }) {
+  const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+  return (
+    <div className="mt-2 w-full max-w-xs">
+      <p className="text-xs text-gray-500">
+        {progress.total > 0 ? `${verb} batch ${progress.current} of ${progress.total}…` : "Reading file…"}
+      </p>
+      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 const UPLOAD_TYPES: UploadType[] = ["assets", "disposals", "transfers", "merge", "masters"];
 
 // Fixed row height + fixed column widths (rather than the browser's table auto-layout)
@@ -282,6 +302,9 @@ export function BulkUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // Only meaningful for a chunked Assets upload (see csvChunking.ts) — null the rest of
+  // the time, including for a small file that never needed chunking at all.
+  const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
 
   // Escape closes full screen, same as AssetGrid's own expand toggle — plus a body
   // scroll lock so the page behind the fixed overlay can't be scrolled (AssetGrid's
@@ -325,8 +348,17 @@ export function BulkUploadPage() {
     setError(null);
     setShowOnlyErrors(false);
     setExpanded(false);
+    setChunkProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
+
+  // A file this large only ever needs chunking for the Assets upload — the other four
+  // types (Disposals/Transfers/Merge/Masters) don't yet have the batched-write fix on
+  // their own commit loops that makes a chunk's own processing time safe (see
+  // bulkUpload.ts's 2026-09-03 comment on BATCH_ROWS) — so a large file there still goes
+  // through the single-request path and, realistically, still hits the same 413 it does
+  // today until they get the same treatment.
+  const needsChunking = type === "assets" && !!file && file.size > CHUNK_THRESHOLD_BYTES;
 
   function selectType(next: UploadType) {
     setType(next);
@@ -342,9 +374,21 @@ export function BulkUploadPage() {
     if (!next) return;
     setFile(next);
     setError(null);
+    // Computed from `next` directly, not the `needsChunking`/`file` state above — `file`
+    // hasn't actually updated yet at this point in the same tick (setFile is async).
+    const chunked = type === "assets" && next.size > CHUNK_THRESHOLD_BYTES;
+    if (chunked && !next.name.toLowerCase().endsWith(".csv")) {
+      setError(
+        `This file is ${formatFileSize(next.size)} — files this large must be CSV (Excel's binary format can't be split into smaller uploads without risking it read back differently). Please re-save as CSV and try again.`
+      );
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     setPreviewing(true);
+    setChunkProgress(chunked ? { current: 0, total: 0 } : null);
     try {
-      const res = await previewBulkUpload(path, next);
+      const res = chunked ? await previewBulkUploadChunked(path, next, setChunkProgress) : await previewBulkUpload(path, next);
       setPreview(res);
       setStep("preview");
     } catch (err) {
@@ -360,8 +404,9 @@ export function BulkUploadPage() {
     if (!file) return;
     setConfirming(true);
     setError(null);
+    setChunkProgress(needsChunking ? { current: 0, total: 0 } : null);
     try {
-      const res = await commitBulkUpload(path, file);
+      const res = needsChunking ? await commitBulkUploadChunked(path, file, setChunkProgress) : await commitBulkUpload(path, file);
       setResult(res);
       setStep("result");
       const skipped = res.errors.length > 0 ? ` ${res.errors.length} row${res.errors.length === 1 ? "" : "s"} skipped due to errors.` : "";
@@ -540,6 +585,8 @@ export function BulkUploadPage() {
             {error}
           </p>
         )}
+
+        {confirming && chunkProgress && <ChunkProgressBar progress={chunkProgress} verb="Uploading" />}
 
         <div className="mt-4 flex justify-end gap-2">
           <button
@@ -741,7 +788,7 @@ export function BulkUploadPage() {
                   Download Template
                 </button>
               </div>
-              {previewing && <p className="text-xs text-gray-500">Reading file…</p>}
+              {previewing && (chunkProgress ? <ChunkProgressBar progress={chunkProgress} verb="Validating" /> : <p className="text-xs text-gray-500">Reading file…</p>)}
             </div>
 
             {error && (

@@ -14,7 +14,7 @@ import {
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
-import { logAssetActivity } from "./assetActivityLog.js";
+import { logAssetActivity, logAssetActivityBatch } from "./assetActivityLog.js";
 
 // Center-scoped access: an upsert row can either create a brand-new asset (only its
 // target `location` matters) or correct an existing one (whose `location` column CAN
@@ -285,9 +285,13 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     }
 
     const buffer = await file.toBuffer();
+    // Captured once, plain string — `file` itself stays possibly-undefined to TypeScript
+    // inside commitOneRow below (a nested function declaration, so its narrowing doesn't
+    // carry over even though `file` is a const truthy by this point).
+    const sourceFilename = file.filename;
     let worksheet;
     try {
-      worksheet = await loadWorksheet(buffer, file.filename);
+      worksheet = await loadWorksheet(buffer, sourceFilename);
     } catch (err) {
       reply.code(400);
       return { error: err instanceof Error ? err.message : "Could not read the file." };
@@ -350,15 +354,13 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       const updateAssignments = ASSET_UPSERT_COLUMNS.filter((c) => c !== "far_id")
         .map((c) => `${c} = EXCLUDED.${c}`)
         .join(", ");
-      // Each row's write is its own statement (a single INSERT ... ON CONFLICT), so it's
-      // already atomic on its own — no explicit transaction needed. Isolating the
-      // try/catch per row (rather than wrapping the whole loop in one BEGIN...COMMIT,
-      // as this used to) means a DB-level failure on one row reports just that row as an
-      // error and leaves every already-succeeded row standing, matching this route's own
-      // "rows that fail validation are reported but don't block the valid rows" contract
-      // for DB-level failures too, not just schema ones. Mirrors bulkMasters.ts's commit
-      // loop, which never had this gap.
-      for (const { row, data } of validRows) {
+
+      // One row at a time — used only as BATCH_ROWS's fallback below, to isolate exactly
+      // which row(s) in an otherwise-failing batch actually failed. This is the route's
+      // entire commit loop before 2026-09-03 (kept verbatim, not rewritten): each row's
+      // write is its own atomic INSERT ... ON CONFLICT, so a DB-level failure here reports
+      // just that row as an error and leaves every already-succeeded row standing.
+      async function commitOneRow(row: number, data: BulkAssetRowInput): Promise<void> {
         try {
           // `xmax = 0` on the returned row is Postgres's own way of telling an INSERT
           // from an ON CONFLICT UPDATE.
@@ -375,7 +377,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
               actorUserId: req.user!.id,
               action: "capitalization_create",
               farId: data.farId,
-              details: { ...data, source: "bulk", sourceFilename: file.filename }
+              details: { ...data, source: "bulk", sourceFilename }
             });
           } else {
             updated++;
@@ -388,6 +390,68 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
             message: err instanceof Error ? err.message : "Could not save this row.",
             data: stringifyRowData(data)
           });
+        }
+      }
+
+      // 2026-09-03: batched — one multi-row INSERT ... ON CONFLICT per BATCH_ROWS rows
+      // instead of one round trip per row. A large historical-import file (hundreds of
+      // thousands of rows, now itself arriving as many smaller chunked requests from the
+      // client — see BulkUploadPage.tsx) would otherwise still serialize into one round
+      // trip per row *within* each chunk's own request, easily exceeding the serverless
+      // function's execution time limit even once the request BODY itself fit under
+      // Vercel's ~4.5MB ceiling. 500 rows/batch keeps every batch's param count
+      // (21 columns/row) safely under Postgres's 65,535-parameter-per-statement limit.
+      // rejectDuplicateFarIds already guarantees every farId in `validRows` is unique
+      // across the WHOLE file by this point, so a batch's own VALUES list can never
+      // target the same ON CONFLICT key twice (which Postgres would reject outright).
+      const BATCH_ROWS = 500;
+      for (let i = 0; i < validRows.length; i += BATCH_ROWS) {
+        const batch = validRows.slice(i, i + BATCH_ROWS);
+        try {
+          const values: unknown[] = [];
+          const rowPlaceholders = batch.map(({ data }) => {
+            const rowValues = bulkAssetRowValues(data);
+            const base = values.length;
+            values.push(...rowValues);
+            return `(${rowValues.map((_, colIdx) => `$${base + colIdx + 1}`).join(", ")})`;
+          });
+          const { rows: written } = await db.query<{ far_id: string; inserted: boolean }>(
+            `INSERT INTO assets (${ASSET_UPSERT_COLUMNS.join(", ")})
+             VALUES ${rowPlaceholders.join(", ")}
+             ON CONFLICT (far_id) DO UPDATE SET ${updateAssignments}
+             RETURNING far_id, (xmax = 0) AS inserted`,
+            values
+          );
+          const insertedFarIds = new Set(written.filter((w) => w.inserted).map((w) => w.far_id));
+          const activityEntries: Array<{
+            actorUserId: number;
+            action: "capitalization_create";
+            farId: string;
+            details: Record<string, unknown>;
+          }> = [];
+          for (const { data } of batch) {
+            if (insertedFarIds.has(data.farId)) {
+              added++;
+              activityEntries.push({
+                actorUserId: req.user!.id,
+                action: "capitalization_create",
+                farId: data.farId,
+                details: { ...data, source: "bulk", sourceFilename }
+              });
+            } else {
+              updated++;
+            }
+            processed++;
+          }
+          await logAssetActivityBatch(db, activityEntries);
+        } catch (err) {
+          // Batch-level failure (rare — a DB constraint the app's own schema/Masters
+          // validation didn't already catch) falls back to this one batch's rows,
+          // one at a time, so the failure is isolated to whichever row(s) actually
+          // caused it instead of discarding the whole batch.
+          for (const { row, data } of batch) {
+            await commitOneRow(row, data);
+          }
         }
       }
     }

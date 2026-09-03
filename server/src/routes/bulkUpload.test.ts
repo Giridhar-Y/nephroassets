@@ -350,10 +350,18 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
   it("isolates a DB-level failure on one row: earlier successful rows in the same file survive, and the failing row is reported individually — not a schema-validation failure, the row is schema-valid but its DB write throws", async () => {
     const db = await getPool();
     const originalQuery = db.query.bind(db);
+    // 2026-09-03: `params?.includes(...)`, not `params?.[0] === ...` — the commit loop now
+    // batches every BATCH_ROWS rows into one multi-row INSERT, so "BULK-DB-FAIL"'s farId
+    // isn't necessarily the first param anymore (it's wherever that row landed within its
+    // batch's flattened params). This also means the mock fires twice for this row: once
+    // for the whole 3-row batch (which must then fall back to retrying its rows one at a
+    // time — see bulkUpload.ts's `commitOneRow`), and once for BULK-DB-FAIL's own
+    // single-row retry within that fallback — both layers of the new two-tier isolation
+    // get exercised by this one test.
     const spy = vi.spyOn(db, "query").mockImplementation((...args: unknown[]) => {
       const sql = args[0];
       const params = args[1] as unknown[] | undefined;
-      if (typeof sql === "string" && sql.includes("INSERT INTO assets") && params?.[0] === "BULK-DB-FAIL") {
+      if (typeof sql === "string" && sql.includes("INSERT INTO assets") && params?.includes("BULK-DB-FAIL")) {
         return Promise.reject(new Error("simulated DB-level failure"));
       }
       return (originalQuery as (...a: unknown[]) => unknown)(...args);
@@ -606,6 +614,45 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       const body = res.json();
       expect(body.errors[0].message).toBe(`No asset found with FAR ID "BULK-OUTOFSCOPE-DISPOSED".`);
       expect(body.errors[0].message).not.toMatch(/has already been disposed/i);
+    });
+  });
+
+  describe("Batched commit (2026-09-03 — BATCH_ROWS=500, one multi-row INSERT per batch instead of one per row)", () => {
+    it("commits correctly across a batch boundary: a file spanning more than one batch, mixing new and updated rows on both sides of the boundary", async () => {
+      // 501 new rows first (BULK-BATCH-1..501) — one row past BATCH_ROWS, so the last row
+      // of the first batch and the first row of the second batch are adjacent in the file
+      // but land in different INSERT statements.
+      const firstRows = Array.from({ length: 501 }, (_, i) => `BULK-BATCH-${i + 1},Test-Sub,Batch Asset,Active,2020-01-01,Center-A,5,5,1000,1000`);
+      const first = [HEADER, ...firstRows].join("\n");
+      const firstRes = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(first) });
+      expect(firstRes.statusCode).toBe(200);
+      const firstBody = firstRes.json();
+      expect(firstBody.totalRows).toBe(501);
+      expect(firstBody.processed).toBe(501);
+      expect(firstBody.added).toBe(501);
+      expect(firstBody.errors).toHaveLength(0);
+
+      const db = await getPool();
+      const { rows: countRows } = await db.query(`SELECT count(*)::int AS n FROM assets WHERE far_id LIKE 'BULK-BATCH-%'`);
+      expect(countRows[0].n).toBe(501);
+      // The row right at the boundary (last of batch 1) and the one right after it
+      // (first of batch 2) both actually made it in — not just the totals.
+      const { rows: boundaryRows } = await db.query(
+        `SELECT far_id FROM assets WHERE far_id IN ('BULK-BATCH-500', 'BULK-BATCH-501') ORDER BY far_id`
+      );
+      expect(boundaryRows.map((r: { far_id: string }) => r.far_id)).toEqual(["BULK-BATCH-500", "BULK-BATCH-501"]);
+
+      // Re-upload the same 501 rows plus one more — every existing row should classify as
+      // an update (across both batches again), the new one as added, and activity logging
+      // (now batched too, logAssetActivityBatch) shouldn't have thrown for any of it.
+      const secondRows = [...firstRows, "BULK-BATCH-502,Test-Sub,Batch Asset,Active,2020-01-01,Center-A,5,5,1000,1000"];
+      const second = [HEADER, ...secondRows].join("\n");
+      const secondRes = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(second) });
+      const secondBody = secondRes.json();
+      expect(secondBody.processed).toBe(502);
+      expect(secondBody.added).toBe(1);
+      expect(secondBody.updated).toBe(501);
+      expect(secondBody.errors).toHaveLength(0);
     });
   });
 
