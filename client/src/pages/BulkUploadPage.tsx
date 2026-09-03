@@ -244,18 +244,47 @@ function PreviewStatusBadge({ status }: { status: keyof typeof STATUS_BADGE }) {
   );
 }
 
-// Only rendered for a chunked (large CSV) Assets upload — see csvChunking.ts. `total`
-// is 0 for the brief moment before the file's been fully read and split into chunks.
-function ChunkProgressBar({ progress, verb }: { progress: ChunkProgress; verb: "Validating" | "Uploading" }) {
-  const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+// "45s" / "3m 20s" / "1h 5m" — only as precise as an average-rate-so-far estimate ever
+// is, so no point going finer than whole seconds.
+function formatRemaining(seconds: number): string {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 > 0 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 > 0 ? `${h}h ${m % 60}m` : `${h}h`;
+}
+
+// Only rendered for a chunked (large CSV) upload — see csvChunking.ts. `total` (batch
+// count) is 0 for the brief moment before the file's been fully read and split into
+// chunks. Percentage and the "N of M rows" count are driven off actual row counts, not
+// batch counts, so they stay accurate even though the last batch is usually smaller
+// than the rest. `startedAt` (Date.now() when the run began) is read fresh on every
+// render — this component re-renders on every progress update anyway, so a plain
+// elapsed-time calculation is enough without its own ticking timer.
+function ChunkProgressBar({ progress, verb, startedAt }: { progress: ChunkProgress; verb: "Validating" | "Uploading"; startedAt: number }) {
+  const { current, total, rowsDone, totalRows } = progress;
+  if (total === 0) {
+    return (
+      <div className="mt-2 w-full max-w-xs">
+        <p className="text-xs text-gray-500">Reading file…</p>
+        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-100" />
+      </div>
+    );
+  }
+  const pct = totalRows > 0 ? Math.round((rowsDone / totalRows) * 100) : 0;
+  const elapsedSec = (Date.now() - startedAt) / 1000;
+  const rate = rowsDone > 0 && elapsedSec > 0 ? rowsDone / elapsedSec : 0;
+  const remainingSec = rate > 0 && rowsDone < totalRows ? (totalRows - rowsDone) / rate : null;
   return (
     <div className="mt-2 w-full max-w-xs">
       <p className="text-xs text-gray-500">
-        {progress.total > 0 ? `${verb} batch ${progress.current} of ${progress.total}…` : "Reading file…"}
+        {verb} {rowsDone.toLocaleString("en-IN")} of {totalRows.toLocaleString("en-IN")} rows — batch {current} of {total} ({pct}%)
       </p>
       <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
         <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
       </div>
+      {remainingSec !== null && <p className="mt-0.5 text-[11px] text-gray-400">~{formatRemaining(remainingSec)} remaining</p>}
     </div>
   );
 }
@@ -302,9 +331,13 @@ export function BulkUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  // Only meaningful for a chunked Assets upload (see csvChunking.ts) — null the rest of
-  // the time, including for a small file that never needed chunking at all.
+  // Only meaningful for a chunked upload (see csvChunking.ts) — null the rest of the
+  // time, including for a small file that never needed chunking at all.
   const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
+  // Set right before a chunked run starts, read by ChunkProgressBar (via Date.now() at
+  // render time, which happens on every progress update) to estimate time remaining —
+  // a ref rather than state since it's never itself something to re-render on.
+  const chunkStartRef = useRef(0);
 
   // Escape closes full screen, same as AssetGrid's own expand toggle — plus a body
   // scroll lock so the page behind the fixed overlay can't be scrolled (AssetGrid's
@@ -335,6 +368,23 @@ export function BulkUploadPage() {
       document.body.style.overflow = "";
     };
   }, [expanded, step]);
+
+  // Warn before an accidental tab close/reload mid-chunked-upload — a real 212K-row
+  // import runs many sequential requests over several minutes, and losing that to a
+  // stray Ctrl+W partway through (some chunks committed, the rest not) is a much worse
+  // outcome than for any other page in this app, which is why this isn't a global
+  // behavior. Only armed while a chunked run is actually in flight (chunkProgress is
+  // null again as soon as one finishes or fails, from `finally` in handleFile/
+  // handleConfirm below).
+  useEffect(() => {
+    if (!chunkProgress || !(previewing || confirming)) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [chunkProgress, previewing, confirming]);
 
   const config: UploadConfig = type === "masters" ? MASTER_LIST_CONFIG[masterList] : TYPE_CONFIG[type];
   const example = type === "masters" ? MASTER_EXAMPLE_ROWS[masterList] : EXAMPLE_ROWS[type];
@@ -403,7 +453,8 @@ export function BulkUploadPage() {
       return;
     }
     setPreviewing(true);
-    setChunkProgress(chunked ? { current: 0, total: 0 } : null);
+    if (chunked) chunkStartRef.current = Date.now();
+    setChunkProgress(chunked ? { current: 0, total: 0, rowsDone: 0, totalRows: 0 } : null);
     try {
       const res = chunked
         ? await previewBulkUploadChunked(path, next, setChunkProgress, chunkRows, findFileConflicts)
@@ -423,7 +474,8 @@ export function BulkUploadPage() {
     if (!file) return;
     setConfirming(true);
     setError(null);
-    setChunkProgress(needsChunking ? { current: 0, total: 0 } : null);
+    if (needsChunking) chunkStartRef.current = Date.now();
+    setChunkProgress(needsChunking ? { current: 0, total: 0, rowsDone: 0, totalRows: 0 } : null);
     try {
       const res = needsChunking
         ? await commitBulkUploadChunked(path, file, setChunkProgress, chunkRows, findFileConflicts)
@@ -607,7 +659,7 @@ export function BulkUploadPage() {
           </p>
         )}
 
-        {confirming && chunkProgress && <ChunkProgressBar progress={chunkProgress} verb="Uploading" />}
+        {confirming && chunkProgress && <ChunkProgressBar progress={chunkProgress} verb="Uploading" startedAt={chunkStartRef.current} />}
 
         <div className="mt-4 flex justify-end gap-2">
           <button
@@ -809,7 +861,12 @@ export function BulkUploadPage() {
                   Download Template
                 </button>
               </div>
-              {previewing && (chunkProgress ? <ChunkProgressBar progress={chunkProgress} verb="Validating" /> : <p className="text-xs text-gray-500">Reading file…</p>)}
+              {previewing &&
+                (chunkProgress ? (
+                  <ChunkProgressBar progress={chunkProgress} verb="Validating" startedAt={chunkStartRef.current} />
+                ) : (
+                  <p className="text-xs text-gray-500">Reading file…</p>
+                ))}
             </div>
 
             {error && (

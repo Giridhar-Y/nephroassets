@@ -255,6 +255,9 @@ export interface CsvChunk {
    *  server-reported row number (which is chunk-relative) to recover the row's real
    *  position in the original file for display. */
   rowOffset: number;
+  /** Rows in this chunk (last chunk is usually smaller) — lets progress reporting show
+   *  an exact "N of M rows" count instead of just a batch number. */
+  rowCount: number;
 }
 
 /** Splits (header, dataLines) — with the duplicate rows from findDuplicateFarIds
@@ -269,7 +272,7 @@ export function chunkCsvRows(header: string[], dataLines: string[], chunkRows: n
   for (let i = 0; i < dataLines.length; i += chunkRows) {
     const rows = dataLines.slice(i, i + chunkRows);
     const csv = [headerLine, ...rows].join("\r\n");
-    chunks.push({ blob: new Blob([csv], { type: "text/csv;charset=utf-8;" }), rowOffset: i });
+    chunks.push({ blob: new Blob([csv], { type: "text/csv;charset=utf-8;" }), rowOffset: i, rowCount: rows.length });
   }
   return chunks;
 }

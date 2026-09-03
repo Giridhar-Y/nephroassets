@@ -531,8 +531,15 @@ async function postFileBlob<T>(path: string, blob: Blob, filename: string): Prom
 }
 
 export interface ChunkProgress {
+  /** Batches completed so far. */
   current: number;
+  /** Total batches the file was split into. */
   total: number;
+  /** Rows actually processed so far (excludes rows the client itself rejected up front —
+   *  see findFileConflicts — since those never go into a chunk request at all). */
+  rowsDone: number;
+  /** Rows being chunked/uploaded — same exclusion as rowsDone. */
+  totalRows: number;
 }
 
 /** Re-splits a raw CSV data line into a header-keyed Record for display — used only for
@@ -578,7 +585,9 @@ export async function previewBulkUploadChunked(
   let updateCount = 0;
   let errorCount = duplicates.length;
 
-  onProgress({ current: 0, total: chunks.length });
+  const totalRows = nonDuplicateLines.length;
+  let rowsDone = 0;
+  onProgress({ current: 0, total: chunks.length, rowsDone, totalRows });
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const result = await postFileBlob<BulkPreviewResult>(`${path}?preview=true`, chunk.blob, "chunk.csv");
@@ -586,7 +595,8 @@ export async function previewBulkUploadChunked(
     newCount += result.summary.new;
     updateCount += result.summary.update;
     errorCount += result.summary.error;
-    onProgress({ current: i + 1, total: chunks.length });
+    rowsDone += chunk.rowCount;
+    onProgress({ current: i + 1, total: chunks.length, rowsDone, totalRows });
   }
 
   rows.sort((a, b) => a.row - b.row);
@@ -611,7 +621,9 @@ export async function commitBulkUploadChunked(
   let added = 0;
   let updated = 0;
 
-  onProgress({ current: 0, total: chunks.length });
+  const totalRows = nonDuplicateLines.length;
+  let rowsDone = 0;
+  onProgress({ current: 0, total: chunks.length, rowsDone, totalRows });
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const result = await postFileBlob<BulkUploadResult>(path, chunk.blob, "chunk.csv");
@@ -619,7 +631,8 @@ export async function commitBulkUploadChunked(
     added += result.added;
     updated += result.updated;
     for (const e of result.errors) errors.push({ ...e, row: e.row + chunk.rowOffset });
-    onProgress({ current: i + 1, total: chunks.length });
+    rowsDone += chunk.rowCount;
+    onProgress({ current: i + 1, total: chunks.length, rowsDone, totalRows });
   }
 
   errors.sort((a, b) => a.row - b.row);
