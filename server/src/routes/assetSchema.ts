@@ -211,6 +211,57 @@ export const bulkAssetRowSchema = bulkAssetRowShape.superRefine((data, ctx) => {
         message: `Disposal date cannot be before the addition date (${isoToDDMMYYYY(data.dateOfAddition)}).`
       });
     }
+    // Same reasoning as checkAccDepWithinCost above, for the same class of malformed-data
+    // risk: Deletions represents a component being written off, so it can't exceed what
+    // that component was ever capitalized for (opening cost + additions). The single/bulk
+    // Disposal endpoints can never produce this — they always derive deletions themselves
+    // as exactly openingCost + additions (see disposalWriteOff.ts's applyFullDisposal) —
+    // this historical-import case is the only path that lets deletionsC1/C2 be entered
+    // directly, so it's the only one that needs the guard. Also flagged explicitly by
+    // engine.ts's own closingAccDep-floor comment as the "bad bulk-upload row" scenario
+    // its floor exists to defend against — this rejects that data at the door instead of
+    // relying on the floor. Checked unconditionally (not gated on hasDisposalDate):
+    // deletions default to 0 for a non-disposed row, so this is a no-op there either way.
+    if (data.deletionsC1 > data.c1OpeningCost + data.additionsC1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["deletionsC1"],
+        message: `Component 1 Deletions (${data.deletionsC1}) cannot exceed Component 1 Opening Cost + Additions (${
+          data.c1OpeningCost + data.additionsC1
+        }).`
+      });
+    }
+    if (data.deletionsC2 > data.c2OpeningCost + data.additionsC2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["deletionsC2"],
+        message: `Component 2 Deletions (${data.deletionsC2}) cannot exceed Component 2 Opening Cost + Additions (${
+          data.c2OpeningCost + data.additionsC2
+        }).`
+      });
+    }
+    // Sale Value can't exceed what the asset was actually worth at disposal. The single/
+    // bulk Disposal endpoints already enforce this (computeWdvAtDisposal in
+    // disposalWriteOff.ts, run against FY settings via the calc engine) — but this schema
+    // has no DB access to do that, and unlike those two paths (which always derive
+    // deletions as the full cost), a historical-import row supplies deletionsC1/C2 and
+    // accDepC1/C2Opening directly. So the ceiling here is computed straight from exactly
+    // those fields — opening cost + additions - accumulated depreciation - deletions, per
+    // component, floored at 0 (same floor engine.ts's own closingAccDep applies, for the
+    // same reason: a component can't be worth less than nothing) — rather than run
+    // through the full depreciation engine.
+    if (hasDisposalDate) {
+      const c1Wdv = Math.max(0, data.c1OpeningCost + data.additionsC1 - data.accDepC1Opening - data.deletionsC1);
+      const c2Wdv = Math.max(0, data.c2OpeningCost + data.additionsC2 - data.accDepC2Opening - data.deletionsC2);
+      const totalWdv = c1Wdv + c2Wdv;
+      if (data.saleValue > totalWdv) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["saleValue"],
+          message: `Sale Value (${data.saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}), computed from its own opening cost, additions, accumulated depreciation, and deletions.`
+        });
+      }
+    }
   });
 
 export type BulkAssetRowInput = z.infer<typeof bulkAssetRowSchema>;

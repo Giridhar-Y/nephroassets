@@ -441,7 +441,12 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
         "farId,subClassification,assetDescription,status,dateAcquired,location,usefulLifeC1Years,usefulLifeC2Years,serialNo,qty,c1OpeningCost,c2OpeningCost,additionsC1,additionsC2,dateOfAddition,accDepC1Opening,accDepC2Opening,dateOfDisposal,deletionsC1,deletionsC2,saleValue";
       const csv = [
         fullHeader,
-        "BULK-FULLCOLS,Test-Sub,All Columns,Disposed,2020-01-01,Center-A,5,5,SN-1,1,1000,1000,500,500,01-06-2020,200,200,01-01-2021,1500,1500,100"
+        // saleValue 0 — deletionsC1/C2 (1500) already consume the full opening cost +
+        // additions (1500) here, leaving 0 Written Down Value at disposal; a nonzero
+        // saleValue would now correctly trip the WDV ceiling check below, which isn't
+        // what this test is about (it's checking every column name is accepted, not
+        // dollar-amount consistency).
+        "BULK-FULLCOLS,Test-Sub,All Columns,Disposed,2020-01-01,Center-A,5,5,SN-1,1,1000,1000,500,500,01-06-2020,200,200,01-01-2021,1500,1500,0"
       ].join("\n");
       const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
       expect(res.statusCode).toBe(200);
@@ -460,9 +465,12 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
 
     it("a brand-new FAR ID may still set dateOfDisposal/deletions/saleValue (the historical-import case)", async () => {
       const withDisposalHeader = HEADER + ",dateOfDisposal,deletionsC1,deletionsC2,saleValue";
+      // saleValue 0 — deletionsC1/C2 (1000) already consume the full opening cost here
+      // (accDepC1/C2Opening default to 0, not in HEADER), leaving 0 Written Down Value;
+      // a nonzero saleValue would now correctly trip the WDV ceiling check.
       const csv = [
         withDisposalHeader,
-        "BULK-HIST-IMPORT,Test-Sub,Historical Import,Disposed,2018-01-01,Center-A,5,5,1000,1000,01-06-2020,1000,1000,500"
+        "BULK-HIST-IMPORT,Test-Sub,Historical Import,Disposed,2018-01-01,Center-A,5,5,1000,1000,01-06-2020,1000,1000,0"
       ].join("\n");
       const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
       expect(res.statusCode).toBe(200);
@@ -598,6 +606,102 @@ describe("Bulk Upload: POST /api/assets/bulk-upload", () => {
       const body = res.json();
       expect(body.errors[0].message).toBe(`No asset found with FAR ID "BULK-OUTOFSCOPE-DISPOSED".`);
       expect(body.errors[0].message).not.toMatch(/has already been disposed/i);
+    });
+  });
+
+  describe("Historical-import Sale Value / Deletions ceiling (2026-09-03)", () => {
+    const HIST_HEADER =
+      "farId,subClassification,assetDescription,status,dateAcquired,location,usefulLifeC1Years,usefulLifeC2Years,c1OpeningCost,c2OpeningCost,additionsC1,additionsC2,accDepC1Opening,accDepC2Opening,dateOfDisposal,deletionsC1,deletionsC2,saleValue";
+
+    it("rejects the reported row: Sale Value exceeds the Written Down Value computed from the row's own fields", async () => {
+      // Exact reproduction row: deletionsC1/C2 alone (118830/235390) already dwarf
+      // c1/c2OpeningCost (11883/23539), so WDV floors at 0 per component — any positive
+      // saleValue, including 1598, must be rejected. subClassification is deliberately
+      // left unrecognized (not seeded) — this check runs at the schema level, before any
+      // Masters lookup, so the row is rejected for the Sale Value reason specifically,
+      // not a "Sub Classification not recognized" one.
+      const csv = [
+        HIST_HEADER,
+        "FAR-003007,Medical Equipment-Dialysis,Dialysis Machine,Disposed,23-08-2021,Center-A,,,11883,23539,,,1483,150,27-05-2026,118830,235390,1598"
+      ].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-upload?preview=true",
+        ...csvPayload(csv)
+      });
+      const body = res.json();
+      expect(body.summary).toEqual({ new: 0, update: 0, error: 1 });
+      expect(body.rows[0].message).toMatch(
+        /Sale Value \(1598\) cannot exceed the asset's Written Down Value at disposal \(0\)/
+      );
+
+      // Also rejected on commit, not just preview — and writes nothing.
+      const commit = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(commit.json().processed).toBe(0);
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT far_id FROM assets WHERE far_id = 'FAR-003007'`);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("accepts a legitimate counterpart where Sale Value is within the row's own computed WDV", async () => {
+      // c1OpeningCost 10000 - accDepC1Opening 2000 - deletionsC1 6000 = 2000 WDV; 1500 <= 2000.
+      const csv = [
+        HIST_HEADER,
+        "FAR-VALID-WDV,Test-Sub,Valid Historical Import,Disposed,23-08-2021,Center-A,5,0,10000,0,,,2000,0,27-05-2026,6000,0,1500"
+      ].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-upload", ...csvPayload(csv) });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.added).toBe(1);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT status, sale_value FROM assets WHERE far_id = 'FAR-VALID-WDV'`);
+      expect(rows[0].status).toBe("Disposed");
+      expect(Number(rows[0].sale_value)).toBe(1500);
+    });
+
+    it("rejects Deletions that exceed Opening Cost + Additions, independent of Sale Value", async () => {
+      // saleValue 0 isolates this from the WDV-ceiling check above — deletionsC1 alone
+      // (118830) already exceeds c1OpeningCost + additionsC1 (11883), which is
+      // nonsensical regardless of what Sale Value is entered.
+      const csv = [
+        HIST_HEADER,
+        "FAR-BAD-DELETIONS,Test-Sub,Bad Deletions,Disposed,23-08-2021,Center-A,5,0,11883,0,,,1483,0,27-05-2026,118830,0,0"
+      ].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-upload?preview=true",
+        ...csvPayload(csv)
+      });
+      const body = res.json();
+      expect(body.summary).toEqual({ new: 0, update: 0, error: 1 });
+      expect(body.rows[0].message).toMatch(
+        /Component 1 Deletions \(118830\) cannot exceed Component 1 Opening Cost \+ Additions \(11883\)/
+      );
+    });
+
+    it("confirms both problem rows from the reported CSV produce the correct errors, in one preview call", async () => {
+      // Row 1: status Active but disposal fields set (pre-existing status/dateOfDisposal
+      // pairing check). Row 2: the exact WDV-exceeding row from the report.
+      const csv = [
+        HIST_HEADER,
+        "FAR-003007-ACTIVE,Medical Equipment-Dialysis,Dialysis Machine,Active,23-08-2021,Center-A,,,11883,23539,,,1483,150,27-05-2026,118830,235390,1598",
+        "FAR-003007,Medical Equipment-Dialysis,Dialysis Machine,Disposed,23-08-2021,Center-A,,,11883,23539,,,1483,150,27-05-2026,118830,235390,1598"
+      ].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-upload?preview=true",
+        ...csvPayload(csv)
+      });
+      const body = res.json();
+      expect(body.summary).toEqual({ new: 0, update: 0, error: 2 });
+      const activeRow = body.rows.find((r: { farId: string }) => r.farId === "FAR-003007-ACTIVE");
+      const disposedRow = body.rows.find((r: { farId: string }) => r.farId === "FAR-003007");
+      expect(activeRow.message).toMatch(/dateOfDisposal is set but status is "Active", not "Disposed"/);
+      expect(disposedRow.message).toMatch(
+        /Sale Value \(1598\) cannot exceed the asset's Written Down Value at disposal \(0\)/
+      );
     });
   });
 
