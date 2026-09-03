@@ -9,7 +9,7 @@ import { round2, splitDepreciationByLocation } from "../reports/transferDeprecia
 import { ASSET_INSERT_COLUMNS, assetCreateSchema, assetCreateValues, farId as farIdSchema } from "./assetSchema.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
-import { disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } from "./disposalWriteOff.js";
+import { computeWdvAtDisposal, disposeWithChildren, undoDisposalWithChildren, type DisposalSnapshot } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations, validateParentLink } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
@@ -20,7 +20,9 @@ import { buildExceptionPredicate, EXCEPTION_KEYS } from "./exceptionPredicates.j
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  saleValue: z.coerce.number().min(0)
+  // .default(0) matches Bulk Disposals' disposalRowSchema (bulkDisposals.ts) — a missing
+  // saleValue means "no proceeds", same as an explicit 0, on both paths.
+  saleValue: z.coerce.number().min(0).default(0)
 });
 
 // Shared by every Global-Admin-only delete/undo endpoint below — a reason is required,
@@ -977,12 +979,20 @@ export default async function assetsRoutes(app: FastifyInstance) {
       saleValue
     };
     const result = computeAsset(hypothetical, fy, []);
+    const totalWdv = (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
+    // Sale Value can't exceed what the asset is actually worth at disposal — same check
+    // (computeWdvAtDisposal) the PATCH route re-verifies before it ever writes, and Bulk
+    // Disposals applies per row.
+    if (saleValue > totalWdv) {
+      reply.code(400);
+      return { error: `Sale Value (${saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}).` };
+    }
 
     return {
       farId,
       c1Wdv: result.c1.wdvAtDisposal,
       c2Wdv: result.c2.wdvAtDisposal,
-      totalWdv: (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0),
+      totalWdv,
       profitLoss: result.assetProfitLossOnDisposal ?? 0
     };
   });
@@ -1019,6 +1029,31 @@ export default async function assetsRoutes(app: FastifyInstance) {
     if (childViolation) {
       reply.code(409);
       return { error: `This asset is a child of "${childViolation.parentFarId}" — dispose the parent instead.` };
+    }
+    // Sale Value can't exceed the asset's Written Down Value at disposal — same check the
+    // preview route above already performs, re-verified here since a caller can PATCH
+    // directly without ever previewing first.
+    const { rows: assetRowsForWdv } = await db.query<AssetRow>(
+      `SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+      [farId]
+    );
+    const assetRowForWdv = assetRowsForWdv[0];
+    if (!assetRowForWdv) {
+      reply.code(404);
+      return { error: `No asset found with FAR ID "${farId}".` };
+    }
+    const { rows: settingsRowsForWdv } = await db.query<SettingsRow>(
+      `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
+    );
+    const settingsRowForWdv = settingsRowsForWdv[0];
+    if (!settingsRowForWdv) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    const totalWdv = computeWdvAtDisposal(mapAssetRow(assetRowForWdv), mapSettingsRow(settingsRowForWdv), dateOfDisposal);
+    if (saleValue > totalWdv) {
+      reply.code(400);
+      return { error: `Sale Value (${saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}).` };
     }
     const client = await db.connect();
     let result: { written: boolean; childrenDisposed: string[] };

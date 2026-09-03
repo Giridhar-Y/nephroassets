@@ -1,4 +1,28 @@
 import type pg from "pg";
+import { computeAsset } from "../calc/engine.js";
+import type { AssetInput, FySettings } from "../calc/types.js";
+
+/**
+ * WDV (written-down value) an asset would have if disposed on `dateOfDisposal` — the
+ * ceiling a Sale Value must not exceed. Checked by the single Disposal PATCH route and
+ * Bulk Disposals before either ever writes (the preview route already computes this
+ * itself alongside Profit/Loss via its own computeAsset call, so it isn't a caller of
+ * this helper — but the two must stay in agreement, since both express the same rule).
+ * Independent of `asset.saleValue`/`asset.dateOfDisposal` themselves — WDV depends only
+ * on cost and depreciation up to the disposal date, so a hypothetical with saleValue
+ * forced to 0 is used and never read back.
+ */
+export function computeWdvAtDisposal(asset: AssetInput, fy: FySettings, dateOfDisposal: string): number {
+  const hypothetical: AssetInput = {
+    ...asset,
+    dateOfDisposal,
+    deletionsC1: asset.c1OpeningCost + asset.additionsC1,
+    deletionsC2: asset.c2OpeningCost + asset.additionsC2,
+    saleValue: 0
+  };
+  const result = computeAsset(hypothetical, { ...fy, asAt: dateOfDisposal }, []);
+  return (result.c1.wdvAtDisposal ?? 0) + (result.c2.wdvAtDisposal ?? 0);
+}
 
 /**
  * Full disposal only — Deletions is always the asset's entire capitalized cost

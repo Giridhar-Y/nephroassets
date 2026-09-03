@@ -58,12 +58,25 @@ export async function validateParentLink(
     errors.push(`Asset "${parentFarId}" is itself a child asset — only one level of parent/child is supported.`);
   }
 
-  const { rows: farIdRows } = await db.query<{ date_of_disposal: string | null }>(
-    `SELECT date_of_disposal FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+  const { rows: farIdRows } = await db.query<{ date_of_disposal: string | null; parent_far_id: string | null }>(
+    `SELECT date_of_disposal, parent_far_id FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
     [farId]
   );
   if (farIdRows.length > 0 && farIdRows[0]!.date_of_disposal !== null) {
     errors.push(`Asset "${farId}" has been disposed and can't be linked as a child.`);
+  }
+  // Re-parenting: a child already linked to a DIFFERENT parent must be explicitly
+  // unlinked first, not silently overwritten — matches bulkMerge.ts's Rule 4 exactly
+  // (kept in lock-step by hand per that file's own comment). The same requested parent
+  // is a no-op, not an error.
+  if (
+    farIdRows.length > 0 &&
+    farIdRows[0]!.parent_far_id !== null &&
+    farIdRows[0]!.parent_far_id !== parentFarId
+  ) {
+    errors.push(
+      `Asset "${farId}" is already a child of "${farIdRows[0]!.parent_far_id}" — remove that link first if you want to re-parent it.`
+    );
   }
 
   const { rows: ownChildren } = await db.query(

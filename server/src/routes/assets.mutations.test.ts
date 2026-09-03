@@ -612,6 +612,24 @@ describe("Edit: PATCH /api/assets/:farId", () => {
         payload: { ...baseEdit, parentFarId: "EDIT-PARENT-1" }
       });
 
+      // (2026-09-03) Switching straight to a different parent in one request is now
+      // rejected — validateParentLink's Rule 4 requires the old link to be explicitly
+      // cleared first (matches bulkMerge.ts's own "remove that link first" rule).
+      const direct = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: "EDIT-PARENT-B" }
+      });
+      expect(direct.statusCode).toBe(400);
+      expect(direct.json().error).toMatch(/already a child of "EDIT-PARENT-1".*remove that link first/);
+
+      const clear = await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/EDIT-TEST-1",
+        payload: { ...baseEdit, parentFarId: null }
+      });
+      expect(clear.statusCode).toBe(200);
+
       const res = await authedInject(app, {
         method: "PATCH",
         url: "/api/assets/EDIT-TEST-1",
@@ -1208,6 +1226,37 @@ describe("Disposal: PATCH /api/assets/:farId/disposal", () => {
       expect(rows.every((r: { date_of_disposal: string | null }) => r.date_of_disposal === null)).toBe(true);
     });
   });
+
+  it("rejects a Sale Value that exceeds the asset's Written Down Value at disposal, and writes nothing", async () => {
+    // DISP-TEST-1's combined opening cost is 20000 (10000 C1 + 10000 C2) — WDV at any
+    // disposal date can never exceed that, so 25000 is guaranteed to be over the ceiling
+    // regardless of exactly how much depreciation has accrued by the disposal date.
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 25000 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Sale Value \(25000\) cannot exceed the asset's Written Down Value at disposal/);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT date_of_disposal, status FROM assets WHERE far_id = 'DISP-TEST-1'`);
+    expect(rows[0].date_of_disposal).toBeNull();
+    expect(rows[0].status).toBe("Active");
+  });
+
+  it("treats an omitted Sale Value as 0, same as Bulk Disposals' default", async () => {
+    const res = await authedInject(app, {
+      method: "PATCH",
+      url: "/api/assets/DISP-TEST-1/disposal",
+      payload: { dateOfDisposal: "2026-08-01" }
+    });
+    expect(res.statusCode).toBe(200);
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT sale_value FROM assets WHERE far_id = 'DISP-TEST-1'`);
+    expect(Number(rows[0].sale_value)).toBe(0);
+  });
 });
 
 describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
@@ -1354,6 +1403,18 @@ describe("Disposal preview: POST /api/assets/:farId/disposal/preview", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatch(/child of "PREV-TEST-1".*dispose the parent instead/);
   });
+
+  it("rejects a preview whose Sale Value exceeds the asset's Written Down Value at disposal", async () => {
+    // PREV-TEST-1's combined opening cost is 20000 — same reasoning as the PATCH route's
+    // equivalent test: 25000 is guaranteed to be over the ceiling either way.
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/PREV-TEST-1/disposal/preview",
+      payload: { dateOfDisposal: "2026-08-01", saleValue: 25000 }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Sale Value \(25000\) cannot exceed the asset's Written Down Value at disposal/);
+  });
 });
 
 describe("Merge: POST /api/assets/merge", () => {
@@ -1499,5 +1560,34 @@ describe("Merge: POST /api/assets/merge", () => {
 
     const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'MERGE-CHILD-1'`);
     expect(rows[0].parent_far_id).toBeNull();
+  });
+
+  it("rejects re-parenting a child that already belongs to a different parent (matches bulkMerge.ts's Rule 4)", async () => {
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "MERGE-OTHER-PARENT-1" } });
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'MERGE-OTHER-PARENT-1' WHERE far_id = 'MERGE-CHILD-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/already a child of "MERGE-OTHER-PARENT-1".*remove that link first/);
+
+    const { rows } = await db.query(`SELECT parent_far_id FROM assets WHERE far_id = 'MERGE-CHILD-1'`);
+    expect(rows[0].parent_far_id).toBe("MERGE-OTHER-PARENT-1");
+  });
+
+  it("allows re-submitting the same requested parent as a no-op, not an error", async () => {
+    const db = await getPool();
+    await db.query(`UPDATE assets SET parent_far_id = 'MERGE-PARENT-1' WHERE far_id = 'MERGE-CHILD-1'`);
+
+    const res = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets/merge",
+      payload: { parentFarId: "MERGE-PARENT-1", childFarIds: ["MERGE-CHILD-1"] }
+    });
+    expect(res.statusCode).toBe(200);
   });
 });

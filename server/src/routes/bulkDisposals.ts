@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { mapAssetRow, mapSettingsRow, type AssetRow, type SettingsRow } from "../db/mappers.js";
 import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows, stringifyRowData } from "./bulkParse.js";
-import { disposeWithChildren } from "./disposalWriteOff.js";
+import { computeWdvAtDisposal, disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
@@ -42,6 +43,20 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       return { error: err instanceof Error ? err.message : "Could not read the file." };
     }
 
+    // Fetched once up front (not per row): without it, no row's Sale Value can be
+    // checked against its Written Down Value at disposal at all — same precondition
+    // the single-asset preview route already enforces.
+    const settingsDb = await getPool();
+    const { rows: settingsRows } = await settingsDb.query<SettingsRow>(
+      `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
+    );
+    const settingsRow = settingsRows[0];
+    if (!settingsRow) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    const fy = mapSettingsRow(settingsRow);
+
     // Preview mode: same not-found / already-disposed / before-capitalization / child-
     // can't-dispose-directly checks the commit loop below does, against the same
     // schema-valid rows, but read-only — no UPDATE, no transaction.
@@ -50,18 +65,19 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       const farIds = validRows.map(({ data }) => data.farId);
       const existing = new Map<
         string,
-        { dateOfDisposal: string | null; dateAcquired: string; dateOfAddition: string | null; currentLocation: string }
+        {
+          dateOfDisposal: string | null;
+          dateAcquired: string;
+          dateOfAddition: string | null;
+          currentLocation: string;
+          row: AssetRow;
+        }
       >();
       if (farIds.length > 0) {
-        const { rows } = await db.query<{
-          far_id: string;
-          date_of_disposal: string | null;
-          date_acquired: string;
-          date_of_addition: string | null;
-          location: string;
-          revised_location: string | null;
-        }>(
-          `SELECT far_id, date_of_disposal, date_acquired, date_of_addition, location, revised_location FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
+        // Full row (not just the columns the date/scope checks need) — Sale Value's
+        // ceiling check below needs every cost/depreciation field to compute WDV.
+        const { rows } = await db.query<AssetRow>(
+          `SELECT * FROM assets WHERE far_id = ANY($1) AND deleted_at IS NULL`,
           [farIds]
         );
         for (const r of rows) {
@@ -69,7 +85,8 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             dateOfDisposal: r.date_of_disposal,
             dateAcquired: r.date_acquired,
             dateOfAddition: r.date_of_addition,
-            currentLocation: r.revised_location ?? r.location
+            currentLocation: r.revised_location ?? r.location,
+            row: r
           });
         }
       }
@@ -110,7 +127,17 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
             data: stringifyRowData(data)
           });
         } else {
-          classified.push({ row, farId: data.farId, status: "update", data: stringifyRowData(data) });
+          const totalWdv = computeWdvAtDisposal(mapAssetRow(info.row), fy, data.dateOfDisposal);
+          if (data.saleValue > totalWdv) {
+            errors.push({
+              row,
+              farId: data.farId,
+              message: `Sale Value (${data.saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}).`,
+              data: stringifyRowData(data)
+            });
+          } else {
+            classified.push({ row, farId: data.farId, status: "update", data: stringifyRowData(data) });
+          }
         }
       }
       return mergePreviewRows(classified, errors);
@@ -149,14 +176,28 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
           // Center-scoped access: checked ahead of the write (rather than relying on
           // disposeWithChildren's own failure path, which can't distinguish "out of
           // scope" from "already disposed"/"bad date") — same 404-hides-existence
-          // treatment as the preview loop above.
-          const { rows: scopeCheckRows } = await client.query<{ location: string; revised_location: string | null }>(
-            `SELECT location, revised_location FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
+          // treatment as the preview loop above. Full row (not just location) — Sale
+          // Value's ceiling check right below needs every cost/depreciation field.
+          const { rows: assetRowsForWdv } = await client.query<AssetRow>(
+            `SELECT * FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
             [data.farId]
           );
-          if (scopeCheckRows[0] && !isCenterInScope(req.user!, scopeCheckRows[0].revised_location ?? scopeCheckRows[0].location)) {
+          const assetRowForWdv = assetRowsForWdv[0];
+          if (assetRowForWdv && !isCenterInScope(req.user!, assetRowForWdv.revised_location ?? assetRowForWdv.location)) {
             errors.push({ row, farId: data.farId, message: `No asset found with FAR ID "${data.farId}".`, data: stringifyRowData(data) });
             continue;
+          }
+          if (assetRowForWdv) {
+            const totalWdv = computeWdvAtDisposal(mapAssetRow(assetRowForWdv), fy, data.dateOfDisposal);
+            if (data.saleValue > totalWdv) {
+              errors.push({
+                row,
+                farId: data.farId,
+                message: `Sale Value (${data.saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}).`,
+                data: stringifyRowData(data)
+              });
+              continue;
+            }
           }
           try {
             await client.query("BEGIN");

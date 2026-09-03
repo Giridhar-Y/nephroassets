@@ -15,7 +15,11 @@ async function insertAsset(farId: string, overrides: Record<string, unknown> = {
     sub_classification: "Test-Sub",
     asset_description: `Bulk disposal test ${farId}`,
     status: "Active",
-    date_acquired: "2020-01-01",
+    // Recent enough (relative to the FY settings other tests below insert:
+    // fy_start 2026-04-01) that a disposal dated mid-2026 still has meaningful Written
+    // Down Value left — a 2020 acquisition on a 5-year life would already be fully
+    // depreciated by then, tripping the Sale Value ceiling check on any nonzero amount.
+    date_acquired: "2026-01-01",
     location: "Center-A",
     useful_life_c1_years: 5,
     useful_life_c2_years: 5,
@@ -52,6 +56,12 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    // Needed since the Sale Value ceiling check (computeWdvAtDisposal) requires FY
+    // settings to exist — same fixture values every other file's settings row uses.
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, '2026-08-17', '2026-04-01', '2027-03-31', 365)
+       ON CONFLICT (id) DO UPDATE SET as_at = '2026-08-17', fy_start = '2026-04-01', fy_end = '2027-03-31', days_in_fy = 365`
+    );
   });
 
   it("fully disposes valid rows and reports errors for the rest", async () => {
@@ -218,6 +228,47 @@ describe("Bulk Disposals: POST /api/assets/bulk-dispose", () => {
 
       const { rows } = await db.query(`SELECT date_of_disposal FROM assets WHERE far_id = 'BDISP-CHILD-2'`);
       expect(rows[0].date_of_disposal).toBeNull();
+    });
+  });
+
+  describe("Sale Value ceiling (2026-09-03)", () => {
+    it("rejects, per-row, a Sale Value that exceeds the asset's Written Down Value at disposal — without blocking the other rows", async () => {
+      await insertAsset("BDISP-OVER-WDV"); // combined opening cost 10000 (c1 only)
+      await insertAsset("BDISP-UNDER-WDV");
+
+      const csv = [HEADER, "BDISP-OVER-WDV,2026-08-01,50000", "BDISP-UNDER-WDV,2026-08-01,500"].join("\n");
+      const res = await authedInject(app, { method: "POST", url: "/api/assets/bulk-dispose", ...csvPayload(csv) });
+      const body = res.json();
+      expect(body.processed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].farId).toBe("BDISP-OVER-WDV");
+      expect(body.errors[0].message).toMatch(/Sale Value \(50000\) cannot exceed the asset's Written Down Value at disposal/);
+
+      const db = await getPool();
+      const { rows } = await db.query(
+        `SELECT far_id, status FROM assets WHERE far_id IN ('BDISP-OVER-WDV', 'BDISP-UNDER-WDV') ORDER BY far_id`
+      );
+      expect(rows).toEqual([
+        { far_id: "BDISP-OVER-WDV", status: "Active" },
+        { far_id: "BDISP-UNDER-WDV", status: "Disposed" }
+      ]);
+    });
+
+    it("flags the same Sale Value ceiling violation in preview mode, without writing anything", async () => {
+      await insertAsset("BDISP-PREVIEW-OVER-WDV");
+      const csv = [HEADER, "BDISP-PREVIEW-OVER-WDV,2026-08-01,50000"].join("\n");
+      const res = await authedInject(app, {
+        method: "POST",
+        url: "/api/assets/bulk-dispose?preview=true",
+        ...csvPayload(csv)
+      });
+      const body = res.json();
+      expect(body.summary).toEqual({ new: 0, update: 0, error: 1 });
+      expect(body.rows[0].message).toMatch(/Sale Value \(50000\) cannot exceed the asset's Written Down Value at disposal/);
+
+      const db = await getPool();
+      const { rows } = await db.query(`SELECT status FROM assets WHERE far_id = 'BDISP-PREVIEW-OVER-WDV'`);
+      expect(rows[0].status).toBe("Active");
     });
   });
 });
