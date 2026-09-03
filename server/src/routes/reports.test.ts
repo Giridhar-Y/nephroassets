@@ -245,6 +245,27 @@ describe("Audit Reconciliation report", () => {
       acc_dep_c1_opening: 20000
     });
 
+    // Regression fixture (2026-09-03): a not-yet-expired useful life so the flat-rate
+    // depreciation branch is exercised (a fully-expired asset's taper branch would floor
+    // to the same figure regardless of fyStart, masking the bug this fixture is for —
+    // confirmed by hand before picking useful_life_c1_years=30 here). Acquired well
+    // before both FY windows tested below, so Gross Block's Opening/Additions are
+    // identical either way — isolates the Accumulated Depreciation-only divergence.
+    await insertAsset({
+      far_id: "RECON-FY-WINDOW",
+      sub_classification: "Test-FY-Window",
+      asset_description: "Non-current FY Start reproduction fixture",
+      serial_no: "S9",
+      qty: 1,
+      date_acquired: "2015-01-01",
+      useful_life_c1_years: 30,
+      c1_opening_cost: 100000,
+      additions_c1: 0,
+      date_of_disposal: null,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 36667
+    });
+
     app = Fastify();
     app.decorateRequest("user", null);
     app.addHook("preHandler", authGateHook);
@@ -261,13 +282,11 @@ describe("Audit Reconciliation report", () => {
     // Default (no override): RECON-CLEAN-1's addition (dated 2026-05-01) is inside the
     // current FY (2026-04-01 to 2027-03-31), so it counts as an Addition.
     const current = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
-    const currentClean = current.json().items.find(
-      (i: { subClassification: string; component: string }) => i.subClassification === "Test-Clean" && i.component === "C1"
-    );
-    expect(currentClean.additionsSum).toBe(20000);
+    const currentClean = current.json().items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
+    expect(currentClean.c1.additionsSum).toBe(20000);
     // Opening sums RECON-CLEAN-1's 100000 and RECON-CLEAN-2's 50000 — both capitalized
     // 2020-01-01, well before either FY, so both count as Opening regardless of period.
-    expect(currentClean.openingSum).toBe(150000);
+    expect(currentClean.c1.openingSum).toBe(150000);
 
     // A prior FY (2025-04-01 to 2026-03-31): the same addition hasn't happened yet as of
     // that period's own AS_AT, so it must NOT count — additionsSum drops to 0. Opening
@@ -278,105 +297,90 @@ describe("Audit Reconciliation report", () => {
     });
     expect(prior.statusCode).toBe(200);
     expect(prior.json().fyStart).toBe("2025-04-01");
-    const priorClean = prior.json().items.find(
-      (i: { subClassification: string; component: string }) => i.subClassification === "Test-Clean" && i.component === "C1"
-    );
-    expect(priorClean.additionsSum).toBe(0);
-    expect(priorClean.openingSum).toBe(150000);
+    const priorClean = prior.json().items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
+    expect(priorClean.c1.additionsSum).toBe(0);
+    expect(priorClean.c1.openingSum).toBe(150000);
   });
 
   it("passes both checks for a clean sub classification", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    const clean = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Clean" && i.component === "C1"
-    );
+    const clean = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
     expect(clean).toBeDefined();
-    expect(clean.costCheckPass).toBe(true);
-    expect(clean.costCheckDelta).toBeCloseTo(0, 6);
-    expect(clean.depCheckPass).toBe(true);
-    expect(clean.depCheckDelta).toBeCloseTo(0, 6);
+    expect(clean.c1.costCheckPass).toBe(true);
+    expect(clean.c1.costCheckDelta).toBeCloseTo(0, 6);
+    expect(clean.c1.depCheckPass).toBe(true);
+    expect(clean.c1.depCheckDelta).toBeCloseTo(0, 6);
     // Neither fixture in this sub classification ever hits the Closing Acc Dep clamp —
     // no spurious adjustment should be reported for an asset whose figures already tie
     // out on their own.
-    expect(clean.cappedSum).toBeCloseTo(0, 6);
-    expect(clean.flooredSum).toBeCloseTo(0, 6);
-    expect(clean.capAdjustmentMessage).toBeNull();
+    expect(clean.c1.cappedSum).toBeCloseTo(0, 6);
+    expect(clean.c1.flooredSum).toBeCloseTo(0, 6);
+    expect(clean.c1.capAdjustmentMessage).toBeNull();
   });
 
   it("fails both checks for a broken sub classification, with the correct mismatch amount", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const broken = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Broken" && i.component === "C1"
-    );
+    const broken = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Broken");
     expect(broken).toBeDefined();
 
     // Orphaned deletion of 30000 on RECON-BROKEN-1 makes the cost side disagree.
-    expect(broken.costCheckPass).toBe(false);
-    expect(Math.abs(broken.costCheckDelta)).toBeCloseTo(30000, 6);
-    expect(broken.costCheckMessage).toContain("doesn't match Closing cost");
+    expect(broken.c1.costCheckPass).toBe(false);
+    expect(Math.abs(broken.c1.costCheckDelta)).toBeCloseTo(30000, 6);
+    expect(broken.c1.costCheckMessage).toContain("doesn't match Closing cost");
 
     // RECON-BROKEN-2's Opening Acc Dep (150000) exceeds cost (100000). This used to
     // fail the dep check outright (Closing Acc Dep silently capped at Gross Block, no
     // explanation); the cap/floor adjustment now accounts for it explicitly instead —
     // see "shows the cap adjustment and still ties out" below for the full assertion.
-    expect(broken.depCheckPass).toBe(true);
-    expect(broken.cappedSum).toBeCloseTo(50000, 6);
-    expect(broken.capAdjustmentMessage).toContain("Capped at Gross Block");
+    expect(broken.c1.depCheckPass).toBe(true);
+    expect(broken.c1.cappedSum).toBeCloseTo(50000, 6);
+    expect(broken.c1.capAdjustmentMessage).toContain("Capped at Gross Block");
   });
 
   it("keeps C1 and C2 independent: Test-Broken's C2 side is untouched and passes", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const brokenC2 = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Broken" && i.component === "C2"
-    );
-    expect(brokenC2).toBeDefined();
-    expect(brokenC2.costCheckPass).toBe(true);
-    expect(brokenC2.depCheckPass).toBe(true);
+    const broken = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Broken");
+    expect(broken.c2).not.toBeNull();
+    expect(broken.c2.costCheckPass).toBe(true);
+    expect(broken.c2.depCheckPass).toBe(true);
   });
 
   it("disposal after useful life had already expired — reconciles exactly on its own now, no cap adjustment needed (2026-09-01, second round)", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const postExpiry = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Post-Expiry-Disposal" && i.component === "C1"
+      (i: { subClassification: string }) => i.subClassification === "Test-Post-Expiry-Disposal"
     );
     expect(postExpiry).toBeDefined();
     // Cost side was never affected by this — still reconciles.
-    expect(postExpiry.costCheckPass).toBe(true);
-    expect(postExpiry.costCheckDelta).toBeCloseTo(0, 6);
+    expect(postExpiry.c1.costCheckPass).toBe(true);
+    expect(postExpiry.c1.costCheckDelta).toBeCloseTo(0, 6);
     // 2026-09-01 (second round): accDepOnDisposed now uses disposedRatio * (accDepOpening
     // + periodDepreciation) — the same taper-aware periodDepreciation as step 5, matching
     // Excel's AB/AC formula literally (see engine.ts's step 8 comment). accDepOpening
     // (10000) + periodDep(40000) - accDepOnDisposed(50000) = 0 = closingAccDep exactly,
     // with disposedRatio=1 (full disposal). No cap or floor engages — the gap this
     // fixture was built to explain no longer exists for this shape.
-    expect(postExpiry.depCheckPass).toBe(true);
-    expect(postExpiry.depCheckDelta).toBeCloseTo(0, 6);
-    expect(postExpiry.cappedSum).toBeCloseTo(0, 6);
-    expect(postExpiry.flooredSum).toBeCloseTo(0, 6);
-    expect(postExpiry.capAdjustmentMessage).toBeNull();
+    expect(postExpiry.c1.depCheckPass).toBe(true);
+    expect(postExpiry.c1.depCheckDelta).toBeCloseTo(0, 6);
+    expect(postExpiry.c1.cappedSum).toBeCloseTo(0, 6);
+    expect(postExpiry.c1.flooredSum).toBeCloseTo(0, 6);
+    expect(postExpiry.c1.capAdjustmentMessage).toBeNull();
   });
 
   it("an old, short-useful-life asset disposed mid-year (previously the cap-scenario fixture) now reconciles exactly on its own, no adjustment needed (2026-09-01, second round)", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const capScenario = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Cap-Scenario" && i.component === "C1"
-    );
+    const capScenario = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Cap-Scenario");
     expect(capScenario).toBeDefined();
 
     // Cost side is unaffected — still reconciles on its own.
-    expect(capScenario.costCheckPass).toBe(true);
-    expect(capScenario.costCheckDelta).toBeCloseTo(0, 6);
+    expect(capScenario.c1.costCheckPass).toBe(true);
+    expect(capScenario.c1.costCheckDelta).toBeCloseTo(0, 6);
 
     // Confirmed directly against engine.computeComponent: disposedRatio = 40000/90000 =
     // 0.4444..., accDepOnDisposed = 0.4444... * (70000 + 20000) = 40000 exactly —
@@ -384,30 +388,29 @@ describe("Audit Reconciliation report", () => {
     // Closing Acc Dep(50000) = Gross Block(50000), with no cap needed to get there
     // (unlike the pre-2026-09-01 flat-rate figure of 33375.95, which needed a
     // 6624.05 cap adjustment to reach the same 50000).
-    expect(capScenario.accDepOpeningSum).toBeCloseTo(70000, 6);
-    expect(capScenario.periodDepSum).toBeCloseTo(20000, 6);
-    expect(capScenario.accDepRemovedSum).toBeCloseTo(40000, 6);
-    expect(capScenario.closingAccDepSum).toBeCloseTo(50000, 6);
-    expect(capScenario.cappedSum).toBeCloseTo(0, 6);
-    expect(capScenario.flooredSum).toBeCloseTo(0, 6);
+    expect(capScenario.c1.accDepOpeningSum).toBeCloseTo(70000, 6);
+    expect(capScenario.c1.periodDepSum).toBeCloseTo(20000, 6);
+    expect(capScenario.c1.accDepRemovedSum).toBeCloseTo(40000, 6);
+    expect(capScenario.c1.closingAccDepSum).toBeCloseTo(50000, 6);
+    expect(capScenario.c1.cappedSum).toBeCloseTo(0, 6);
+    expect(capScenario.c1.flooredSum).toBeCloseTo(0, 6);
 
-    expect(capScenario.depCheckPass).toBe(true);
-    expect(capScenario.depCheckDelta).toBeCloseTo(0, 6);
-    expect(capScenario.capAdjustmentMessage).toBeNull();
+    expect(capScenario.c1.depCheckPass).toBe(true);
+    expect(capScenario.c1.depCheckDelta).toBeCloseTo(0, 6);
+    expect(capScenario.c1.capAdjustmentMessage).toBeNull();
   });
 
   it("malformed data (Opening Acc Dep exceeds cost) still ties out via the cap adjustment — the safety net the mechanism now exists for (2026-09-01, second round)", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const malformed = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Cap-Scenario-Malformed" && i.component === "C1"
+      (i: { subClassification: string }) => i.subClassification === "Test-Cap-Scenario-Malformed"
     );
     expect(malformed).toBeDefined();
 
     // Cost side is unaffected by the cap — still reconciles on its own.
-    expect(malformed.costCheckPass).toBe(true);
-    expect(malformed.costCheckDelta).toBeCloseTo(0, 6);
+    expect(malformed.c1.costCheckPass).toBe(true);
+    expect(malformed.c1.costCheckDelta).toBeCloseTo(0, 6);
 
     // step 8's own Math.min(..., effectiveDisposedCost) already capped accDepOnDisposed
     // down from a raw 60000 to 50000 (see engine.test.ts's "malformed-data safety net"
@@ -415,96 +418,84 @@ describe("Audit Reconciliation report", () => {
     // POST-cap value. On top of that, step 9's clamp is what this report's cappedSum
     // metric measures: Opening Acc Dep(60000) + Period Dep(0) - Acc Dep Removed(50000) =
     // 10000, above the remaining Gross Block (0, full disposal) — a 10000 adjustment.
-    expect(malformed.accDepOpeningSum).toBeCloseTo(60000, 6);
-    expect(malformed.periodDepSum).toBeCloseTo(0, 6);
-    expect(malformed.accDepRemovedSum).toBeCloseTo(50000, 6);
-    expect(malformed.closingAccDepSum).toBeCloseTo(0, 6);
-    expect(malformed.cappedSum).toBeCloseTo(10000, 6);
-    expect(malformed.flooredSum).toBeCloseTo(0, 6);
+    expect(malformed.c1.accDepOpeningSum).toBeCloseTo(60000, 6);
+    expect(malformed.c1.periodDepSum).toBeCloseTo(0, 6);
+    expect(malformed.c1.accDepRemovedSum).toBeCloseTo(50000, 6);
+    expect(malformed.c1.closingAccDepSum).toBeCloseTo(0, 6);
+    expect(malformed.c1.cappedSum).toBeCloseTo(10000, 6);
+    expect(malformed.c1.flooredSum).toBeCloseTo(0, 6);
 
     // The report ties out exactly once the adjustment is accounted for, and shows it
     // explicitly rather than leaving an unexplained gap — the mechanism doing its job.
-    expect(malformed.depCheckPass).toBe(true);
-    expect(malformed.depCheckDelta).toBeCloseTo(0, 6);
-    expect(malformed.capAdjustmentMessage).toBe("Capped at Gross Block: ₹10000.00");
+    expect(malformed.c1.depCheckPass).toBe(true);
+    expect(malformed.c1.depCheckDelta).toBeCloseTo(0, 6);
+    expect(malformed.c1.capAdjustmentMessage).toBe("Capped at Gross Block: ₹10000.00");
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
     const futureDisposal = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Future-Disposal" && i.component === "C1"
+      (i: { subClassification: string }) => i.subClassification === "Test-Future-Disposal"
     );
     expect(futureDisposal).toBeDefined();
-    expect(futureDisposal.costCheckPass).toBe(true);
-    expect(futureDisposal.costCheckDelta).toBeCloseTo(0, 6);
-    expect(futureDisposal.depCheckPass).toBe(true);
+    expect(futureDisposal.c1.costCheckPass).toBe(true);
+    expect(futureDisposal.c1.costCheckDelta).toBeCloseTo(0, 6);
+    expect(futureDisposal.c1.depCheckPass).toBe(true);
   });
 
   it("passes the NBV check (Gross Block - Acc Dep = NBV) for a clean sub classification", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const clean = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Clean" && i.component === "C1"
-    );
+    const clean = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
     expect(clean).toBeDefined();
-    expect(clean.nbvCheckPass).toBe(true);
-    expect(clean.nbvCheckDelta).toBeCloseTo(0, 6);
+    expect(clean.c1.nbvCheckPass).toBe(true);
+    expect(clean.c1.nbvCheckDelta).toBeCloseTo(0, 6);
   });
 
-  it("provides a Combined (C1+C2) row per sub classification, summing both components", async () => {
+  it("provides a Combined (C1+C2) group per sub classification, summing both components", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const c1 = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Clean" && i.component === "C1"
-    );
-    const c2 = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Clean" && i.component === "C2"
-    );
-    const combined = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Clean" && i.component === "Combined"
-    );
-    expect(combined).toBeDefined();
-    expect(combined.openingSum).toBeCloseTo(c1.openingSum + c2.openingSum, 6);
-    expect(combined.closingGrossBlockSum).toBeCloseTo(c1.closingGrossBlockSum + c2.closingGrossBlockSum, 6);
-    expect(combined.costCheckPass).toBe(true);
-    expect(combined.depCheckPass).toBe(true);
-    expect(combined.nbvCheckPass).toBe(true);
+    const item = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
+    expect(item.combined).toBeDefined();
+    expect(item.combined.openingSum).toBeCloseTo(item.c1.openingSum + item.c2.openingSum, 6);
+    expect(item.combined.closingGrossBlockSum).toBeCloseTo(item.c1.closingGrossBlockSum + item.c2.closingGrossBlockSum, 6);
+    expect(item.combined.costCheckPass).toBe(true);
+    expect(item.combined.depCheckPass).toBe(true);
+    expect(item.combined.nbvCheckPass).toBe(true);
   });
 
-  it("Combined row still fails when the underlying C1 side is broken", async () => {
+  it("Combined group still fails when the underlying C1 side is broken", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const combined = body.items.find(
-      (i: { subClassification: string; component: string }) =>
-        i.subClassification === "Test-Broken" && i.component === "Combined"
-    );
-    expect(combined).toBeDefined();
-    expect(combined.costCheckPass).toBe(false);
-    expect(Math.abs(combined.costCheckDelta)).toBeCloseTo(30000, 6);
+    const item = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-Broken");
+    expect(item.combined).toBeDefined();
+    expect(item.combined.costCheckPass).toBe(false);
+    expect(Math.abs(item.combined.costCheckDelta)).toBeCloseTo(30000, 6);
     // Dep side used to fail here too (RECON-BROKEN-2's cap); it now ties out via the
     // cap adjustment, same as the C1 row above — cost and dep checks are independent,
     // so the cost check failing doesn't stop the dep check from correctly passing.
-    expect(combined.depCheckPass).toBe(true);
-    expect(combined.cappedSum).toBeCloseTo(50000, 6);
+    expect(item.combined.depCheckPass).toBe(true);
+    expect(item.combined.cappedSum).toBeCloseTo(50000, 6);
   });
 
-  it("Has Component 2, decision 3: a C1-only Sub Classification shows a single row — no separate C2 or Combined row", async () => {
+  it("Has Component 2, decision 3: a C1-only Sub Classification's row has a null C2 group — one row, not a missing one", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
     const body = res.json();
-    const rowsForClass = body.items.filter(
-      (i: { subClassification: string }) => i.subClassification === "Test-C1-Only"
-    );
+    const rowsForClass = body.items.filter((i: { subClassification: string }) => i.subClassification === "Test-C1-Only");
+    // One entry per Sub Classification always — the "single row" behavior now shows up
+    // as a null c2, not as a missing array entry.
     expect(rowsForClass).toHaveLength(1);
-    expect(rowsForClass[0].component).toBe("C1");
-    expect(rowsForClass[0].openingSum).toBeCloseTo(100000, 6);
-    expect(rowsForClass[0].costCheckPass).toBe(true);
-    expect(rowsForClass[0].depCheckPass).toBe(true);
+    const item = rowsForClass[0];
+    expect(item.c2).toBeNull();
+    expect(item.c1.openingSum).toBeCloseTo(100000, 6);
+    expect(item.c1.costCheckPass).toBe(true);
+    expect(item.c1.depCheckPass).toBe(true);
+    // Combined is still populated (not null) even for a C1-only classification — it
+    // just equals C1 exactly, since the app blocks any real C2 data from landing on one.
+    expect(item.combined).not.toBeNull();
+    expect(item.combined.openingSum).toBeCloseTo(item.c1.openingSum, 6);
+    expect(item.combined.closingGrossBlockSum).toBeCloseTo(item.c1.closingGrossBlockSum, 6);
   });
 
   it("exports an Excel workbook", async () => {
@@ -515,7 +506,7 @@ describe("Audit Reconciliation report", () => {
     expect(res.rawPayload.length).toBeGreaterThan(0);
   });
 
-  it("Excel export includes the Acc Dep Adjustment column, correctly positioned, matching the JSON API's value for the cap-scenario fixture's C1 row", async () => {
+  it("Excel export: one row per Sub Classification, with C1/C2/Combined as merged-header column groups on that same row", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
     expect(res.statusCode).toBe(200);
 
@@ -523,37 +514,276 @@ describe("Audit Reconciliation report", () => {
     await workbook.xlsx.load(res.rawPayload as any);
     const sheet = workbook.worksheets[0]!;
 
-    // Row 1 = title, row 2 = blank, row 3 = C1 block's section title, row 4 = C1
-    // block's own header row — same layout every other export test in this file
-    // assumes for the sheets it inspects.
-    const headerRow = sheet.getRow(4);
-    const headers = (headerRow.values as unknown[]).slice(1).map(String);
-    expect(headers).toContain("Acc Dep Adjustment (Cap/Floor)");
-    const adjustmentCol = headers.indexOf("Acc Dep Adjustment (Cap/Floor)") + 1;
-    const accDepCheckCol = headers.indexOf("Dep Check") + 1;
-    // Confirms the column-index shift (Dep Check moved from 10 to 11 to make room for
-    // the new column) actually landed where the header says it did, not just that a
-    // header with the right text exists somewhere in the row.
-    expect(accDepCheckCol).toBe(adjustmentCol + 2);
+    // Row 1 = title, row 2 = note, row 3 = group-header row ("Sub Classification" +
+    // merged "C1"/"C2"/"Combined"), row 4 = field-level header row (Opening/.../NBV
+    // Check, repeated once per group) — one table now, not three stacked blocks.
+    const groupHeaderRow = sheet.getRow(3);
+    expect(groupHeaderRow.getCell(1).value).toBe("Sub Classification");
+    expect(groupHeaderRow.getCell(2).value).toBe("C1");
+    expect(groupHeaderRow.getCell(11).value).toBe("C2");
+    expect(groupHeaderRow.getCell(20).value).toBe("Combined (C1+C2)");
 
-    // Find the cap-scenario fixture's C1 row by scanning column 1 (Sub Classification)
-    // for its label, and confirm the adjustment cell holds the same amount the JSON API
-    // returns for it. Since 2026-09-01 (second round) this fixture no longer needs any
-    // cap adjustment (see the dedicated JSON test above) — the value is 0, not the
-    // pre-2026-09-01 6624.048706240486 — but the column's existence, position, and
-    // JSON-parity are still worth proving regardless of what the current fixtures' values
-    // happen to be. The fixture appears in all three blocks (C1, C2, Combined) — the
-    // sheet writes C1 first (see buildReconciliationWorkbook), so the first match is its
-    // C1 row.
+    const fieldHeaderRow = sheet.getRow(4);
+    const c1Headers = [2, 3, 4, 5, 6, 7, 8, 9, 10].map((c) => fieldHeaderRow.getCell(c).value);
+    expect(c1Headers).toEqual([
+      "Opening",
+      "Additions",
+      "Deletions",
+      "Closing (Cost)",
+      "Cost Check",
+      "Closing Acc Dep",
+      "Acc Dep Check",
+      "NBV Closing",
+      "NBV Check"
+    ]);
+    // Same 9 headers repeat identically for C2 (columns 11-19) and Combined (20-28).
+    const c2Headers = [11, 12, 13, 14, 15, 16, 17, 18, 19].map((c) => fieldHeaderRow.getCell(c).value);
+    const combinedHeaders = [20, 21, 22, 23, 24, 25, 26, 27, 28].map((c) => fieldHeaderRow.getCell(c).value);
+    expect(c2Headers).toEqual(c1Headers);
+    expect(combinedHeaders).toEqual(c1Headers);
+
+    // Merges: Sub Classification spans both header rows vertically; each group's
+    // header spans its own 9 columns on the group-header row only.
+    const merges = (sheet as any).model.merges as string[];
+    expect(merges).toContain("A3:A4");
+    expect(merges).toContain("B3:J3");
+    expect(merges).toContain("K3:S3");
+    expect(merges).toContain("T3:AB3");
+
+    // Find the JSON API's Test-Clean row and confirm the sheet's C1 Opening cell (col 2)
+    // matches it exactly — same restructured data, not independently re-derived.
+    const jsonRes = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    const cleanItem = jsonRes.json().items.find((i: { subClassification: string }) => i.subClassification === "Test-Clean");
     let found = false;
     sheet.eachRow((row, rowNumber) => {
       if (found || rowNumber <= 4) return;
-      if (row.getCell(1).value === "Test-Cap-Scenario") {
+      if (row.getCell(1).value === "Test-Clean") {
         found = true;
-        expect(Number(row.getCell(adjustmentCol).value)).toBeCloseTo(0, 6);
+        expect(Number(row.getCell(2).value)).toBeCloseTo(cleanItem.c1.openingSum, 6);
       }
     });
     expect(found).toBe(true);
+  });
+
+  it("Excel export: a C1-only Sub Classification's C2 columns are genuinely blank (no value), not zero-filled", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
+
+    let found = false;
+    sheet.eachRow((row, rowNumber) => {
+      if (found || rowNumber <= 4) return;
+      if (row.getCell(1).value === "Test-C1-Only") {
+        found = true;
+        // C1 group (columns 2-10) has real values; C2 group (columns 11-19) is blank.
+        expect(row.getCell(2).value).not.toBeNull();
+        for (let c = 11; c <= 19; c++) {
+          expect(row.getCell(c).value).toBeNull();
+        }
+        // Combined (columns 20-28) is still populated — equals C1 for a C1-only class.
+        expect(row.getCell(20).value).not.toBeNull();
+      }
+    });
+    expect(found).toBe(true);
+  });
+
+  it("Excel export: the cap/floor adjustment explanation is attached as a cell note on the Acc Dep Check cell, matching the JSON API's capAdjustmentMessage for the malformed-data fixture", async () => {
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
+
+    // Column 8 (0-based offset 6 within the C1 group starting at column 2) is Acc Dep
+    // Check — confirmed by the header-row test above.
+    let found = false;
+    sheet.eachRow((row, rowNumber) => {
+      if (found || rowNumber <= 4) return;
+      if (row.getCell(1).value === "Test-Cap-Scenario-Malformed") {
+        found = true;
+        const cell = row.getCell(8);
+        expect(cell.note).toBe("Capped at Gross Block: ₹10000.00");
+      }
+    });
+    expect(found).toBe(true);
+  });
+
+  // 2026-09-03: investigated a report that Closing Acc Dep/NBV Closing differ wildly
+  // between two exports at the SAME As At but different FY Start/End, even though Gross
+  // Block ties out identically in both. Root cause: accDepC1/C2Opening is a single,
+  // user-entered snapshot implicitly tied to whichever FY is current in Settings — it is
+  // NOT reclassified by date the way openingGrossBlock/additionsGrossBlock already are
+  // (see the FY-rollover fix). Querying a genuinely different fyStart therefore adds a
+  // real extra (or missing) period's worth of depreciation on top of the SAME
+  // accDepOpening, producing a figure this data model cannot support without a per-FY
+  // snapshot ledger — a data-model change, not something fixable by a patch here (see
+  // requireFySettings's isCurrentFy comment for the full writeup). These tests do NOT
+  // assert Closing Acc Dep/NBV Closing match across FY windows — they don't, and can't,
+  // today — they instead lock in the isCurrentFy signal both surfaces now use to warn
+  // instead of silently showing an unreliable number as if it were trustworthy.
+  describe("Non-current FY Start: Accumulated Depreciation/NBV are flagged, not silently wrong (2026-09-03)", () => {
+    it("isCurrentFy is true with no override, true when the override matches Settings exactly, false for a genuinely different FY", async () => {
+      const noOverride = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+      expect(noOverride.json().isCurrentFy).toBe(true);
+
+      const explicitCurrent = await authedInject(app, {
+        method: "GET",
+        url: `/api/reports/audit-reconciliation?fyStart=${FY_START}&fyEnd=${FY_END}&asAt=${AS_AT}`
+      });
+      expect(explicitCurrent.json().isCurrentFy).toBe(true);
+
+      const priorFy = await authedInject(app, {
+        method: "GET",
+        url: "/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=2026-03-31"
+      });
+      expect(priorFy.json().isCurrentFy).toBe(false);
+    });
+
+    it("isCurrentFy is false for a future FY window too, not just a past one — the same accDepOpening-snapshot mismatch applies either direction", async () => {
+      const res = await authedInject(app, {
+        method: "GET",
+        url: "/api/reports/audit-reconciliation?fyStart=2027-04-01&fyEnd=2028-03-31&asAt=2027-06-01"
+      });
+      expect(res.json().isCurrentFy).toBe(false);
+    });
+
+    it("re-derives isCurrentFy fresh per request — flips to true once Settings itself rolls forward to match a previously non-current window, and false for the now-former window", async () => {
+      const db = await getPool();
+      try {
+        // Before rollover: 2025-26 is non-current (2026-27, from beforeAll, is current).
+        const before = await authedInject(app, {
+          method: "GET",
+          url: "/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=2026-03-31"
+        });
+        expect(before.json().isCurrentFy).toBe(false);
+
+        // Roll Settings forward: 2025-26 becomes the (new) current FY — requireFySettings
+        // re-fetches settings fresh on every request, no caching, so this must be picked
+        // up on the very next call with no server restart needed.
+        await db.query(
+          `UPDATE settings SET as_at = '2026-03-31', fy_start = '2025-04-01', fy_end = '2026-03-31', days_in_fy = 365 WHERE id = TRUE`
+        );
+
+        const afterRollover = await authedInject(app, {
+          method: "GET",
+          url: "/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=2026-03-31"
+        });
+        expect(afterRollover.json().isCurrentFy).toBe(true);
+
+        // The window that WAS current before the rollover is now the non-current one.
+        const formerlyCurrentNow = await authedInject(app, {
+          method: "GET",
+          url: `/api/reports/audit-reconciliation?fyStart=${FY_START}&fyEnd=${FY_END}&asAt=${AS_AT}`
+        });
+        expect(formerlyCurrentNow.json().isCurrentFy).toBe(false);
+      } finally {
+        // Restore — every other test in this describe block assumes FY_START/FY_END/AS_AT
+        // (2026-27) are the current Settings FY.
+        await db.query(
+          `UPDATE settings SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4 WHERE id = TRUE`,
+          [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+        );
+      }
+    });
+
+    it("Gross Block ties out identically across two different FY Start windows; Closing Acc Dep does not — by exactly one year's straight-line depreciation", async () => {
+      const current = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+      const currentItem = current.json().items.find(
+        (i: { subClassification: string }) => i.subClassification === "Test-FY-Window"
+      );
+
+      const priorFy = await authedInject(app, {
+        method: "GET",
+        url: `/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=${AS_AT}`
+      });
+      const priorItem = priorFy.json().items.find(
+        (i: { subClassification: string }) => i.subClassification === "Test-FY-Window"
+      );
+
+      // Gross Block: unaffected — dateAcquired (2015-01-01) is before both fyStarts, so
+      // Opening/Additions/Deletions/Closing (Cost) reclassify identically either way.
+      expect(priorItem.c1.openingSum).toBeCloseTo(currentItem.c1.openingSum, 6);
+      expect(priorItem.c1.additionsSum).toBeCloseTo(currentItem.c1.additionsSum, 6);
+      expect(priorItem.c1.closingGrossBlockSum).toBeCloseTo(currentItem.c1.closingGrossBlockSum, 6);
+      expect(priorItem.c1.costCheckPass).toBe(true);
+
+      // Accumulated Depreciation: genuinely, provably different — the prior (earlier)
+      // fyStart adds one extra year's straight-line depreciation (100000/30) on top of
+      // the SAME accDepOpening, since periodDepreciation is a function of days from the
+      // query's OWN fyStart to AS_AT, not of accDepOpening's own (unstated) baseline FY.
+      const oneYearSlmDep = 100000 / 30;
+      expect(priorItem.c1.closingAccDepSum - currentItem.c1.closingAccDepSum).toBeCloseTo(oneYearSlmDep, 1);
+      expect(priorItem.c1.nbvClosingSum).toBeLessThan(currentItem.c1.nbvClosingSum);
+    });
+
+    it("JSON: the response marks isCurrentFy false for a non-current window, and still returns the (unreliable) figures for continuity", async () => {
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/reports/audit-reconciliation?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=${AS_AT}`
+      });
+      const body = res.json();
+      expect(body.isCurrentFy).toBe(false);
+      const item = body.items.find((i: { subClassification: string }) => i.subClassification === "Test-FY-Window");
+      expect(item.c1.closingAccDepSum).toBeGreaterThan(0);
+      expect(item.c1.nbvClosingSum).toBeGreaterThan(0);
+    });
+
+    it("Excel export: no warning row and real Pass/Fail badges for the current FY", async () => {
+      const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(res.rawPayload as any);
+      const sheet = workbook.worksheets[0]!;
+
+      // Same row layout every other current-FY export test in this file assumes — row 3
+      // is the group-header row, confirming no warning row was inserted above it.
+      expect(sheet.getRow(3).getCell(1).value).toBe("Sub Classification");
+      let found = false;
+      sheet.eachRow((row, rowNumber) => {
+        if (found || rowNumber <= 4) return;
+        if (row.getCell(1).value === "Test-FY-Window") {
+          found = true;
+          expect(row.getCell(8).value).not.toBe("N/A"); // Acc Dep Check
+          expect(row.getCell(10).value).not.toBe("N/A"); // NBV Check
+        }
+      });
+      expect(found).toBe(true);
+    });
+
+    it("Excel export: a warning row appears for a non-current FY, and Acc Dep Check/NBV Check show N/A with an explanatory note instead of a Pass/Fail badge", async () => {
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/reports/audit-reconciliation/export?fyStart=2025-04-01&fyEnd=2026-03-31&asAt=${AS_AT}`
+      });
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(res.rawPayload as any);
+      const sheet = workbook.worksheets[0]!;
+
+      // Row 3 is now the warning row (title=1, reconciliation note=2), pushing the
+      // group-header row to 4 and field-header row to 5.
+      expect(String(sheet.getRow(3).getCell(1).value)).toMatch(/not the current financial year/);
+      expect(sheet.getRow(4).getCell(1).value).toBe("Sub Classification");
+
+      let found = false;
+      sheet.eachRow((row, rowNumber) => {
+        if (found || rowNumber <= 5) return;
+        if (row.getCell(1).value === "Test-FY-Window") {
+          found = true;
+          const accDepCheckCell = row.getCell(8); // C1 group, offset 6
+          const nbvCheckCell = row.getCell(10); // C1 group, offset 8
+          expect(accDepCheckCell.value).toBe("N/A");
+          expect(accDepCheckCell.note).toMatch(/Not applicable/);
+          expect(nbvCheckCell.value).toBe("N/A");
+          // 2026-09-03 (revised same day): the raw values are genuinely blank, not
+          // shown-but-dimmed — a dimmed font is a screen-only signal that a screenshot,
+          // print, or copy-paste into another sheet would lose, leaving a real-looking
+          // number with no cue it's unreliable. Same treatment the null-C2 case already
+          // gets (see the blank-C2-columns test above).
+          expect(row.getCell(7).value).toBeNull(); // Closing Acc Dep value
+          expect(row.getCell(9).value).toBeNull(); // NBV Closing value
+        }
+      });
+      expect(found).toBe(true);
+    });
   });
 });
 

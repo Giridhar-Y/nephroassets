@@ -523,9 +523,7 @@ export function fetchLocationSummary(location: string, asAt: string): Promise<Lo
   return request(`/api/reports/location-summary?${new URLSearchParams({ location, asAt })}`);
 }
 
-export interface ReconciliationItem {
-  subClassification: string;
-  component: "C1" | "C2" | "Combined";
+export interface ReconciliationComponentFigures {
   openingSum: number;
   additionsSum: number;
   deletionsSum: number;
@@ -554,6 +552,17 @@ export interface ReconciliationItem {
   nbvCheckMessage: string;
 }
 
+// One row per Sub Classification, with C1/C2/Combined as column groups on that same
+// row — not one row per (subClassification, component) pair. c2 is null (not
+// zero-filled) for a Sub Classification that doesn't have Component 2; combined is
+// still populated even then (it just equals c1 exactly in that case).
+export interface ReconciliationItem {
+  subClassification: string;
+  c1: ReconciliationComponentFigures;
+  c2: ReconciliationComponentFigures | null;
+  combined: ReconciliationComponentFigures;
+}
+
 export interface ReconciliationPeriod {
   asAt: string;
   /** fyStart/fyEnd let this report reconcile a genuinely different financial year, not
@@ -572,7 +581,7 @@ function reconciliationParams(period: ReconciliationPeriod): URLSearchParams {
 
 export function fetchAuditReconciliation(
   period: ReconciliationPeriod
-): Promise<{ asAt: string; fyStart: string; items: ReconciliationItem[] }> {
+): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[] }> {
   return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`);
 }
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   fetchAuditReconciliation,
   getAuditReconciliationExportUrl,
+  type ReconciliationComponentFigures,
   type ReconciliationItem,
   type ReconciliationPeriod
 } from "../api/client.js";
@@ -10,7 +11,7 @@ import { formatCurrency } from "../lib/format.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
-import { EmptyIcon, ErrorIcon, FailIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
+import { EmptyIcon, ErrorIcon, FailIcon, InfoIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 
@@ -37,9 +38,91 @@ function CheckBadge({ pass, message, note }: { pass: boolean; message: string; n
   );
 }
 
+// 2026-09-03: Accumulated Depreciation / NBV can only be correctly computed for the FY
+// currently configured in Settings — accDepC1/C2Opening is a single, user-entered
+// snapshot with no per-FY history (see server/src/routes/reports.ts's
+// requireFySettings for the full mechanism). Shown instead of a misleading Pass/Fail —
+// the underlying check can never catch this on its own (it verifies the engine's own
+// arithmetic against itself, not an external truth).
+function NotApplicableBadge() {
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-bold italic text-amber-700">
+      N/A
+    </span>
+  );
+}
+
+// One column group per component, rendered identically 3 times across a row — C1/C2/
+// Combined column groups on the same <tr>, not stacked rows. Tinted to match the
+// Excel export's own C1=blue/C2=green/Combined=purple color coding (buildReconciliationWorkbook
+// in reports.ts), so the same grouping reads the same way on both surfaces.
+const GROUPS = [
+  { key: "c1" as const, label: "C1", get: (item: ReconciliationItem) => item.c1, tint: "bg-blue-50 text-blue-700" },
+  { key: "c2" as const, label: "C2", get: (item: ReconciliationItem) => item.c2, tint: "bg-green-50 text-green-700" },
+  {
+    key: "combined" as const,
+    label: "Combined",
+    get: (item: ReconciliationItem) => item.combined,
+    tint: "bg-purple-50 text-purple-700"
+  }
+];
+
+// A component group's 9 cells for one row — blank (not zero-filled) when `figures` is
+// null, the C1-only case (see reports.ts's computeReconciliationItems). `isCurrentFy`
+// false blanks Closing Acc Dep/NBV Closing the same way (genuinely empty, not a dimmed
+// number — see 2026-09-03's revision: a screenshot or a copy-paste loses a dimmed font,
+// so blank is the only signal actually safe for a reconciliation report) and swaps their
+// Check badges for NotApplicableBadge; Cost Check/Gross Block are unaffected.
+function GroupCells({ figures, isCurrentFy }: { figures: ReconciliationComponentFigures | null; isCurrentFy: boolean }) {
+  if (!figures) {
+    return (
+      <>
+        {Array.from({ length: 9 }).map((_, i) => (
+          <td key={i} className="border-b border-gray-100 py-2 pr-3 text-gray-300">
+            —
+          </td>
+        ))}
+      </>
+    );
+  }
+  return (
+    <>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">{formatCurrency(figures.openingSum)}</td>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">{formatCurrency(figures.additionsSum)}</td>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">{formatCurrency(figures.deletionsSum)}</td>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+        {formatCurrency(figures.closingGrossBlockSum)}
+      </td>
+      <td className="border-b border-gray-100 py-2 pr-3">
+        <CheckBadge pass={figures.costCheckPass} message={figures.costCheckMessage} />
+      </td>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+        {isCurrentFy ? formatCurrency(figures.closingAccDepSum) : <span className="text-gray-300">—</span>}
+      </td>
+      <td className="border-b border-gray-100 py-2 pr-3">
+        {isCurrentFy ? (
+          <CheckBadge pass={figures.depCheckPass} message={figures.depCheckMessage} note={figures.capAdjustmentMessage} />
+        ) : (
+          <NotApplicableBadge />
+        )}
+      </td>
+      <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
+        {isCurrentFy ? formatCurrency(figures.nbvClosingSum) : <span className="text-gray-300">—</span>}
+      </td>
+      <td className="border-b border-gray-100 py-2 pr-3">
+        {isCurrentFy ? <CheckBadge pass={figures.nbvCheckPass} message={figures.nbvCheckMessage} /> : <NotApplicableBadge />}
+      </td>
+    </>
+  );
+}
+
 export function AuditReconciliationPage() {
   const { settings } = useSettings();
   const [items, setItems] = useState<ReconciliationItem[] | null>(null);
+  // Whether the currently-loaded `items` were computed for the FY actually configured
+  // in Settings, not some other fyStart/fyEnd the period selector below asked for — see
+  // GroupCells/NotApplicableBadge for what this gates.
+  const [isCurrentFy, setIsCurrentFy] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,7 +143,10 @@ export function AuditReconciliationPage() {
     setLoading(true);
     setError(null);
     fetchAuditReconciliation(period)
-      .then((res) => setItems(res.items))
+      .then((res) => {
+        setItems(res.items);
+        setIsCurrentFy(res.isCurrentFy);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the reconciliation."))
       .finally(() => setLoading(false));
   }, [period]);
@@ -144,6 +230,18 @@ export function AuditReconciliationPage() {
         </div>
       )}
 
+      {!loading && !error && !isCurrentFy && items && items.length > 0 && (
+        <div className="flex items-start gap-1.5 border-b border-amber-100 bg-amber-50 px-6 py-2 text-sm text-amber-800">
+          <InfoIcon fontSize={15} className="mt-0.5 shrink-0" />
+          <span>
+            FY Start/End above isn&apos;t the current financial year in Settings — Accumulated Depreciation and NBV figures
+            are blank below (Check columns marked <strong>N/A</strong>) because they can&apos;t be reliably computed for any
+            FY other than the current one: the app stores a single Opening Acc Dep value per asset, not a per-FY snapshot.
+            Gross Block figures (Opening/Additions/Deletions/Closing/Cost Check) remain accurate for any period.
+          </span>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
         {loading ? (
           <div className="space-y-2">
@@ -158,67 +256,45 @@ export function AuditReconciliationPage() {
             <p className="text-xs text-gray-400">Once assets are in the register, this report checks their totals.</p>
           </div>
         ) : (
-          <table className="w-full min-w-[1300px] border-separate border-spacing-0 text-sm">
+          <table className="w-full min-w-[3400px] border-separate border-spacing-0 text-sm">
             <thead>
               <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                <th className="border-b-2 border-gray-300 py-2 pr-3">Sub Classification</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3">Component</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Opening</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Additions</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Deletions</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">
-                  <Tooltip text={FIELD_INFO.grossBlock.tooltip}>Closing (Cost)</Tooltip>
+                <th rowSpan={2} className="border-b-2 border-gray-300 py-2 pr-3 align-bottom">
+                  Sub Classification
                 </th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3">Cost Check</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">
-                  <Tooltip text={FIELD_INFO.accumulatedDepreciation.tooltip}>Closing Acc Dep</Tooltip>
-                </th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3">Acc Dep Check</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">NBV Closing</th>
-                <th className="border-b-2 border-gray-300 py-2 pr-3">NBV Check</th>
+                {GROUPS.map((g) => (
+                  <th key={g.key} colSpan={9} className={`border-b-2 border-gray-300 py-2 pr-3 text-center ${g.tint}`}>
+                    {g.label}
+                  </th>
+                ))}
+              </tr>
+              <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                {GROUPS.map((g) => (
+                  <Fragment key={g.key}>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Opening</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Additions</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">Deletions</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">
+                      <Tooltip text={FIELD_INFO.grossBlock.tooltip}>Closing (Cost)</Tooltip>
+                    </th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3">Cost Check</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">
+                      <Tooltip text={FIELD_INFO.accumulatedDepreciation.tooltip}>Closing Acc Dep</Tooltip>
+                    </th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3">Acc Dep Check</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3 text-right">NBV Closing</th>
+                    <th className="border-b-2 border-gray-300 py-2 pr-3">NBV Check</th>
+                  </Fragment>
+                ))}
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr
-                  key={`${item.subClassification}-${item.component}`}
-                  className={`align-top ${item.component === "Combined" ? "bg-gray-50" : ""}`}
-                >
+                <tr key={item.subClassification} className="align-top">
                   <td className="border-b border-gray-100 py-2 pr-3 font-medium text-ink">{item.subClassification}</td>
-                  <td
-                    className={`border-b border-gray-100 py-2 pr-3 ${
-                      item.component === "Combined" ? "font-semibold text-ink" : "text-gray-500"
-                    }`}
-                  >
-                    {item.component}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.openingSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.additionsSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.deletionsSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.closingGrossBlockSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3">
-                    <CheckBadge pass={item.costCheckPass} message={item.costCheckMessage} />
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.closingAccDepSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3">
-                    <CheckBadge pass={item.depCheckPass} message={item.depCheckMessage} note={item.capAdjustmentMessage} />
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3 text-right tabular-nums">
-                    {formatCurrency(item.nbvClosingSum)}
-                  </td>
-                  <td className="border-b border-gray-100 py-2 pr-3">
-                    <CheckBadge pass={item.nbvCheckPass} message={item.nbvCheckMessage} />
-                  </td>
+                  {GROUPS.map((g) => (
+                    <GroupCells key={g.key} figures={g.get(item)} isCurrentFy={isCurrentFy} />
+                  ))}
                 </tr>
               ))}
             </tbody>

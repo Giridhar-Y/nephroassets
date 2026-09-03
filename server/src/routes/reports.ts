@@ -42,7 +42,20 @@ async function requireFySettings(
     asAt: overrides?.asAt ?? settings.as_at,
     fyStart,
     fyEnd,
-    daysInFy
+    daysInFy,
+    // Whether the resolved fyStart/fyEnd are the FY actually configured in Settings
+    // right now, not some other window a caller's fyStart/fyEnd override asked for.
+    // Only Accumulated Depreciation / NBV care about this (see computeReconciliationItems's
+    // own comment on accDepC1/C2Opening) — Gross Block is a pure function of dates and is
+    // correct for any fyStart. accDepC1/C2Opening is a single, user-entered snapshot with
+    // no per-FY history — it implicitly represents the balance as of whichever FY is
+    // "current" in Settings, and is never reclassified the way opening_gross_block is.
+    // Querying a genuinely different fyStart therefore adds a real (or missing) period's
+    // worth of depreciation on top of that same snapshot, producing an Acc Dep/NBV figure
+    // this data model cannot actually support — confirmed via a controlled single-asset
+    // reproduction (2026-09-03): pushing fyStart back exactly one year, same accDepOpening,
+    // same asAt, shifts closingAccDep by exactly one year's straight-line depreciation.
+    isCurrentFy: fyStart === settings.fy_start && fyEnd === settings.fy_end
   };
 }
 
@@ -86,6 +99,68 @@ function buildCapAdjustmentMessage(cappedSum: number, flooredSum: number): strin
   if (cappedSum > EPSILON) parts.push(`Capped at Gross Block: ₹${cappedSum.toFixed(2)}`);
   if (flooredSum > EPSILON) parts.push(`Floored at Zero: ₹${flooredSum.toFixed(2)}`);
   return parts.length > 0 ? parts.join("; ") : null;
+}
+
+// One component's (C1, C2, or Combined) computed figures for one Sub Classification row
+// — same fields the old row-per-component shape had, minus subClassification/component
+// (those live on the row itself now; see computeReconciliationItems).
+function buildComponentFigures(r: ReconciliationRow) {
+  const openingSum = Number(r.opening_sum);
+  const additionsSum = Number(r.additions_sum);
+  const deletionsSum = Number(r.deletions_sum);
+  const closingGrossBlockSum = Number(r.closing_gross_block_sum);
+  const costCheckDelta = openingSum + additionsSum - deletionsSum - closingGrossBlockSum;
+  const costCheckPass = Math.abs(costCheckDelta) < EPSILON;
+
+  const accDepOpeningSum = Number(r.acc_dep_opening_sum);
+  const periodDepSum = Number(r.period_dep_sum);
+  const accDepRemovedSum = Number(r.acc_dep_removed_sum);
+  const closingAccDepSum = Number(r.closing_acc_dep_sum);
+  // How much the locked engine's Closing Acc Dep clamp (cap at Gross Block, floor at 0)
+  // pulled this row's figures away from the naive roll-forward — see the `adjusted` CTE
+  // above. Included in the check itself so the identity ties out exactly even when the
+  // clamp fired, instead of reporting an unexplained gap.
+  const cappedSum = Number(r.capped_sum);
+  const flooredSum = Number(r.floored_sum);
+  const capFloorAdjustmentSum = cappedSum - flooredSum;
+  const depCheckDelta = accDepOpeningSum + periodDepSum - accDepRemovedSum - capFloorAdjustmentSum - closingAccDepSum;
+  const depCheckPass = Math.abs(depCheckDelta) < EPSILON;
+
+  const nbvOpeningSum = Number(r.nbv_opening_sum);
+  const nbvClosingSum = Number(r.nbv_closing_sum);
+  const nbvCheckDelta = closingGrossBlockSum - closingAccDepSum - nbvClosingSum;
+  const nbvCheckPass = Math.abs(nbvCheckDelta) < EPSILON;
+
+  return {
+    openingSum,
+    additionsSum,
+    deletionsSum,
+    closingGrossBlockSum,
+    costCheckPass,
+    costCheckDelta,
+    costCheckMessage: costCheckPass
+      ? "Opening + Additions − Deletions matches Closing cost."
+      : `Opening + Additions − Deletions doesn't match Closing cost by ₹${Math.abs(costCheckDelta).toFixed(2)}.`,
+    accDepOpeningSum,
+    periodDepSum,
+    accDepRemovedSum,
+    closingAccDepSum,
+    cappedSum,
+    flooredSum,
+    capAdjustmentMessage: buildCapAdjustmentMessage(cappedSum, flooredSum),
+    depCheckPass,
+    depCheckDelta,
+    depCheckMessage: depCheckPass
+      ? "Opening Acc Dep + Period Depreciation − Acc Dep Removed matches Closing Acc Dep."
+      : `Opening Acc Dep + Period Depreciation − Acc Dep Removed doesn't match Closing Acc Dep by ₹${Math.abs(depCheckDelta).toFixed(2)}.`,
+    nbvOpeningSum,
+    nbvClosingSum,
+    nbvCheckPass,
+    nbvCheckDelta,
+    nbvCheckMessage: nbvCheckPass
+      ? "Closing Gross Block − Closing Acc Dep matches Closing NBV."
+      : `Closing Gross Block − Closing Acc Dep doesn't match Closing NBV by ₹${Math.abs(nbvCheckDelta).toFixed(2)}.`
+  };
 }
 
 // Audit Reconciliation: by Sub Classification, for C1, C2, and their Combined (C1+C2)
@@ -209,93 +284,56 @@ async function computeReconciliationItems(
     params
   );
 
-  // Has Component 2, decision 3: a C1-only Sub Classification shows a single row (C1),
-  // never separate C2/Combined rows — Combined would just equal C1 anyway. Rows for an
-  // unrecognized sub_classification (hasComponent2ByName.get returns undefined, not
-  // false) are left alone, same "default true" fallback as everywhere else.
-  const filteredRows = rows.filter((r) => hasComponent2ByName.get(r.sub_classification) !== false || r.component === "C1");
+  // Pivot the flat row-per-component result into one entry per Sub Classification, with
+  // C1/C2/Combined as nested column groups on that same entry — the SQL above still
+  // computes all three the same way it always has (three-way UNION ALL), this just
+  // reshapes the result before returning instead of after. Map preserves insertion
+  // order, and the SQL's own ORDER BY sub_classification, component (C1 < C2 <
+  // Combined alphabetically) means the first row seen for each sub_classification is
+  // always its C1 row — so no separate re-sort is needed here, same as before.
+  const bySubClassification = new Map<
+    string,
+    { c1?: ReconciliationRow; c2?: ReconciliationRow; combined?: ReconciliationRow }
+  >();
+  for (const r of rows) {
+    const entry = bySubClassification.get(r.sub_classification) ?? {};
+    if (r.component === "C1") entry.c1 = r;
+    else if (r.component === "C2") entry.c2 = r;
+    else entry.combined = r;
+    bySubClassification.set(r.sub_classification, entry);
+  }
 
-  return filteredRows.map((r) => {
-    const openingSum = Number(r.opening_sum);
-    const additionsSum = Number(r.additions_sum);
-    const deletionsSum = Number(r.deletions_sum);
-    const closingGrossBlockSum = Number(r.closing_gross_block_sum);
-    const costCheckDelta = openingSum + additionsSum - deletionsSum - closingGrossBlockSum;
-    const costCheckPass = Math.abs(costCheckDelta) < EPSILON;
-
-    const accDepOpeningSum = Number(r.acc_dep_opening_sum);
-    const periodDepSum = Number(r.period_dep_sum);
-    const accDepRemovedSum = Number(r.acc_dep_removed_sum);
-    const closingAccDepSum = Number(r.closing_acc_dep_sum);
-    // How much the locked engine's Closing Acc Dep clamp (cap at Gross Block, floor at
-    // 0) pulled this row's figures away from the naive roll-forward — see the
-    // `adjusted` CTE above. Included in the check itself so the identity ties out
-    // exactly even when the clamp fired, instead of reporting an unexplained gap.
-    const cappedSum = Number(r.capped_sum);
-    const flooredSum = Number(r.floored_sum);
-    const capFloorAdjustmentSum = cappedSum - flooredSum;
-    const depCheckDelta = accDepOpeningSum + periodDepSum - accDepRemovedSum - capFloorAdjustmentSum - closingAccDepSum;
-    const depCheckPass = Math.abs(depCheckDelta) < EPSILON;
-
-    const nbvOpeningSum = Number(r.nbv_opening_sum);
-    const nbvClosingSum = Number(r.nbv_closing_sum);
-    const nbvCheckDelta = closingGrossBlockSum - closingAccDepSum - nbvClosingSum;
-    const nbvCheckPass = Math.abs(nbvCheckDelta) < EPSILON;
-
+  // Has Component 2, decision 3: a C1-only Sub Classification's C2 group is blank
+  // (null), never a separate C2 figure — Combined is still shown, since it equals C1
+  // exactly for a C1-only classification (the app blocks any real C2 data from landing
+  // on one — see componentTwoGuard.ts) rather than being a second, redundant "C1-only"
+  // signal. Sub Classifications for an unrecognized name (hasComponent2ByName.get
+  // returns undefined, not false) are left alone, same "default true" fallback as
+  // everywhere else.
+  return [...bySubClassification.entries()].map(([subClassification, entry]) => {
+    const hasC2 = hasComponent2ByName.get(subClassification) !== false;
     return {
-      subClassification: r.sub_classification,
-      component: r.component,
-      openingSum,
-      additionsSum,
-      deletionsSum,
-      closingGrossBlockSum,
-      costCheckPass,
-      costCheckDelta,
-      costCheckMessage: costCheckPass
-        ? "Opening + Additions − Deletions matches Closing cost."
-        : `Opening + Additions − Deletions doesn't match Closing cost by ₹${Math.abs(costCheckDelta).toFixed(2)}.`,
-      accDepOpeningSum,
-      periodDepSum,
-      accDepRemovedSum,
-      closingAccDepSum,
-      cappedSum,
-      flooredSum,
-      capAdjustmentMessage: buildCapAdjustmentMessage(cappedSum, flooredSum),
-      depCheckPass,
-      depCheckDelta,
-      depCheckMessage: depCheckPass
-        ? "Opening Acc Dep + Period Depreciation − Acc Dep Removed matches Closing Acc Dep."
-        : `Opening Acc Dep + Period Depreciation − Acc Dep Removed doesn't match Closing Acc Dep by ₹${Math.abs(depCheckDelta).toFixed(2)}.`,
-      nbvOpeningSum,
-      nbvClosingSum,
-      nbvCheckPass,
-      nbvCheckDelta,
-      nbvCheckMessage: nbvCheckPass
-        ? "Closing Gross Block − Closing Acc Dep matches Closing NBV."
-        : `Closing Gross Block − Closing Acc Dep doesn't match Closing NBV by ₹${Math.abs(nbvCheckDelta).toFixed(2)}.`
+      subClassification,
+      c1: buildComponentFigures(entry.c1!),
+      c2: hasC2 && entry.c2 ? buildComponentFigures(entry.c2) : null,
+      combined: buildComponentFigures(entry.combined!)
     };
   });
 }
 
 type ReconciliationItem = Awaited<ReturnType<typeof computeReconciliationItems>>[number];
+type ReconciliationComponentFigures = ReconciliationItem["c1"];
 
-// Section styling per block, matching the reference workbook's own color coding for
+// Group styling per component, matching the reference workbook's own color coding for
 // this report — see the Step 1 comparison: C1 = blue family, C2 = green family,
 // Combined = purple family. Hex values read directly off the reference .xlsb via its
-// title-bar cell fills (converted from Excel's BGR long to RGB).
-const BLOCK_STYLE: Record<
-  "C1" | "C2" | "Combined",
-  { grossBlockFill: string; accDepFill: string; netBlockFill: string; headerFill: string; label: string }
-> = {
-  C1: { grossBlockFill: "FF2E75B6", accDepFill: "FF4472C4", netBlockFill: "FFC00000", headerFill: "FFBDD7EE", label: "C1" },
-  C2: { grossBlockFill: "FF375623", accDepFill: "FF507E32", netBlockFill: "FF843C0C", headerFill: "FFE2EFDA", label: "C2" },
-  Combined: {
-    grossBlockFill: "FF7030A0",
-    accDepFill: "FF8B3FC5",
-    netBlockFill: "FFA040C0",
-    headerFill: "FFE6D9F2",
-    label: "Combined (C1+C2)"
-  }
+// title-bar cell fills (converted from Excel's BGR long to RGB). One merged header
+// cell per group now (not three, one each for Gross Block/Acc Dep/NBV as before) — the
+// column set per group no longer subdivides that finely (see FIELD_HEADERS below).
+const GROUP_STYLE: Record<"c1" | "c2" | "combined", { fill: string; headerFill: string; label: string; startCol: number }> = {
+  c1: { fill: "FF2E75B6", headerFill: "FFBDD7EE", label: "C1", startCol: 2 },
+  c2: { fill: "FF375623", headerFill: "FFE2EFDA", label: "C2", startCol: 11 },
+  combined: { fill: "FF7030A0", headerFill: "FFE6D9F2", label: "Combined (C1+C2)", startCol: 20 }
 };
 const CHECK_HEADER_FILL = "FFFFE699";
 const PASS_FILL = "FFC6EFCE";
@@ -305,22 +343,57 @@ const FAIL_FONT = "FFC00000";
 const MONEY_FMT = "#,##0;(#,##0);-";
 const CHECK_FMT = '#,##0;(#,##0);"✓"';
 
-const BLOCK_COLUMNS = [
-  { header: "Sub Classification", width: 26 },
-  { header: "Opening", width: 16 },
-  { header: "Additions", width: 16 },
-  { header: "Deletions", width: 16 },
-  { header: "Closing (Gross Block)", width: 18 },
-  { header: "Cost Check", width: 14 },
-  { header: "Acc Dep Opening", width: 16 },
-  { header: "Dep for Period", width: 16 },
-  { header: "Acc Dep Adjustment (Cap/Floor)", width: 22 },
-  { header: "Acc Dep Closing", width: 16 },
-  { header: "Dep Check", width: 14 },
-  { header: "NBV Opening", width: 16 },
-  { header: "NBV Closing", width: 16 },
-  { header: "NBV Check", width: 14 }
+// One row per Sub Classification, C1/C2/Combined as column groups on that same row —
+// 9 fields per group, each repeated 3 times starting at GROUP_STYLE[key].startCol.
+// Deliberately narrower than the old per-block column set (which also had Acc Dep
+// Opening / Dep for Period / NBV Opening / a standalone Acc Dep Adjustment column):
+// those figures are still computed (ReconciliationComponentFigures has them all) and
+// still feed each check's pass/fail, they're just not each their own column now that
+// three of these groups sit side by side on one row. The cap/floor adjustment
+// explanation, when non-null, is attached as a cell note on that row's Acc Dep Check
+// cell instead (see writeGroupCells) — same info the UI's CheckBadge shows inline.
+const FIELD_HEADERS = [
+  "Opening",
+  "Additions",
+  "Deletions",
+  "Closing (Cost)",
+  "Cost Check",
+  "Closing Acc Dep",
+  "Acc Dep Check",
+  "NBV Closing",
+  "NBV Check"
 ] as const;
+const FIELD_WIDTHS = [16, 16, 16, 18, 14, 16, 14, 16, 14] as const;
+// 0-based offsets within a 9-field group that are Check columns (get the pass/fail fill
+// + checkmark number format, and the check-header tint in the field-level header row).
+const CHECK_FIELD_OFFSETS = new Set([4, 6, 8]);
+const FIELDS_PER_GROUP = FIELD_HEADERS.length;
+const TOTAL_COLUMNS = 1 + FIELDS_PER_GROUP * 3; // Sub Classification + 3 groups
+
+const RECONCILIATION_NOTE =
+  "C2 columns are blank (not zero) for a Sub Classification that doesn't have Component 2.";
+
+// 2026-09-03: Accumulated Depreciation / NBV can only be correctly computed for the FY
+// currently configured in Settings — accDepC1/C2Opening is a single, user-entered
+// snapshot with no per-FY history (see requireFySettings's isCurrentFy comment for the
+// full mechanism, confirmed via a controlled reproduction). Gross Block stays accurate
+// for any period queried via the period selector; Acc Dep/NBV do not, and their Check
+// columns can never catch this on their own (they verify the engine's own arithmetic
+// against itself, not against an external truth) — so both surfaces warn explicitly
+// instead of silently showing a number, or a Pass badge, that isn't trustworthy.
+//
+// Blanked, not dimmed (revised 2026-09-03, same day): a dimmed-but-visible number is a
+// screen-only, interactive-only signal — it doesn't survive a screenshot, a printed
+// page, or a copy-paste into another sheet, all normal things to happen to a
+// reconciliation report. Blank is the only signal safe enough for that use, and it's
+// already this report's own precedent: C2 is blank (not zero-filled) for a C1-only
+// classification, not dimmed.
+const NOT_CURRENT_FY_WARNING =
+  "⚠ FY Start/End above is not the current financial year in Settings — Accumulated Depreciation and NBV figures are blank below (not reliable for any FY other than the current one, so not shown at all) and their Check columns are marked N/A. Gross Block figures (Opening/Additions/Deletions/Closing/Cost Check) remain accurate for any period.";
+const NOT_APPLICABLE_NOTE =
+  "Not applicable — Accumulated Depreciation and NBV can't be correctly computed for a non-current FY Start with today's data model (a single Opening Acc Dep value per asset, not a per-FY snapshot). Deliberately left blank rather than shown as an unreliable number.";
+const NOT_APPLICABLE_FILL = "FFFFF2CC";
+const NOT_APPLICABLE_FONT = "FF7F6000";
 
 function styleCheckCell(cell: ExcelJS.Cell, pass: boolean) {
   cell.numFmt = CHECK_FMT;
@@ -328,42 +401,91 @@ function styleCheckCell(cell: ExcelJS.Cell, pass: boolean) {
   cell.font = { color: { argb: pass ? PASS_FONT : FAIL_FONT }, bold: true };
 }
 
-function writeReconciliationBlock(
-  sheet: ExcelJS.Worksheet,
-  component: "C1" | "C2" | "Combined",
-  rowsForBlock: ReconciliationItem[],
-  isLastBlock: boolean
-) {
-  const style = BLOCK_STYLE[component];
+function styleNotApplicableCell(cell: ExcelJS.Cell) {
+  cell.value = "N/A";
+  cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: NOT_APPLICABLE_FILL } };
+  cell.font = { color: { argb: NOT_APPLICABLE_FONT }, bold: true, italic: true };
+  cell.note = NOT_APPLICABLE_NOTE;
+}
 
-  const titleRow = sheet.addRow([`GROSS BLOCK / ACC DEP / NET BLOCK (NBV) — ${style.label}`]);
-  sheet.mergeCells(titleRow.number, 1, titleRow.number, 5);
-  sheet.mergeCells(titleRow.number, 6, titleRow.number, 6);
-  sheet.mergeCells(titleRow.number, 7, titleRow.number, 11);
-  sheet.mergeCells(titleRow.number, 12, titleRow.number, 14);
-  for (let c = 1; c <= 14; c++) {
-    const cell = titleRow.getCell(c);
-    const fill = c <= 5 ? style.grossBlockFill : c <= 11 ? style.accDepFill : style.netBlockFill;
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
-    cell.font = { color: { argb: "FFFFFFFF" }, bold: true };
-  }
-  titleRow.getCell(1).value = `GROSS BLOCK (COST) — ${style.label}`;
-  titleRow.getCell(7).value = `ACCUMULATED DEPRECIATION — ${style.label}`;
-  titleRow.getCell(12).value = `NET BLOCK (NBV) — ${style.label}`;
-  titleRow.commit();
+// The 9 field values + their pass/fail this component group needs to render a row —
+// satisfied directly by a ReconciliationComponentFigures (has these plus more, which is
+// fine, this only reads a subset) and, for the totals row, by a totals object with the
+// same shape assembled from groupTotalChecks below.
+type GroupRowData = Pick<
+  ReconciliationComponentFigures,
+  | "openingSum"
+  | "additionsSum"
+  | "deletionsSum"
+  | "closingGrossBlockSum"
+  | "closingAccDepSum"
+  | "nbvClosingSum"
+  | "costCheckPass"
+  | "costCheckDelta"
+  | "depCheckPass"
+  | "depCheckDelta"
+  | "nbvCheckPass"
+  | "nbvCheckDelta"
+> & { capAdjustmentMessage?: string | null };
 
-  const headerRow = sheet.addRow(BLOCK_COLUMNS.map((c) => c.header));
-  headerRow.eachCell((cell, colNumber) => {
-    cell.font = { bold: true };
-    cell.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: colNumber === 6 || colNumber === 11 || colNumber === 14 ? CHECK_HEADER_FILL : style.headerFill }
-    };
+/** Writes one component group's 9 cells starting at `startCol` on `row` — or leaves
+ *  them entirely blank (no value, no fill) when `data` is null, the C1-only case.
+ *  `isCurrentFy` false blanks Closing Acc Dep/NBV Closing too (same treatment as the
+ *  null-`data` case — genuinely empty, not a number with a dimmed font that a
+ *  screenshot or a stripped-styling export would lose) and marks Acc Dep Check/NBV
+ *  Check "N/A" (not a real Pass/Fail — see NOT_APPLICABLE_NOTE). Opening/Additions/
+ *  Deletions/Closing (Cost)/Cost Check are Gross Block — unaffected either way. */
+function writeGroupCells(row: ExcelJS.Row, startCol: number, data: GroupRowData | null, isCurrentFy: boolean) {
+  if (!data) return;
+  const values: Array<number> = [
+    data.openingSum,
+    data.additionsSum,
+    data.deletionsSum,
+    data.closingGrossBlockSum,
+    data.costCheckPass ? 0 : data.costCheckDelta,
+    data.closingAccDepSum,
+    data.depCheckPass ? 0 : data.depCheckDelta,
+    data.nbvClosingSum,
+    data.nbvCheckPass ? 0 : data.nbvCheckDelta
+  ];
+  values.forEach((value, i) => {
+    const cell = row.getCell(startCol + i);
+    if (!isCurrentFy && (i === 5 || i === 6 || i === 7 || i === 8)) {
+      if (i === 6 || i === 8) styleNotApplicableCell(cell);
+      return; // i === 5 / 7 (the value cells): left with no value at all — genuinely blank.
+    }
+    cell.value = value;
+    if (i === 4) styleCheckCell(cell, data.costCheckPass);
+    else if (i === 6) {
+      styleCheckCell(cell, data.depCheckPass);
+      // Same explanatory note the UI's CheckBadge shows inline under the Acc Dep Check
+      // badge — Excel has no room for a standalone Acc Dep Adjustment column anymore,
+      // but the "why doesn't this match the naive formula" answer shouldn't disappear.
+      if (data.capAdjustmentMessage) cell.note = data.capAdjustmentMessage;
+    } else if (i === 8) styleCheckCell(cell, data.nbvCheckPass);
+    else cell.numFmt = MONEY_FMT;
   });
-  headerRow.commit();
+}
 
-  const totals = {
+interface GroupTotals {
+  openingSum: number;
+  additionsSum: number;
+  deletionsSum: number;
+  closingGrossBlockSum: number;
+  accDepOpeningSum: number;
+  periodDepSum: number;
+  accDepRemovedSum: number;
+  capFloorAdjustmentSum: number;
+  closingAccDepSum: number;
+  nbvClosingSum: number;
+}
+
+// Sums every field a group's own check re-derivation needs — including the ones no
+// longer shown as their own column (Acc Dep Opening, Dep for Period, the cap/floor
+// adjustment) — so the totals row's Acc Dep Check ties out exactly the same way each
+// individual row's already does, not just "every row happened to pass".
+function sumGroupTotals(figuresList: ReconciliationComponentFigures[]): GroupTotals {
+  const totals: GroupTotals = {
     openingSum: 0,
     additionsSum: 0,
     deletionsSum: 0,
@@ -373,99 +495,113 @@ function writeReconciliationBlock(
     accDepRemovedSum: 0,
     capFloorAdjustmentSum: 0,
     closingAccDepSum: 0,
-    nbvOpeningSum: 0,
     nbvClosingSum: 0
   };
-
-  for (const item of rowsForBlock) {
-    const capFloorAdjustment = item.cappedSum - item.flooredSum;
-    const row = sheet.addRow([
-      item.subClassification,
-      item.openingSum,
-      item.additionsSum,
-      item.deletionsSum,
-      item.closingGrossBlockSum,
-      item.costCheckPass ? 0 : item.costCheckDelta,
-      item.accDepOpeningSum,
-      item.periodDepSum,
-      capFloorAdjustment,
-      item.closingAccDepSum,
-      item.depCheckPass ? 0 : item.depCheckDelta,
-      item.nbvOpeningSum,
-      item.nbvClosingSum,
-      item.nbvCheckPass ? 0 : item.nbvCheckDelta
-    ]);
-    for (let c = 1; c <= 14; c++) {
-      const cell = row.getCell(c);
-      if (c === 6) styleCheckCell(cell, item.costCheckPass);
-      else if (c === 11) styleCheckCell(cell, item.depCheckPass);
-      else if (c === 14) styleCheckCell(cell, item.nbvCheckPass);
-      else if (c > 1) cell.numFmt = MONEY_FMT;
-    }
-    row.commit();
-
-    totals.openingSum += item.openingSum;
-    totals.additionsSum += item.additionsSum;
-    totals.deletionsSum += item.deletionsSum;
-    totals.closingGrossBlockSum += item.closingGrossBlockSum;
-    totals.capFloorAdjustmentSum += capFloorAdjustment;
-    totals.accDepOpeningSum += item.accDepOpeningSum;
-    totals.periodDepSum += item.periodDepSum;
-    totals.accDepRemovedSum += item.accDepRemovedSum;
-    totals.closingAccDepSum += item.closingAccDepSum;
-    totals.nbvOpeningSum += item.nbvOpeningSum;
-    totals.nbvClosingSum += item.nbvClosingSum;
+  for (const f of figuresList) {
+    totals.openingSum += f.openingSum;
+    totals.additionsSum += f.additionsSum;
+    totals.deletionsSum += f.deletionsSum;
+    totals.closingGrossBlockSum += f.closingGrossBlockSum;
+    totals.accDepOpeningSum += f.accDepOpeningSum;
+    totals.periodDepSum += f.periodDepSum;
+    totals.accDepRemovedSum += f.accDepRemovedSum;
+    totals.capFloorAdjustmentSum += f.cappedSum - f.flooredSum;
+    totals.closingAccDepSum += f.closingAccDepSum;
+    totals.nbvClosingSum += f.nbvClosingSum;
   }
-
-  const costCheckTotalDelta = totals.openingSum + totals.additionsSum - totals.deletionsSum - totals.closingGrossBlockSum;
-  const depCheckTotalDelta =
-    totals.accDepOpeningSum + totals.periodDepSum - totals.accDepRemovedSum - totals.capFloorAdjustmentSum - totals.closingAccDepSum;
-  const nbvCheckTotalDelta = totals.closingGrossBlockSum - totals.closingAccDepSum - totals.nbvClosingSum;
-  const totalRow = sheet.addRow([
-    component === "Combined" ? "GRAND TOTAL" : "TOTAL",
-    totals.openingSum,
-    totals.additionsSum,
-    totals.deletionsSum,
-    totals.closingGrossBlockSum,
-    Math.abs(costCheckTotalDelta) < EPSILON ? 0 : costCheckTotalDelta,
-    totals.accDepOpeningSum,
-    totals.periodDepSum,
-    totals.capFloorAdjustmentSum,
-    totals.closingAccDepSum,
-    Math.abs(depCheckTotalDelta) < EPSILON ? 0 : depCheckTotalDelta,
-    totals.nbvOpeningSum,
-    totals.nbvClosingSum,
-    Math.abs(nbvCheckTotalDelta) < EPSILON ? 0 : nbvCheckTotalDelta
-  ]);
-  totalRow.font = { bold: true };
-  for (let c = 1; c <= 14; c++) {
-    const cell = totalRow.getCell(c);
-    if (c === 6) styleCheckCell(cell, Math.abs(costCheckTotalDelta) < EPSILON);
-    else if (c === 11) styleCheckCell(cell, Math.abs(depCheckTotalDelta) < EPSILON);
-    else if (c === 14) styleCheckCell(cell, Math.abs(nbvCheckTotalDelta) < EPSILON);
-    else if (c > 1) cell.numFmt = MONEY_FMT;
-  }
-  totalRow.commit();
-
-  if (!isLastBlock) sheet.addRow([]).commit();
+  return totals;
 }
 
-async function buildReconciliationWorkbook(items: ReconciliationItem[], asAt: string): Promise<ExcelJS.Buffer> {
+function groupTotalChecks(totals: GroupTotals) {
+  const costCheckDelta = totals.openingSum + totals.additionsSum - totals.deletionsSum - totals.closingGrossBlockSum;
+  const depCheckDelta =
+    totals.accDepOpeningSum + totals.periodDepSum - totals.accDepRemovedSum - totals.capFloorAdjustmentSum - totals.closingAccDepSum;
+  const nbvCheckDelta = totals.closingGrossBlockSum - totals.closingAccDepSum - totals.nbvClosingSum;
+  return {
+    costCheckPass: Math.abs(costCheckDelta) < EPSILON,
+    costCheckDelta,
+    depCheckPass: Math.abs(depCheckDelta) < EPSILON,
+    depCheckDelta,
+    nbvCheckPass: Math.abs(nbvCheckDelta) < EPSILON,
+    nbvCheckDelta
+  };
+}
+
+async function buildReconciliationWorkbook(
+  items: ReconciliationItem[],
+  asAt: string,
+  isCurrentFy: boolean
+): Promise<ExcelJS.Buffer> {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Audit Reconciliation");
-  sheet.columns = BLOCK_COLUMNS.map((c) => ({ width: c.width }));
+  sheet.columns = [{ width: 26 }, ...(["c1", "c2", "combined"] as const).flatMap(() => FIELD_WIDTHS.map((width) => ({ width })))];
 
   const titleRow = sheet.addRow([`FIXED ASSET REGISTER — AUDIT RECONCILIATION (as at ${asAt})`]);
-  sheet.mergeCells(titleRow.number, 1, titleRow.number, 14);
+  sheet.mergeCells(titleRow.number, 1, titleRow.number, TOTAL_COLUMNS);
   titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
   titleRow.getCell(1).font = { color: { argb: "FFFFFFFF" }, bold: true, size: 12 };
   titleRow.commit();
-  sheet.addRow([]).commit();
+  addNoteRow(sheet, RECONCILIATION_NOTE, TOTAL_COLUMNS);
+  if (!isCurrentFy) {
+    const warningRow = sheet.addRow([NOT_CURRENT_FY_WARNING]);
+    sheet.mergeCells(warningRow.number, 1, warningRow.number, TOTAL_COLUMNS);
+    warningRow.getCell(1).font = { italic: true, bold: true, color: { argb: NOT_APPLICABLE_FONT } };
+    warningRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: NOT_APPLICABLE_FILL } };
+    warningRow.commit();
+  }
 
-  const byComponent = (component: "C1" | "C2" | "Combined") => items.filter((i) => i.component === component);
-  writeReconciliationBlock(sheet, "C1", byComponent("C1"), false);
-  writeReconciliationBlock(sheet, "C2", byComponent("C2"), false);
-  writeReconciliationBlock(sheet, "Combined", byComponent("Combined"), true);
+  // Group header row (merged "C1" / "C2" / "Combined" spanning each group's 9 columns)
+  // above the field-level header row — Sub Classification's own header cell merges
+  // vertically across both, having no group of its own.
+  const groupHeaderRow = sheet.addRow([]);
+  const fieldHeaderRow = sheet.addRow([]);
+  groupHeaderRow.getCell(1).value = "Sub Classification";
+  groupHeaderRow.getCell(1).font = { bold: true };
+  groupHeaderRow.getCell(1).alignment = { vertical: "middle" };
+  sheet.mergeCells(groupHeaderRow.number, 1, fieldHeaderRow.number, 1);
+  for (const key of ["c1", "c2", "combined"] as const) {
+    const style = GROUP_STYLE[key];
+    sheet.mergeCells(groupHeaderRow.number, style.startCol, groupHeaderRow.number, style.startCol + FIELDS_PER_GROUP - 1);
+    const groupCell = groupHeaderRow.getCell(style.startCol);
+    groupCell.value = style.label;
+    groupCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: style.fill } };
+    groupCell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+    groupCell.alignment = { horizontal: "center" };
+    FIELD_HEADERS.forEach((header, i) => {
+      const cell = fieldHeaderRow.getCell(style.startCol + i);
+      cell.value = header;
+      cell.font = { bold: true };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: CHECK_FIELD_OFFSETS.has(i) ? CHECK_HEADER_FILL : style.headerFill }
+      };
+    });
+  }
+  groupHeaderRow.commit();
+  fieldHeaderRow.commit();
+
+  for (const item of items) {
+    const row = sheet.addRow([item.subClassification]);
+    writeGroupCells(row, GROUP_STYLE.c1.startCol, item.c1, isCurrentFy);
+    writeGroupCells(row, GROUP_STYLE.c2.startCol, item.c2, isCurrentFy);
+    writeGroupCells(row, GROUP_STYLE.combined.startCol, item.combined, isCurrentFy);
+    row.commit();
+  }
+
+  const c2Figures = items.map((i) => i.c2).filter((f): f is ReconciliationComponentFigures => f !== null);
+  const groupTotals: Record<"c1" | "c2" | "combined", GroupTotals> = {
+    c1: sumGroupTotals(items.map((i) => i.c1)),
+    c2: sumGroupTotals(c2Figures),
+    combined: sumGroupTotals(items.map((i) => i.combined))
+  };
+  const totalRow = sheet.addRow(["GRAND TOTAL"]);
+  for (const key of ["c1", "c2", "combined"] as const) {
+    const totals = groupTotals[key];
+    writeGroupCells(totalRow, GROUP_STYLE[key].startCol, { ...totals, ...groupTotalChecks(totals) }, isCurrentFy);
+  }
+  totalRow.font = { bold: true };
+  totalRow.commit();
 
   return workbook.xlsx.writeBuffer();
 }
@@ -1220,7 +1356,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
     }
 
     const items = await computeReconciliationItems(db, fy, req.user!);
-    return { asAt: fy.asAt, fyStart: fy.fyStart, items };
+    return { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
   });
 
   // Audit Reconciliation — Export to Excel: same three-block (C1 / C2 / Combined)
@@ -1245,7 +1381,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
     }
 
     const items = await computeReconciliationItems(db, fy, req.user!);
-    const buffer = await buildReconciliationWorkbook(items, fy.asAt);
+    const buffer = await buildReconciliationWorkbook(items, fy.asAt, fy.isCurrentFy);
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     reply.header("Content-Disposition", `attachment; filename="audit-reconciliation-${fy.asAt}.xlsx"`);
