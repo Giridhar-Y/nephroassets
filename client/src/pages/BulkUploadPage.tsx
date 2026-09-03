@@ -13,7 +13,7 @@ import {
   type BulkUploadResult,
   type ChunkProgress
 } from "../api/client.js";
-import { CHUNK_THRESHOLD_BYTES } from "../lib/csvChunking.js";
+import { CHUNK_THRESHOLD_BYTES, findDuplicateMasterKeys, findMergeFileConflicts } from "../lib/csvChunking.js";
 import {
   AddCircleIcon,
   CollapseExpandIcon,
@@ -352,22 +352,30 @@ export function BulkUploadPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  // Merge/Masters don't yet support chunking — Merge validates cross-row rules (parent/
-  // child cycles, dup usage) over the WHOLE file server-side in one pass, which chunking
-  // would silently break; Masters lists are realistically too small to ever hit the
-  // 4.5MB body ceiling. A large file for either still goes through the single-request
-  // path and, realistically, still hits the same 413 it does today.
-  const chunkableType = type === "assets" || type === "disposals" || type === "transfers";
-  const needsChunking = chunkableType && !!file && file.size > CHUNK_THRESHOLD_BYTES;
+  const needsChunking = !!file && file.size > CHUNK_THRESHOLD_BYTES;
   // Disposals/Transfers commit several sequential queries per row (scope check, a
-  // transaction, cascade to children, activity log) instead of Assets' one batched
-  // multi-row INSERT — a chunk has to stay well under Vercel's 60s function limit even
-  // at that higher per-row cost.
+  // transaction, cascade to children, activity log) instead of a single batched
+  // multi-row INSERT/UPDATE (Assets) or one plain per-row UPDATE (Merge, Masters) — a
+  // chunk has to stay well under Vercel's 60s function limit even at that higher
+  // per-row cost.
   // ponytail: conservative guess, not measured against production latency the way
   // Assets' 2,000/chunk was (verified live with a real 25k-row file) — watch the first
   // real large Disposals/Transfers upload and raise this if chunks finish comfortably
   // under 60s, or lower it if one times out.
-  const chunkRows = type === "assets" ? undefined : 300;
+  const chunkRows = type === "disposals" || type === "transfers" ? 300 : undefined;
+  // Whole-file cross-row check to run before chunking a type where per-chunk server
+  // validation alone isn't enough — see csvChunking.ts's findMergeFileConflicts and
+  // findDuplicateMasterKeys for why (Merge's cycle/dup-usage rules and Masters' own
+  // Code/Name dedup both currently run over the WHOLE file server-side, so a violation
+  // spanning two chunks would otherwise slip past a chunk validated on its own).
+  // Assets/Disposals/Transfers fall through to previewBulkUploadChunked/
+  // commitBulkUploadChunked's own default (FAR ID dedup).
+  const findFileConflicts =
+    type === "merge"
+      ? findMergeFileConflicts
+      : type === "masters"
+        ? findDuplicateMasterKeys(masterList === "centers" ? "code" : "name", masterList === "centers" ? "Code" : "Name")
+        : undefined;
 
   function selectType(next: UploadType) {
     setType(next);
@@ -385,7 +393,7 @@ export function BulkUploadPage() {
     setError(null);
     // Computed from `next` directly, not the `needsChunking`/`file` state above — `file`
     // hasn't actually updated yet at this point in the same tick (setFile is async).
-    const chunked = chunkableType && next.size > CHUNK_THRESHOLD_BYTES;
+    const chunked = next.size > CHUNK_THRESHOLD_BYTES;
     if (chunked && !next.name.toLowerCase().endsWith(".csv")) {
       setError(
         `This file is ${formatFileSize(next.size)} — files this large must be CSV (Excel's binary format can't be split into smaller uploads without risking it read back differently). Please re-save as CSV and try again.`
@@ -398,7 +406,7 @@ export function BulkUploadPage() {
     setChunkProgress(chunked ? { current: 0, total: 0 } : null);
     try {
       const res = chunked
-        ? await previewBulkUploadChunked(path, next, setChunkProgress, chunkRows)
+        ? await previewBulkUploadChunked(path, next, setChunkProgress, chunkRows, findFileConflicts)
         : await previewBulkUpload(path, next);
       setPreview(res);
       setStep("preview");
@@ -418,7 +426,7 @@ export function BulkUploadPage() {
     setChunkProgress(needsChunking ? { current: 0, total: 0 } : null);
     try {
       const res = needsChunking
-        ? await commitBulkUploadChunked(path, file, setChunkProgress, chunkRows)
+        ? await commitBulkUploadChunked(path, file, setChunkProgress, chunkRows, findFileConflicts)
         : await commitBulkUpload(path, file);
       setResult(res);
       setStep("result");

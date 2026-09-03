@@ -103,6 +103,10 @@ export async function parseCsvFile(file: File): Promise<ParsedCsv> {
   return { header, dataLines: lines.slice(1) };
 }
 
+// Shape reused below for every whole-file, cross-row check (FAR ID dedup, Masters key
+// dedup, Merge's file-level rules) — all three need the same 1-based row number and a
+// display label to merge into an aggregated preview/result alongside server-reported
+// row errors.
 export interface DuplicateFarIdError {
   /** 1-based, matching the server's own row numbering (header = row 1, first data row =
    *  row 2), so it can be merged directly into an aggregated preview/result alongside
@@ -138,6 +142,108 @@ export function findDuplicateFarIds(header: string[], dataLines: string[]): Dupl
     seen.add(key);
   });
   return duplicates;
+}
+
+/** Same rule as bulkMasters.ts's own in-file duplicate-key check (case-insensitive,
+ *  second-and-later occurrence flagged) — needed for the same reason as
+ *  findDuplicateFarIds above: each chunk validates independently server-side, so a
+ *  duplicate Code/Name spanning two chunks would otherwise slip through. Returns a
+ *  bound checker since which column is the key (and its display label) depends on
+ *  which Masters list is being uploaded (Centers: "code"/"Code"; Sub Classifications
+ *  and Statuses: "name"/"Name"). */
+export function findDuplicateMasterKeys(
+  keyColumn: string,
+  keyLabel: string
+): (header: string[], dataLines: string[]) => DuplicateFarIdError[] {
+  return (header, dataLines) => {
+    const col = header.findIndex((h) => h === keyColumn);
+    if (col === -1) return []; // schema validation on the server will reject the missing column itself
+    const seen = new Set<string>();
+    const duplicates: DuplicateFarIdError[] = [];
+    dataLines.forEach((line, i) => {
+      const key = (splitCsvFields(line)[col] ?? "").trim();
+      if (key === "") return;
+      const normalized = key.toLowerCase();
+      if (seen.has(normalized)) {
+        duplicates.push({ row: i + 2, farId: key, message: `Duplicate ${keyLabel} "${key}" — already appears earlier in this file.` });
+        return;
+      }
+      seen.add(normalized);
+    });
+    return duplicates;
+  };
+}
+
+/** Ports bulkMerge.ts's Rules 7/8 plus its "used as parent in one row, child in
+ *  another" check — the file-level rules validateMergeRows computes over the WHOLE
+ *  file server-side — so they still apply once a large Merge file is chunked into
+ *  independent per-chunk requests. Everything else in validateMergeRows (both-exist,
+ *  not-disposed, one-level-only, etc.) reads current DB state, not other rows in the
+ *  file, so it's unaffected by chunking and stays server-side unchanged. Case-sensitive
+ *  FAR ID comparison, matching the server function's own (deliberately un-lowercased)
+ *  comparisons exactly — unlike findDuplicateFarIds above, which is intentionally
+ *  case-insensitive. */
+export function findMergeFileConflicts(header: string[], dataLines: string[]): DuplicateFarIdError[] {
+  const parentCol = header.findIndex((h) => h === "parentFarId");
+  const childCol = header.findIndex((h) => h === "childFarId");
+  if (parentCol === -1 || childCol === -1) return [];
+  const rows = dataLines
+    .map((line, i) => {
+      const fields = splitCsvFields(line);
+      return { row: i + 2, parentFarId: (fields[parentCol] ?? "").trim(), childFarId: (fields[childCol] ?? "").trim() };
+    })
+    .filter((r) => r.parentFarId !== "" && r.childFarId !== "");
+
+  const errors: DuplicateFarIdError[] = [];
+  const label = (r: { parentFarId: string; childFarId: string }) => `${r.parentFarId} ← ${r.childFarId}`;
+
+  // Rule 7: no duplicate child FAR ID within the file.
+  const childCounts = new Map<string, number>();
+  for (const r of rows) childCounts.set(r.childFarId, (childCounts.get(r.childFarId) ?? 0) + 1);
+  for (const r of rows) {
+    const count = childCounts.get(r.childFarId)!;
+    if (count > 1) {
+      errors.push({
+        row: r.row,
+        farId: label(r),
+        message: `Child FAR ID "${r.childFarId}" appears ${count} times in this file — a child can only be merged once per batch.`
+      });
+    }
+  }
+
+  // Rule 8: a literal A-parent-of-B / B-parent-of-A cycle within the file.
+  const pairSet = new Set(rows.map((r) => `${r.parentFarId}\0${r.childFarId}`));
+  for (const r of rows) {
+    if (pairSet.has(`${r.childFarId}\0${r.parentFarId}`)) {
+      errors.push({
+        row: r.row,
+        farId: label(r),
+        message: `Cycle detected: "${r.parentFarId}" and "${r.childFarId}" can't both be parent of each other in the same file.`
+      });
+    }
+  }
+
+  // A FAR ID used as a PARENT in one row and a CHILD in a different row.
+  const fileParents = new Set(rows.map((r) => r.parentFarId));
+  const fileChildren = new Set(rows.map((r) => r.childFarId));
+  for (const r of rows) {
+    if (fileChildren.has(r.parentFarId)) {
+      errors.push({
+        row: r.row,
+        farId: label(r),
+        message: `"${r.parentFarId}" is used as a parent here but is also listed as a child in another row — only one level of parent/child is supported.`
+      });
+    }
+    if (fileParents.has(r.childFarId)) {
+      errors.push({
+        row: r.row,
+        farId: label(r),
+        message: `"${r.childFarId}" is used as a child here but is also listed as a parent in another row — only one level of parent/child is supported.`
+      });
+    }
+  }
+
+  return errors;
 }
 
 export interface CsvChunk {

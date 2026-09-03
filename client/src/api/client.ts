@@ -552,10 +552,14 @@ export async function previewBulkUploadChunked(
   path: string,
   file: File,
   onProgress: (p: ChunkProgress) => void,
-  chunkRows?: number
+  chunkRows?: number,
+  // Whole-file cross-row check to run before chunking — defaults to Assets/Disposals/
+  // Transfers' FAR ID dedup; Merge and Masters pass their own (see csvChunking.ts's
+  // findMergeFileConflicts / findDuplicateMasterKeys).
+  findFileConflicts: (header: string[], dataLines: string[]) => ReturnType<typeof findDuplicateFarIds> = findDuplicateFarIds
 ): Promise<BulkPreviewResult> {
   const { header, dataLines } = await parseCsvFile(file);
-  const duplicates = findDuplicateFarIds(header, dataLines);
+  const duplicates = findFileConflicts(header, dataLines);
   const duplicateRows = new Set(duplicates.map((d) => d.row));
   // Excluded from what's actually uploaded — each chunk validates independently
   // server-side, so a duplicate spanning two different chunks wouldn't be caught there
@@ -593,10 +597,11 @@ export async function commitBulkUploadChunked(
   path: string,
   file: File,
   onProgress: (p: ChunkProgress) => void,
-  chunkRows?: number
+  chunkRows?: number,
+  findFileConflicts: (header: string[], dataLines: string[]) => ReturnType<typeof findDuplicateFarIds> = findDuplicateFarIds
 ): Promise<BulkUploadResult> {
   const { header, dataLines } = await parseCsvFile(file);
-  const duplicates = findDuplicateFarIds(header, dataLines);
+  const duplicates = findFileConflicts(header, dataLines);
   const duplicateRows = new Set(duplicates.map((d) => d.row));
   const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
   const chunks = chunkCsvRows(header, nonDuplicateLines, chunkRows);
