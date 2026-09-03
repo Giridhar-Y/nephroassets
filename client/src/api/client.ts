@@ -551,7 +551,8 @@ function rowRecordFromCsvLine(header: string[], line: string): Record<string, st
 export async function previewBulkUploadChunked(
   path: string,
   file: File,
-  onProgress: (p: ChunkProgress) => void
+  onProgress: (p: ChunkProgress) => void,
+  chunkRows?: number
 ): Promise<BulkPreviewResult> {
   const { header, dataLines } = await parseCsvFile(file);
   const duplicates = findDuplicateFarIds(header, dataLines);
@@ -560,7 +561,7 @@ export async function previewBulkUploadChunked(
   // server-side, so a duplicate spanning two different chunks wouldn't be caught there
   // (see csvChunking.ts's findDuplicateFarIds for the full reasoning).
   const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
-  const chunks = chunkCsvRows(header, nonDuplicateLines);
+  const chunks = chunkCsvRows(header, nonDuplicateLines, chunkRows);
 
   const rows: BulkPreviewRow[] = duplicates.map((d) => ({
     row: d.row,
@@ -591,13 +592,14 @@ export async function previewBulkUploadChunked(
 export async function commitBulkUploadChunked(
   path: string,
   file: File,
-  onProgress: (p: ChunkProgress) => void
+  onProgress: (p: ChunkProgress) => void,
+  chunkRows?: number
 ): Promise<BulkUploadResult> {
   const { header, dataLines } = await parseCsvFile(file);
   const duplicates = findDuplicateFarIds(header, dataLines);
   const duplicateRows = new Set(duplicates.map((d) => d.row));
   const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
-  const chunks = chunkCsvRows(header, nonDuplicateLines);
+  const chunks = chunkCsvRows(header, nonDuplicateLines, chunkRows);
 
   const errors: BulkUploadError[] = duplicates.map((d) => ({ row: d.row, farId: d.farId, message: d.message }));
   let processed = 0;

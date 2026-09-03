@@ -152,12 +152,16 @@ export interface CsvChunk {
 }
 
 /** Splits (header, dataLines) — with the duplicate rows from findDuplicateFarIds
- *  already removed by the caller — into CHUNK_ROWS-sized upload-ready blobs. */
-export function chunkCsvRows(header: string[], dataLines: string[]): CsvChunk[] {
+ *  already removed by the caller — into upload-ready blobs of `chunkRows` rows each
+ *  (default CHUNK_ROWS). A caller whose per-row commit does several sequential DB round
+ *  trips instead of Assets' single batched INSERT (Disposals/Transfers — see
+ *  BulkUploadPage.tsx's CHUNK_ROWS_OVERRIDE) passes a smaller value so one chunk still
+ *  finishes inside Vercel's 60s function limit. */
+export function chunkCsvRows(header: string[], dataLines: string[], chunkRows: number = CHUNK_ROWS): CsvChunk[] {
   const headerLine = header.map((h) => (/[",\r\n]/.test(h) ? `"${h.replace(/"/g, '""')}"` : h)).join(",");
   const chunks: CsvChunk[] = [];
-  for (let i = 0; i < dataLines.length; i += CHUNK_ROWS) {
-    const rows = dataLines.slice(i, i + CHUNK_ROWS);
+  for (let i = 0; i < dataLines.length; i += chunkRows) {
+    const rows = dataLines.slice(i, i + chunkRows);
     const csv = [headerLine, ...rows].join("\r\n");
     chunks.push({ blob: new Blob([csv], { type: "text/csv;charset=utf-8;" }), rowOffset: i });
   }

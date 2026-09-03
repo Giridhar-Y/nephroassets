@@ -99,4 +99,12 @@ describe("chunkCsvRows", () => {
     expect(secondLines).toHaveLength(2); // header + the 1 overflow row
     expect(secondLines[1]).toBe(`FAR-${CHUNK_ROWS},Asset ${CHUNK_ROWS}`);
   });
+
+  it("uses a caller-supplied chunkRows instead of the CHUNK_ROWS default", () => {
+    const lines = ["FAR-1,A", "FAR-2,B", "FAR-3,C"];
+    const chunks = chunkCsvRows(header, lines, 2);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.rowOffset).toBe(0);
+    expect(chunks[1]!.rowOffset).toBe(2);
+  });
 });
