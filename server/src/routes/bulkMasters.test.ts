@@ -149,4 +149,35 @@ describe("Bulk Masters", () => {
       expect(res.json()).toMatchObject({ added: 1, updated: 0, errors: [] });
     });
   });
+
+  describe("active on create is ignored (2026-09-03 — matches the single-entry Masters screen, which has no create-as-Inactive option)", () => {
+    it("creates a Center, Sub Classification, and Status as Active regardless of an active=false column", async () => {
+      const db = await getPool();
+
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/centers/bulk-upload",
+        ...csvPayload(["code,active", "Center-NEW-INACTIVE,false"].join("\n"))
+      });
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/sub-classifications/bulk-upload",
+        ...csvPayload(["name,active", "Sub-NEW-INACTIVE,false"].join("\n"))
+      });
+      await authedInject(app, {
+        method: "POST",
+        url: "/api/masters/statuses/bulk-upload",
+        ...csvPayload(["name,active", "Status-NEW-INACTIVE,false"].join("\n"))
+      });
+
+      const [centers, subClasses, statuses] = await Promise.all([
+        db.query(`SELECT active FROM centers WHERE code = 'Center-NEW-INACTIVE'`),
+        db.query(`SELECT active FROM sub_classifications WHERE name = 'Sub-NEW-INACTIVE'`),
+        db.query(`SELECT active FROM statuses WHERE name = 'Status-NEW-INACTIVE'`)
+      ]);
+      expect(centers.rows[0].active).toBe(true);
+      expect(subClasses.rows[0].active).toBe(true);
+      expect(statuses.rows[0].active).toBe(true);
+    });
+  });
 });

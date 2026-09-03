@@ -186,7 +186,10 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       rowKey: (r) => r.code,
       fetchAll: fetchCentersWithUsage,
       hasPatch: (d) => d.description !== undefined || d.active !== undefined,
-      create: (db, d) => createCenter(db, d),
+      // active is deliberately dropped on create — matches the single-entry Masters
+      // screen, which has no "create as Inactive" option either (create a center, then
+      // Deactivate it afterward if needed). Still honored on update, below.
+      create: (db, d) => createCenter(db, { code: d.code, description: d.description }),
       update: (db, id, d) => updateCenterById(db, id, { description: d.description, active: d.active }),
       activityActions: { create: "center_create", update: "center_update" }
     })
@@ -207,13 +210,13 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
         d.defaultUsefulLifeC1Years !== undefined ||
         d.defaultUsefulLifeC2Years !== undefined ||
         d.hasComponent2 !== undefined,
+      // active is deliberately dropped on create — same reasoning as Centers above.
       create: (db, d) =>
         createSubClassification(db, {
           name: d.name,
           defaultUsefulLifeC1Years: d.defaultUsefulLifeC1Years,
           defaultUsefulLifeC2Years: d.defaultUsefulLifeC2Years,
-          hasComponent2: d.hasComponent2,
-          active: d.active
+          hasComponent2: d.hasComponent2
         }),
       update: (db, id, d) =>
         updateSubClassificationById(db, id, {
@@ -235,7 +238,8 @@ export default async function bulkMastersRoutes(app: FastifyInstance) {
       fetchAll: fetchStatusesWithUsage,
       isSystemManaged: (r) => r.systemManaged,
       hasPatch: (d) => d.active !== undefined,
-      create: (db, d) => createStatus(db, { name: d.name, active: d.active }),
+      // active is deliberately dropped on create — same reasoning as Centers above.
+      create: (db, d) => createStatus(db, { name: d.name }),
       update: (db, id, d) => updateStatusById(db, id, { active: d.active }),
       activityActions: { create: "status_create", update: "status_update" }
     })
