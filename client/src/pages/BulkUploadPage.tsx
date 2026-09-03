@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -10,6 +10,7 @@ import {
   previewBulkUpload,
   previewBulkUploadChunked,
   type BulkPreviewResult,
+  type BulkPreviewRow,
   type BulkUploadResult,
   type ChunkProgress
 } from "../api/client.js";
@@ -220,6 +221,45 @@ function downloadTemplate(config: UploadConfig, example: Record<string, string>)
   a.download = `${config.templateName}-template.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// CSV, not XLSX — this app has no client-side Excel-writing library (exceljs is
+// server-only; every existing export fetches a server-built .xlsx), and CSV needs none:
+// it opens directly in Excel, is exactly the format "Download Template" already
+// produces, and — unlike an XLSX round trip — is trivially re-uploadable as-is (Row/
+// Error Message are extra columns the bulk parser already ignores, since none of its
+// zod schemas are `.strict()`, so a user can fix values and re-upload without deleting
+// them first, though removing them is tidier).
+function exportErrorRows(preview: BulkPreviewResult, config: UploadConfig, fields: string[]) {
+  const errorRows = preview.rows.filter((r) => r.status === "error");
+  const headers = ["Row", "Error Message", ...fields];
+  const lines = [
+    headers,
+    ...errorRows.map((r) => [String(r.row), r.message ?? "", ...fields.map((f) => r.data?.[f] ?? "")])
+  ];
+  const csv = lines.map((line) => line.map(csvEscape).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${config.templateName}-errors.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Sorted by count descending — at real scale (per the report that prompted this: 204
+// errors in a 217,813-row file), a handful of distinct messages almost always account
+// for the vast majority of rows (one missing Sub Classification, one bad Location,
+// etc.), so the biggest fixes surface first instead of being buried among 204
+// near-identical lines.
+function groupErrorMessages(rows: BulkPreviewRow[]): Array<{ message: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (r.status !== "error") continue;
+    const message = r.message ?? "Unknown error";
+    counts.set(message, (counts.get(message) ?? 0) + 1);
+  }
+  return Array.from(counts, ([message, count]) => ({ message, count })).sort((a, b) => b.count - a.count);
 }
 
 function formatFileSize(bytes: number): string {
@@ -460,6 +500,12 @@ export function BulkUploadPage() {
         ? await previewBulkUploadChunked(path, next, setChunkProgress, chunkRows, findFileConflicts)
         : await previewBulkUpload(path, next);
       setPreview(res);
+      // Defaults ON whenever there's at least one error — at real scale (204 errors
+      // among 217,813 rows) they're easy to miss entirely scrolling through a table
+      // that's otherwise almost all "New"/"Update" rows, and the checkbox is exactly
+      // what surfaces them; a clean file (no errors) leaves it off since there's
+      // nothing to filter to.
+      setShowOnlyErrors(res.summary.error > 0);
       setStep("preview");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not read the file.");
@@ -500,6 +546,11 @@ export function BulkUploadPage() {
   const canConfirm = preview !== null && preview.summary.new + preview.summary.update > 0;
 
   const previewRows = preview ? (showOnlyErrors ? preview.rows.filter((r) => r.status === "error") : preview.rows) : [];
+  // Recomputed only when `preview` itself changes (a new file), not on every render —
+  // this component re-renders on every chunk-progress tick during Confirm Upload too,
+  // and grouping 200K+ rows' worth of error messages on each of those would be wasted
+  // work for a value that can't have changed.
+  const errorGroups = useMemo(() => (preview ? groupErrorMessages(preview.rows) : []), [preview]);
   const previewVirtualizer = useVirtualizer({
     count: previewRows.length,
     getScrollElement: () => previewScrollRef.current,
@@ -539,18 +590,57 @@ export function BulkUploadPage() {
           </button>
         </div>
 
-        <p className="mt-4 text-sm text-gray-700">
-          <span className="font-semibold text-blue-700">{preview.summary.new} new</span>,{" "}
-          <span className="font-semibold text-amber-700">
-            {preview.summary.update} update{preview.summary.update === 1 ? "" : "s"}
-          </span>
-          ,{" "}
-          <span className="font-semibold text-red-700">
-            {preview.summary.error} error{preview.summary.error === 1 ? "" : "s"}
-          </span>{" "}
-          out of {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"}.
-        </p>
-        <p className="mt-1 text-xs text-gray-500">
+        {/* The single most important line on this screen for a large file — bumped out
+            of plain-paragraph weight into its own bordered/colored callout (red when
+            there's anything to fix, green when the whole file is clean) so it can't
+            read as a footnote next to the file name above it. */}
+        <div
+          className={`mt-4 flex items-center gap-2 rounded-lg border px-3 py-2.5 ${
+            preview.summary.error > 0 ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"
+          }`}
+        >
+          {preview.summary.error > 0 ? (
+            <ErrorIcon fontSize={16} className="shrink-0 text-red-600" />
+          ) : (
+            <PassIcon fontSize={16} className="shrink-0 text-green-600" />
+          )}
+          <p className="text-sm font-semibold text-ink">
+            <span className="text-blue-700">{preview.summary.new} new</span>,{" "}
+            <span className="text-amber-700">
+              {preview.summary.update} update{preview.summary.update === 1 ? "" : "s"}
+            </span>
+            ,{" "}
+            <span className={preview.summary.error > 0 ? "text-red-700" : "text-gray-500"}>
+              {preview.summary.error} error{preview.summary.error === 1 ? "" : "s"}
+            </span>{" "}
+            out of {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"}.
+          </p>
+        </div>
+
+        {/* Grouped by exact message text, sorted by count descending — at real scale a
+            handful of distinct causes almost always account for nearly every error row
+            (one missing Sub Classification, one bad Location, etc.), so the biggest fix
+            surfaces first instead of being buried among hundreds of near-identical rows
+            in the table below. */}
+        {errorGroups.length > 0 && (
+          <div className="mt-2 max-h-28 overflow-auto rounded-md border border-red-100 bg-red-50/60 px-3 py-2">
+            <p className="text-xs font-semibold text-red-700">
+              {errorGroups.length} distinct error message{errorGroups.length === 1 ? "" : "s"}:
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {errorGroups.map(({ message, count }) => (
+                <li key={message} className="truncate text-xs text-red-700" title={message}>
+                  <span className="font-semibold">
+                    {count} row{count === 1 ? "" : "s"}:
+                  </span>{" "}
+                  {message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <p className="mt-2 text-xs text-gray-500">
           Showing all {preview.totalRows} row{preview.totalRows === 1 ? "" : "s"} below — scroll to review every one
           before confirming.
         </p>
@@ -580,15 +670,28 @@ export function BulkUploadPage() {
           ) : (
             <span />
           )}
-          <button
-            type="button"
-            aria-label={isExpanded ? "Exit full screen" : "Expand table to full screen"}
-            title={isExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
-            onClick={() => setExpanded(!isExpanded)}
-            className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:border-accent hover:bg-gray-50 hover:text-accent"
-          >
-            {isExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
-          </button>
+          <div className="flex items-center gap-2">
+            {preview.summary.error > 0 && (
+              <button
+                type="button"
+                onClick={() => exportErrorRows(preview, config, previewFields)}
+                title="Download a CSV of just the error rows (Row, Error Message, then every original column) — fix the values and re-upload."
+                className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:border-accent hover:bg-gray-50 hover:text-accent"
+              >
+                <ExportIcon fontSize={14} />
+                Export Errors
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={isExpanded ? "Exit full screen" : "Expand table to full screen"}
+              title={isExpanded ? "Exit full screen (Esc)" : "Expand to full screen"}
+              onClick={() => setExpanded(!isExpanded)}
+              className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:border-accent hover:bg-gray-50 hover:text-accent"
+            >
+              {isExpanded ? <CollapseExpandIcon fontSize={14} /> : <ExpandIcon fontSize={14} />}
+            </button>
+          </div>
         </div>
 
         <div

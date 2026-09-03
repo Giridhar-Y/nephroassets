@@ -179,6 +179,10 @@ describe("BulkUploadPage preview: expand to full screen", () => {
 
   it("expands into a fullscreen overlay showing the same table, then collapses back", async () => {
     await renderSmallPreview();
+    // "Show only rows with errors" now defaults on whenever the preview has any errors
+    // (this fixture has one) — unchecked here since this test is about expand/collapse
+    // rendering the same table consistently, not about that default.
+    fireEvent.click(screen.getByLabelText(/show only rows with errors/i));
     // react-virtual never computes a nonzero range in jsdom (no real ResizeObserver — see
     // the virtualization describe block above), so individual row cells never mount here
     // either way; the column headers and the virtualizer's own scroll-height output don't
@@ -278,5 +282,148 @@ describe("BulkUploadPage preview: expand to full screen", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(document.body.style.overflow).not.toBe("hidden");
+  });
+});
+
+// Regression coverage for the error-review workflow added for real large-file uploads
+// (a report of 217,813 rows with 204 errors prompted this): getting the error rows OUT
+// of the app to fix and re-upload, defaulting the error filter on so 204 errors aren't
+// buried among 217,609 good rows, and grouping repeated messages so the root causes are
+// obvious at a glance instead of read one near-identical row at a time.
+describe("BulkUploadPage preview: error review (Export Errors, default filter, grouping)", () => {
+  const errorRows = [
+    {
+      row: 2,
+      farId: "FAR-OK-1",
+      status: "new" as const,
+      message: undefined,
+      data: { farId: "FAR-OK-1", toLocation: "Center-002", transactionDate: "2024-03-01" }
+    },
+    {
+      row: 3,
+      farId: "FAR-BAD-1",
+      status: "error" as const,
+      message: "No asset found.",
+      data: { farId: "FAR-BAD-1", toLocation: "Center-003", transactionDate: "2024-03-02" }
+    },
+    {
+      row: 4,
+      farId: "FAR-BAD-2",
+      status: "error" as const,
+      message: "No asset found.",
+      data: { farId: "FAR-BAD-2", toLocation: "Center-004", transactionDate: "2024-03-03" }
+    }
+  ];
+
+  async function renderPreviewWithErrors() {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ totalRows: 3, summary: { new: 1, update: 0, error: 2 }, rows: errorRows }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
+        <ToastProvider>
+          <BulkUploadPage />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    const file = new File(["farId,toLocation,transactionDate\n"], "errors.csv", { type: "text/csv" });
+    const input = document.querySelector("#bulk-file-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText(/out of 3 rows/)).toBeTruthy());
+  }
+
+  async function renderCleanPreview() {
+    const rows = [
+      {
+        row: 2,
+        farId: "FAR-OK-1",
+        status: "new" as const,
+        message: undefined,
+        data: { farId: "FAR-OK-1", toLocation: "Center-002", transactionDate: "2024-03-01" }
+      }
+    ];
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ totalRows: 1, summary: { new: 1, update: 0, error: 0 }, rows }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
+        <ToastProvider>
+          <BulkUploadPage />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    const file = new File(["farId,toLocation,transactionDate\n"], "clean.csv", { type: "text/csv" });
+    const input = document.querySelector("#bulk-file-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText(/out of 1 row/)).toBeTruthy());
+  }
+
+  it("shows an Export Errors button when the preview has error rows", async () => {
+    await renderPreviewWithErrors();
+    expect(screen.getByRole("button", { name: /export errors/i })).toBeTruthy();
+  });
+
+  it("hides the Export Errors button when there are zero errors", async () => {
+    await renderCleanPreview();
+    expect(screen.queryByRole("button", { name: /export errors/i })).toBeNull();
+  });
+
+  it("defaults 'Show only rows with errors' to checked when the preview has errors, unchecked when it doesn't", async () => {
+    await renderPreviewWithErrors();
+    expect((screen.getByLabelText(/show only rows with errors/i) as HTMLInputElement).checked).toBe(true);
+
+    cleanup();
+    await renderCleanPreview();
+    // The checkbox itself isn't rendered at all when there's nothing to filter to.
+    expect(screen.queryByLabelText(/show only rows with errors/i)).toBeNull();
+  });
+
+  it("groups error messages by exact text with counts, above the table", async () => {
+    await renderPreviewWithErrors();
+    // Both error rows here share the same message — one group, count 2 — rather than
+    // two separate near-identical lines.
+    expect(screen.getByText(/1 distinct error message/i)).toBeTruthy();
+    expect(screen.getByText(/2 rows:/)).toBeTruthy();
+  });
+
+  it("exports exactly the error rows to CSV — Row, Error Message, then every original column, correct filename", async () => {
+    await renderPreviewWithErrors();
+
+    let capturedBlob: Blob | undefined;
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: vi.fn((blob: Blob) => {
+        capturedBlob = blob;
+        return "blob:fake";
+      }),
+      revokeObjectURL: vi.fn()
+    });
+    let capturedFilename: string | undefined;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      capturedFilename = this.download;
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /export errors/i }));
+
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(capturedFilename).toBe("transfers-errors.csv");
+    expect(capturedBlob).toBeTruthy();
+    const text = await capturedBlob!.text();
+    const lines = text.split("\r\n");
+    expect(lines[0]).toBe("Row,Error Message,farId,toLocation,transactionDate");
+    // Exactly the 2 error rows — the "new" row (FAR-OK-1) is not included.
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toBe("3,No asset found.,FAR-BAD-1,Center-003,2024-03-02");
+    expect(lines[2]).toBe("4,No asset found.,FAR-BAD-2,Center-004,2024-03-03");
+
+    clickSpy.mockRestore();
   });
 });
