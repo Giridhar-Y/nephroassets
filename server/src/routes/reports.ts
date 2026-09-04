@@ -1130,6 +1130,48 @@ function buildDashboardCalcCte(fy: Fy, user: Pick<AuthedUser, "centerScope">, fi
   return { cteSql, params };
 }
 
+/** NBV trend — batches every trailing-quarter-end point into ONE query (CROSS JOIN
+ *  against an unnested date array) instead of one round trip per point. Originally 6
+ *  independent full calc-CTE scans fired concurrently via Promise.all (see the trend
+ *  comment above trailingQuarterEnds' call site: this exact risk was flagged before it
+ *  was ever measured — "revisit... if this gets slow at the app's documented 250k-asset
+ *  scale"). At real scale a single Dashboard load could claim up to 8 of the connection
+ *  pool's 5 slots (db/pool.ts's `max: 5`) at once — confirmed via a scale-test
+ *  concurrency check investigating a reported incident where EVERY screen in the app,
+ *  not just Dashboard, went unresponsive at 217,000+ assets: an unrelated ~10ms request
+ *  measured 600ms+ while a Dashboard load was in flight, purely from queuing behind a
+ *  pool Dashboard's own queries had saturated. Collapsing the 6 points into 1 query keeps
+ *  Dashboard's total connection usage at 3 (this + totals + status) — comfortably under
+ *  the pool cap — without changing what's computed or its accuracy; the calc engine
+ *  itself (far_calc_component, LOCKED — see calcFunction.sql's header) is untouched. */
+function buildDashboardTrendSql(
+  dates: string[],
+  fy: Fy,
+  user: Pick<AuthedUser, "centerScope">,
+  filters: DashboardFilters
+): { sql: string; params: unknown[] } {
+  const { whereSql, params } = buildDashboardWhere(user, filters);
+  const fyStartIdx = params.push(fy.fyStart);
+  const fyEndIdx = params.push(fy.fyEnd);
+  const daysInFyIdx = params.push(fy.daysInFy);
+  const datesIdx = params.push(dates);
+  const c1 = `far_calc_component(c1_opening_cost, additions_c1, date_of_addition, useful_life_c1_years, date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, d.trend_date, $${fyStartIdx}::date, $${fyEndIdx}::date, $${daysInFyIdx}::integer, date_acquired)`;
+  const c2 = `far_calc_component(c2_opening_cost, additions_c2, date_of_addition, useful_life_c2_years, date_of_disposal, deletions_c2, sale_value, acc_dep_c2_opening, d.trend_date, $${fyStartIdx}::date, $${fyEndIdx}::date, $${daysInFyIdx}::integer, date_acquired)`;
+  const sql = `
+    WITH filtered AS (
+      SELECT * FROM assets WHERE ${whereSql}
+    ), dates AS (
+      SELECT unnest($${datesIdx}::date[]) AS trend_date
+    )
+    SELECT d.trend_date AS as_at, COALESCE(SUM((${c1}).nbv + (${c2}).nbv), 0) AS nbv
+    FROM filtered
+    CROSS JOIN dates d
+    GROUP BY d.trend_date
+    ORDER BY d.trend_date
+  `;
+  return { sql, params };
+}
+
 const CALENDAR_QUARTER_ENDS: [number, number][] = [
   [3, 31],
   [6, 30],
@@ -1253,13 +1295,17 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
   // this needs to be exact, or this gets slow at the app's documented 250k-asset scale,
   // revisit with a monthly snapshot table — not needed for v1.
   const trendDates = trailingQuarterEnds(fy.asAt, 6);
-  const trendPromise = Promise.all(
-    trendDates.map(async (date) => {
-      const { cteSql, params } = buildDashboardCalcCte({ ...fy, asAt: date }, user, filters);
-      const { rows } = await db.query<{ nbv: string }>(`${cteSql} SELECT COALESCE(SUM((c1).nbv + (c2).nbv), 0) AS nbv FROM calc`, params);
-      return { asAt: date, nbv: Number(rows[0]!.nbv) };
-    })
-  );
+  const trendPromise = (async () => {
+    const { sql, params } = buildDashboardTrendSql(trendDates, fy, user, filters);
+    const { rows } = await db.query<{ as_at: string; nbv: string }>(sql, params);
+    // LEFT/CROSS-JOIN edge case: a date with zero matching assets across the whole
+    // filtered set (only possible when the filters themselves match nothing at all,
+    // at any date) simply never appears in the grouped result — default it to 0 rather
+    // than pass NULL asset columns through far_calc_component for a row that doesn't
+    // exist.
+    const byDate = new Map(rows.map((r) => [r.as_at, Number(r.nbv)]));
+    return trendDates.map((date) => ({ asAt: date, nbv: byDate.get(date) ?? 0 }));
+  })();
 
   const [totalsRows, statusRows, nbvTrend] = await Promise.all([totalsPromise, statusPromise, trendPromise]);
 
@@ -1443,45 +1489,57 @@ async function computeRegisterSummary(
   // so both callers below wrap their own call in a try/catch that logs via req.log.error
   // and reports the same plain-language 500, matching assetsExport.ts's own totals-query
   // guard exactly.
+  //
+  // The two queries below each run a full far_calc_component() scan over every matching
+  // asset (LOCKED calc engine — see calcFunction.sql's header — so the per-row cost
+  // itself isn't something this route can reduce). Originally sequential (grand total
+  // awaited only after the grouped query fully returned) — measured at 78s wall-clock
+  // for 250,000 assets against this repo's own scale-test harness while investigating a
+  // reported production incident (every screen, not just this one, went unresponsive at
+  // 217,000+ real assets). Running them concurrently instead doesn't reduce the total DB
+  // work, but roughly halves wall-clock time by not making the grand total wait its turn
+  // behind the grouped query — the same two-connections-instead-of-one tradeoff
+  // Dashboard's own totals+status queries already make, well within the pool's `max: 5`
+  // (db/pool.ts). The independent-cross-check property (a real second computation, not a
+  // JS sum of the grouped rows) is unchanged — only when it runs changed, not what it
+  // computes.
   const groupParams = [...params];
   const groupCalcExtras = buildCalcCteExtras(groupParams, asAt, fy);
-  const { rows: groupRows } = await db.query(
-    `WITH calc_base AS (
-       SELECT assets.*,
-         ${groupCalcExtras}
-       FROM assets ${whereClause}
-     ), calc AS (
-       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
-       FROM calc_base
-     )
-     SELECT
-       sub_classification, status, effective_location AS location,
-       COUNT(*) AS asset_count,
-       ${selectSql}
-     FROM calc ${computedWhereClause}
-     GROUP BY sub_classification, status, effective_location
-     ORDER BY sub_classification, status, effective_location`,
-    groupParams
-  );
-
-  // A genuinely independent second query (no GROUP BY) — not a JS sum of the rows just
-  // fetched — so the Grand Total is a real cross-check against the grouped query, not
-  // the same arithmetic restated.
   const totalParams = [...params];
   const totalCalcExtras = buildCalcCteExtras(totalParams, asAt, fy);
-  const { rows: totalRows } = await db.query(
-    `WITH calc_base AS (
-       SELECT assets.*,
-         ${totalCalcExtras}
-       FROM assets ${whereClause}
-     ), calc AS (
-       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
-       FROM calc_base
-     )
-     SELECT COUNT(*) AS asset_count, ${selectSql}
-     FROM calc ${computedWhereClause}`,
-    totalParams
-  );
+  const [{ rows: groupRows }, { rows: totalRows }] = await Promise.all([
+    db.query(
+      `WITH calc_base AS (
+         SELECT assets.*,
+           ${groupCalcExtras}
+         FROM assets ${whereClause}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
+       )
+       SELECT
+         sub_classification, status, effective_location AS location,
+         COUNT(*) AS asset_count,
+         ${selectSql}
+       FROM calc ${computedWhereClause}
+       GROUP BY sub_classification, status, effective_location
+       ORDER BY sub_classification, status, effective_location`,
+      groupParams
+    ),
+    db.query(
+      `WITH calc_base AS (
+         SELECT assets.*,
+           ${totalCalcExtras}
+         FROM assets ${whereClause}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
+       )
+       SELECT COUNT(*) AS asset_count, ${selectSql}
+       FROM calc ${computedWhereClause}`,
+      totalParams
+    )
+  ]);
 
   const ctx: LabelContext = { asAt, fyStart };
   const columns = SUMMABLE_COLUMNS.map((c) => ({ key: c.key, label: resolveLabel(c, ctx) }));

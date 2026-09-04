@@ -1662,6 +1662,38 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     expect(expectedAdditionsFytd).toBeGreaterThan(0); // proves the mid-year-addition fixture actually exercised this path
   });
 
+  // Regression coverage for the NBV trend's query rewrite (batching 6 per-quarter-end
+  // round trips into one CROSS-JOIN query — see buildDashboardTrendSql's own comment for
+  // why): nothing previously asserted a real value for nbvTrend at all, so a rewrite that
+  // silently computed the wrong thing (e.g. every point collapsing to the same date, or
+  // the CROSS JOIN duplicating rows) would have shipped unnoticed. Ground truth is the
+  // same independent engine.ts implementation the totals test above already uses, just
+  // evaluated at each trailing quarter-end's asAt instead of AS_AT itself.
+  it("NBV trend matches independently-computed NBV at each trailing quarter-end", async () => {
+    // Same 6 trailing calendar-quarter-ends trailingQuarterEnds(AS_AT, 6) computes for
+    // AS_AT = "2026-08-17" — oldest first.
+    const expectedTrendDates = ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"];
+    const expectedNbvByDate = expectedTrendDates.map((asAt) => {
+      let nbv = 0;
+      for (const row of TOTALS_FIXTURES) {
+        const result = computeAsset(mapAssetRow({ ...BASE_ASSET, ...row } as AssetRow), { ...fy, asAt }, []);
+        nbv += result.c1.nbv + result.c2.nbv;
+      }
+      return nbv;
+    });
+
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.nbvTrend.map((p: { asAt: string }) => p.asAt)).toEqual(expectedTrendDates);
+    body.nbvTrend.forEach((point: { nbv: number }, i: number) => {
+      expect(point.nbv).toBeCloseTo(expectedNbvByDate[i]!, 2);
+    });
+  });
+
   it("disposal P&L: FYTD excludes a prior-FY disposal that since-inception (allTime) still includes", async () => {
     const inFyFixture = DISPOSAL_SCOPE_FIXTURES[0]!;
     const priorFyFixture = DISPOSAL_SCOPE_FIXTURES[1]!;
