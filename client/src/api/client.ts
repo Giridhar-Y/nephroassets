@@ -731,6 +731,59 @@ export function fetchDepreciationPosting(
   return request(`/api/reports/depreciation-posting?${new URLSearchParams({ asAt })}`);
 }
 
+// Register Summary — the Register Export's own numeric columns, totaled by Sub
+// Classification x Status x Location instead of one row per asset. Same named filters
+// Register itself supports (Location, Sub Classification, Status, Date Acquired range);
+// deliberately no Excel-style `conditions` support on this page yet (the server route
+// accepts them, matching the Export/Register's own query shape, but this report's own
+// filter UI stays to the simpler set for now — see the page for why).
+export interface RegisterSummaryFilters {
+  asAt: string;
+  center?: string;
+  subClassification?: string;
+  status?: string;
+  dateAcquiredFrom?: string;
+  dateAcquiredTo?: string;
+}
+
+export interface RegisterSummaryGroup {
+  subClassification: string;
+  status: string;
+  location: string;
+  assetCount: number;
+  [key: string]: string | number;
+}
+
+export interface RegisterSummaryResult {
+  asAt: string;
+  fyStart: string;
+  filterSummaryText: string;
+  columns: Array<{ key: string; label: string }>;
+  groups: RegisterSummaryGroup[];
+  grandTotal: { assetCount: number; [key: string]: number };
+}
+
+function registerSummaryParams(filters: RegisterSummaryFilters): URLSearchParams {
+  const params: Record<string, string> = { asAt: filters.asAt };
+  if (filters.center) params.center = filters.center;
+  if (filters.subClassification) params.subClassification = filters.subClassification;
+  if (filters.status) params.status = filters.status;
+  if (filters.dateAcquiredFrom) params.dateAcquiredFrom = filters.dateAcquiredFrom;
+  if (filters.dateAcquiredTo) params.dateAcquiredTo = filters.dateAcquiredTo;
+  return new URLSearchParams(params);
+}
+
+export function fetchRegisterSummary(filters: RegisterSummaryFilters): Promise<RegisterSummaryResult> {
+  return request(`/api/reports/register-summary?${registerSummaryParams(filters)}`);
+}
+
+// Same pattern as every other report's own export URL builder (getAuditReconciliationExportUrl,
+// getTransferDepreciationExportUrl) — the browser downloads it directly via the response's
+// Content-Disposition header, this just builds the URL.
+export function getRegisterSummaryExportUrl(filters: RegisterSummaryFilters): string {
+  return `/api/reports/register-summary/export?${registerSummaryParams(filters)}`;
+}
+
 // Finance FAR Dashboard — mirrors server/src/routes/reports.ts's computeDashboardSummary
 // response shape field-for-field.
 export interface DashboardStatusCount {

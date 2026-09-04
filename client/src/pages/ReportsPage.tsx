@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { DepreciationIcon, LocationIcon, ReconciliationIcon, ReportsIcon, TransferIcon } from "../lib/icons.js";
+import { DepreciationIcon, LocationIcon, ReconciliationIcon, RegisterIcon, ReportsIcon, TransferIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import type { ComponentType } from "react";
 import type { FluentIconsProps } from "@fluentui/react-icons";
@@ -16,6 +16,12 @@ const REPORTS: Array<{ to: string; label: string; description: string; icon: Com
     label: "Audit Reconciliation",
     description: "Cost and depreciation checks by Sub Classification, so mismatches surface early.",
     icon: ReconciliationIcon
+  },
+  {
+    to: "/register-summary",
+    label: "Register Summary",
+    description: "The Register Export's own figures, totaled by Sub Classification, Status, and Location — for cross-checking against a manually-maintained FAR file.",
+    icon: RegisterIcon
   },
   {
     to: "/depreciation-posting",

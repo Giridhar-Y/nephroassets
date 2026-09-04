@@ -4,6 +4,7 @@ import { DashboardPage } from "./pages/DashboardPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
 import { LocationSummaryPage } from "./pages/LocationSummaryPage.js";
 import { AuditReconciliationPage } from "./pages/AuditReconciliationPage.js";
+import { RegisterSummaryPage } from "./pages/RegisterSummaryPage.js";
 import { DepreciationPostingPage } from "./pages/DepreciationPostingPage.js";
 import { TransferDepreciationReportPage } from "./pages/TransferDepreciationReportPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
@@ -82,6 +83,16 @@ export default function App() {
                     <RequirePermission module="reports" action="view">
                       <SettingsGate>
                         <AuditReconciliationPage />
+                      </SettingsGate>
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/register-summary"
+                  element={
+                    <RequirePermission module="reports" action="view">
+                      <SettingsGate>
+                        <RegisterSummaryPage />
                       </SettingsGate>
                     </RequirePermission>
                   }

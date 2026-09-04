@@ -129,7 +129,7 @@ const exportQuerySchema = z.object({
   exception: z.enum(EXCEPTION_KEYS).optional()
 });
 
-interface LabelContext {
+export interface LabelContext {
   asAt: string;
   fyStart: string;
 }
@@ -137,7 +137,7 @@ interface LabelContext {
 // DD-MM-YYYY — a plain string rearrangement of the ISO "YYYY-MM-DD" storage format, no
 // Date object and no timezone risk (matches the client's own formatDateDDMMYYYY, and the
 // rest of this app's convention of treating dates as plain strings throughout).
-function ddmmyyyy(value: string | null): string {
+export function ddmmyyyy(value: string | null): string {
   if (!value) return "";
   const [y, m, d] = value.split("-");
   return `${d}-${m}-${y}`;
@@ -150,13 +150,13 @@ function ddmmyyyy(value: string | null): string {
 // CSV, matching every other CSV this app already produces; a reader who wants
 // "1,23,456.00"-style display formatting gets that from Excel's own column formatting
 // after opening it, same as any other CSV import.
-function csvField(v: string | number | null): string {
+export function csvField(v: string | number | null): string {
   if (v === null || v === undefined) return "";
   const s = String(v);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function csvLine(values: Array<string | number | null>): string {
+export function csvLine(values: Array<string | number | null>): string {
   return values.map(csvField).join(",");
 }
 
@@ -179,7 +179,7 @@ const GROUP_INFO: Record<string, { label: string; fill: string }> = {
   g10: { label: "Net Block (NBV)", fill: "FFECFDF5" } // emerald-50
 };
 
-interface ExportColumn {
+export interface ExportColumn {
   key: string;
   label: string | ((ctx: LabelContext) => string);
   width: number;
@@ -194,7 +194,12 @@ interface ExportColumn {
 // Matches the reference Fixed Asset Register export's 10 groups and 39 columns, in the
 // same order — see client/src/lib/columns.ts for the identical structure the Register
 // screen itself renders.
-const EXPORT_COLUMNS: ExportColumn[] = [
+//
+// Exported so other routes needing the exact same "which columns, which are numeric,
+// which are totalable" answer (e.g. reports.ts's Register Summary — a grouped-totals
+// report) read it from here rather than hand-redefining a second column list that could
+// silently drift out of sync with this one.
+export const EXPORT_COLUMNS: ExportColumn[] = [
   // --- 1. Asset Identification ---------------------------------------------------
   { key: "farId", label: "FAR ID", width: 18, groupKey: "g1", kind: "text", value: (a) => a.farId },
   { key: "subClassification", label: "Sub Classification", width: 22, groupKey: "g1", kind: "text", value: (a) => a.subClassification },
@@ -444,7 +449,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   }
 ];
 
-function resolveLabel(col: ExportColumn, ctx: LabelContext): string {
+export function resolveLabel(col: ExportColumn, ctx: LabelContext): string {
   return typeof col.label === "function" ? col.label(ctx) : col.label;
 }
 
@@ -467,7 +472,12 @@ function groupRuns(columns: ExportColumn[]): Array<{ groupKey: string; startCol:
 // in JS afterwards from the c1/c2 component sums (also fetched below) rather than needing
 // its own SQL expression. `profitLoss` DOES need its own expression (assetProfitLoss,
 // below) rather than summing per-component figures — see its comment for why.
-const SQL_SUM_EXPRESSIONS: Record<string, string> = {
+//
+// Exported (like EXPORT_COLUMNS above) so a grouped-totals report can build its own
+// SUM(...) SELECT list from these same expressions instead of re-deriving them —
+// keyed by EXPORT_COLUMN key, except `profitLoss` (keyed here as `assetProfitLoss`,
+// historical) and `totalWdv` (no entry at all — always derived, see above).
+export const SQL_SUM_EXPRESSIONS: Record<string, string> = {
   qty: "SUM(qty)",
   // Opening/Additions totals read the calc engine's own live-classified fields (see
   // far_calc_component in schema.sql), not the raw columns — matching the per-row

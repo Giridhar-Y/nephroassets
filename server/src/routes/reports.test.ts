@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import reportsRoutes from "./reports.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
@@ -32,6 +32,40 @@ const BASE_ASSET = {
   deletions_c2: 0,
   acc_dep_c2_opening: 0
 };
+
+/** Splits one CSV line into fields, honoring RFC4180 quoting — same algorithm as
+ *  assetsExport.ts's own csvField/csvLine (and assetsExport.test.ts's read-side
+ *  mirror), needed for the Register Summary CSV export test below since at least one
+ *  real column label contains a literal comma. */
+function splitCsvFields(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      fields.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
+}
 
 async function insertAsset(overrides: Record<string, unknown>) {
   const db = await getPool();
@@ -1741,5 +1775,258 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
       expect(body.total).toBe(expectedFarIds.length);
       expect(farIds).toEqual([...expectedFarIds].sort());
     }
+  });
+});
+
+// Register Summary: same numeric columns as the Register Export, totaled by Sub
+// Classification x Status x Location instead of one row per asset. Seed data
+// deliberately covers only 3 of the 8 theoretically possible (2 sub-classifications x 2
+// statuses x 2 locations) combinations — proving GROUP BY naturally returns only
+// combinations that actually have assets, with nothing extra to "collapse".
+describe("Register Summary report (GET /api/reports/register-summary)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  async function seedFixtures() {
+    // Two assets in the same group (Dialysis Machines / Active / Center-A) — the group
+    // whose Qty/C1 Opening Cost sums get hand-verified below.
+    await insertAsset({
+      far_id: "SUM-A1",
+      sub_classification: "Dialysis Machines",
+      asset_description: "Machine A1",
+      serial_no: "SA1",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 10000,
+      additions_c1: 0,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      status: "Active",
+      location: "Center-A"
+    });
+    await insertAsset({
+      far_id: "SUM-A2",
+      sub_classification: "Dialysis Machines",
+      asset_description: "Machine A2",
+      serial_no: "SA2",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 20000,
+      additions_c1: 0,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      status: "Active",
+      location: "Center-A"
+    });
+    // Same Sub Classification/Status, different Location — its own group.
+    await insertAsset({
+      far_id: "SUM-B1",
+      sub_classification: "Dialysis Machines",
+      asset_description: "Machine B1",
+      serial_no: "SB1",
+      qty: 3,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 5000,
+      additions_c1: 0,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      status: "Active",
+      location: "Center-B"
+    });
+    // Different Sub Classification AND Status — exercises the disposal-related columns
+    // (WDV, Profit/Loss) for its own group.
+    await insertAsset({
+      far_id: "SUM-C1",
+      sub_classification: "IT Equipment",
+      asset_description: "Laptop C1",
+      serial_no: "SC1",
+      qty: 1,
+      // Acquired recently enough (relative to its 5-year useful life) that it's NOT
+      // already fully depreciated by its own disposal date — BASE_ASSET's default
+      // date_acquired (2020-01-01) would put this asset past end-of-life before the
+      // 2026-06-01 disposal below, making WDV at disposal legitimately ~0 (correct calc
+      // behavior, not a bug — found the hard way while writing this fixture).
+      date_acquired: "2024-01-01",
+      useful_life_c1_years: 5,
+      c1_opening_cost: 8000,
+      additions_c1: 0,
+      deletions_c1: 8000,
+      acc_dep_c1_opening: 2000,
+      date_of_disposal: "2026-06-01",
+      sale_value: 1000,
+      status: "Disposed",
+      location: "Center-A"
+    });
+  }
+
+  it("groups by Sub Classification x Status x Location, returning only combinations that actually have assets", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.groups).toHaveLength(3);
+    const keys = body.groups.map((g: { subClassification: string; status: string; location: string }) => `${g.subClassification}|${g.status}|${g.location}`).sort();
+    expect(keys).toEqual([
+      "Dialysis Machines|Active|Center-A",
+      "Dialysis Machines|Active|Center-B",
+      "IT Equipment|Disposed|Center-A"
+    ]);
+  });
+
+  it("sums Qty and C1 Opening Cost correctly for a group with more than one asset", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    const body = res.json();
+    const groupA = body.groups.find(
+      (g: { subClassification: string; location: string }) => g.subClassification === "Dialysis Machines" && g.location === "Center-A"
+    );
+    expect(groupA.assetCount).toBe(2);
+    expect(groupA.qty).toBe(2); // 1 + 1
+    expect(groupA.c1OpeningCost).toBe(30000); // 10000 + 20000
+  });
+
+  it("computes disposal-related totals (Total WDV, Profit/Loss) for a disposed group, not just blank/zero", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    const body = res.json();
+    const disposedGroup = body.groups.find((g: { status: string }) => g.status === "Disposed");
+    expect(disposedGroup.assetCount).toBe(1);
+    // The exact depreciation math is already covered by the calc engine's own tests —
+    // this only confirms the disposal columns come through as real, non-zero numbers
+    // for a genuinely disposed group, proving totalWdv's JS-side derivation
+    // (c1Wdv + c2Wdv) actually ran.
+    expect(disposedGroup.totalWdv).toBeGreaterThan(0);
+    expect(typeof disposedGroup.profitLoss).toBe("number");
+  });
+
+  // The real internal-consistency check requested for this feature: the Grand Total
+  // comes from a SEPARATE, ungrouped SQL query (see computeRegisterSummary's own
+  // comment) — this proves that independent computation actually agrees with summing
+  // the grouped rows, for every single numeric column, not just spot-checking one or
+  // two.
+  it("Grand Total (an independent SQL query) equals the sum of every group row, for every numeric column", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    const body = res.json();
+    expect(body.groups.length).toBeGreaterThan(1); // otherwise this check would be trivially true
+
+    const summedAssetCount = body.groups.reduce((s: number, g: { assetCount: number }) => s + g.assetCount, 0);
+    expect(body.grandTotal.assetCount).toBe(summedAssetCount);
+
+    for (const col of body.columns as Array<{ key: string }>) {
+      const summed = body.groups.reduce((s: number, g: Record<string, unknown>) => s + (g[col.key] as number), 0);
+      expect(body.grandTotal[col.key]).toBeCloseTo(summed, 6);
+    }
+  });
+
+  it("a Sub Classification filter narrows the grouped result", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/register-summary?subClassification=${encodeURIComponent("IT Equipment")}`
+    });
+    const body = res.json();
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0].subClassification).toBe("IT Equipment");
+    expect(body.grandTotal.assetCount).toBe(1);
+  });
+
+  it("a Location (center) filter narrows the grouped result", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary?center=Center-B" });
+    const body = res.json();
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0].location).toBe("Center-B");
+  });
+
+  // Flagged design note (see the feature's own PR/chat discussion): filtering by Status
+  // while also GROUPING by Status is not a conflict — it just makes Status constant
+  // across every displayed row while Sub Classification/Location still vary. Documented
+  // here as intended behavior, not asserted as a bug.
+  it("a Status filter still groups by the other two dimensions, with Status constant across every row (documented, not a bug)", async () => {
+    await seedFixtures();
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary?status=Active" });
+    const body = res.json();
+    expect(body.groups).toHaveLength(2); // the two Active groups; Disposed excluded
+    expect(body.groups.every((g: { status: string }) => g.status === "Active")).toBe(true);
+  });
+
+  it("409s when financial year settings are missing", async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM settings`);
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(res.statusCode).toBe(409);
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  it("rejects an unknown conditions columnId with 400, matching GET /api/assets and the Register Export", async () => {
+    const res = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/register-summary?conditions=${encodeURIComponent(JSON.stringify([{ columnId: "notARealColumn", op: "equals", value: "x" }]))}`
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  describe("CSV export (GET /api/reports/register-summary/export)", () => {
+    it("produces a CSV with a header row, one row per group, and a Grand Total row matching the JSON endpoint", async () => {
+      await seedFixtures();
+      const jsonRes = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      const jsonBody = jsonRes.json();
+
+      const csvRes = await authedInject(app, { method: "GET", url: "/api/reports/register-summary/export" });
+      expect(csvRes.statusCode).toBe(200);
+      expect(csvRes.headers["content-type"]).toContain("text/csv");
+      expect(csvRes.headers["content-disposition"]).toContain("attachment");
+
+      const text = csvRes.rawPayload.toString("utf-8");
+      const lines = text.split("\r\n").filter((l) => l.length > 0);
+      // filter-summary note + header row + one row per group + Grand Total row.
+      expect(lines).toHaveLength(2 + jsonBody.groups.length + 1);
+      // A real RFC4180 field split, not a naive `.split(",")` — at least one column
+      // label ("C1 Dep for Period (Capped, as at ...)") genuinely contains a comma,
+      // correctly quoted by the real CSV output; a naive split would (and, while
+      // writing this test, did) misread it as two fields.
+      expect(splitCsvFields(lines[1]!)).toEqual([
+        "Sub Classification",
+        "Status",
+        "Location",
+        "Asset Count",
+        ...jsonBody.columns.map((c: { label: string }) => c.label)
+      ]);
+      const lastLine = splitCsvFields(lines[lines.length - 1]!);
+      expect(lastLine[0]).toBe("GRAND TOTAL");
+      expect(Number(lastLine[3])).toBe(jsonBody.grandTotal.assetCount);
+    });
   });
 });

@@ -11,13 +11,20 @@ import { computeAsset } from "../calc/engine.js";
 import type { TransferRecord } from "../calc/types.js";
 import { daysHeldInclusive, maxIsoDate } from "../calc/dates.js";
 import { round2, splitDepreciationByLocation, type LocationSegment } from "../reports/transferDepreciationSplit.js";
-import { buildCalcCteExtras, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
+import {
+  buildCalcCteExtras,
+  buildConditionSql,
+  buildFilterSummaryText,
+  conditionsQuerySchema,
+  TOTAL_WDV_AND_PROFIT_LOSS_SQL
+} from "./assetColumnFilters.js";
 import {
   buildTransferDepreciationConditionSql,
   transferDepreciationConditionsQuerySchema,
   type RawCondition
 } from "./reportColumnFilters.js";
 import { buildExceptionPredicate, EPSILON, EXCEPTION_KEYS, type ExceptionKey } from "./exceptionPredicates.js";
+import { csvLine, EXPORT_COLUMNS, resolveLabel, SQL_SUM_EXPRESSIONS, type LabelContext } from "./assetsExport.js";
 
 async function requireFySettings(
   db: Awaited<ReturnType<typeof getPool>>,
@@ -1295,6 +1302,202 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
   };
 }
 
+// Register Summary: same numeric columns as the Register Export (assetsExport.ts),
+// totaled by Sub Classification × Status × Location instead of listed one row per
+// asset — for cross-checking this app's own figures against a manually-maintained FAR
+// Excel file organized the same way. Every numeric, totalable EXPORT_COLUMN, in the
+// SAME order the Register Export itself uses — read from there rather than a
+// hand-redefined second list that could drift out of sync with it. `totalWdv` is kept
+// in this list (for client column metadata/ordering) but has no SQL_SUM_EXPRESSIONS
+// entry of its own — it's always derived as c1Wdv + c2Wdv, both of which ARE in this
+// list, same as assetsExport.ts's own totals row already does.
+const SUMMABLE_COLUMNS = EXPORT_COLUMNS.filter((c) => c.kind === "number" && c.totalable !== false);
+// The subset actually summed in SQL — everything above except totalWdv.
+const SQL_SUMMABLE_COLUMNS = SUMMABLE_COLUMNS.filter((c) => c.key !== "totalWdv");
+
+function summableSelectSql(): string {
+  return SQL_SUMMABLE_COLUMNS.map(
+    // `profitLoss` is keyed as `assetProfitLoss` in SQL_SUM_EXPRESSIONS (historical,
+    // see that file's own comment) — every other key matches its EXPORT_COLUMN key
+    // exactly. Aliased as the quoted camelCase key itself (not snake_case) so pg
+    // returns rows keyed exactly like SUMMABLE_COLUMNS' own `.key`, with no manual
+    // name-mapping needed on the way back out.
+    (c) => `${SQL_SUM_EXPRESSIONS[c.key === "profitLoss" ? "assetProfitLoss" : c.key]} AS "${c.key}"`
+  ).join(",\n         ");
+}
+
+function extractSummableTotals(row: Record<string, string | null>): Record<string, number> {
+  const num = (v: string | null | undefined): number => (v === null || v === undefined ? 0 : Number(v));
+  const totals: Record<string, number> = {};
+  for (const c of SQL_SUMMABLE_COLUMNS) totals[c.key] = num(row[c.key]);
+  totals.totalWdv = (totals.c1Wdv ?? 0) + (totals.c2Wdv ?? 0);
+  return totals;
+}
+
+// Same comma-separated multi-value convention as assets.ts/assetsExport.ts's own
+// (identical) helper — copy-pasted rather than shared since none of these route files
+// import from each other for plain zod schema pieces like this.
+const registerSummaryMultiValue = z
+  .string()
+  .optional()
+  .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
+
+const registerSummaryQuerySchema = z.object({
+  asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  center: registerSummaryMultiValue,
+  subClassification: registerSummaryMultiValue,
+  status: registerSummaryMultiValue,
+  dateAcquiredFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  conditions: conditionsQuerySchema
+});
+type RegisterSummaryQuery = z.infer<typeof registerSummaryQuerySchema>;
+
+interface RegisterSummaryGroup {
+  subClassification: string;
+  status: string;
+  location: string;
+  assetCount: number;
+  [key: string]: string | number;
+}
+
+interface RegisterSummaryResult {
+  asAt: string;
+  fyStart: string;
+  filterSummaryText: string;
+  columns: Array<{ key: string; label: string }>;
+  groups: RegisterSummaryGroup[];
+  grandTotal: { assetCount: number; [key: string]: number };
+}
+
+/** Shared by the JSON route and its CSV export below — same filters GET /api/assets and
+ *  the Register Export already build (deleted_at IS NULL, center scope, Location/Sub
+ *  Classification/Status/Date Acquired range, Excel-style computed conditions), copied
+ *  here rather than factored out of assetsExport.ts's own route handler (which stays
+ *  untouched — this reuses its already-extracted primitives: buildCalcCteExtras,
+ *  TOTAL_WDV_AND_PROFIT_LOSS_SQL, buildConditionSql, buildFilterSummaryText — not its
+ *  inline glue code, matching how assets.ts and assetsExport.ts each already assemble
+ *  their own WHERE clause from those same primitives rather than sharing one mega
+ *  function).
+ *
+ *  Two independent SQL queries, not one grouped query plus a JS sum of its own rows —
+ *  the grand total is a genuine second computation (same shape as assetsExport.ts's own
+ *  totals query, just without a GROUP BY), so a test comparing it against the sum of
+ *  the grouped rows is checking two different code paths agree, not restating the same
+ *  arithmetic twice. */
+async function computeRegisterSummary(
+  db: Db,
+  q: RegisterSummaryQuery,
+  user: Pick<AuthedUser, "centerScope">
+): Promise<{ ok: true; result: RegisterSummaryResult } | { ok: false; status: number; error: string }> {
+  const { rows: settingsRows } = await db.query<SettingsRow>(
+    `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
+  );
+  const settingsRow = settingsRows[0];
+  if (!settingsRow) return { ok: false, status: 409, error: "Financial year settings have not been configured yet." };
+  const asAt = q.asAt ?? settingsRow.as_at;
+  const fyStart = settingsRow.fy_start;
+  const fy = { fyStart, fyEnd: settingsRow.fy_end, daysInFy: settingsRow.days_in_fy };
+
+  const conditions: string[] = ["deleted_at IS NULL"];
+  const params: unknown[] = [];
+  const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
+  if (scopeSql) conditions.push(scopeSql);
+  if (q.center) {
+    params.push(q.center);
+    conditions.push(`COALESCE(revised_location, location) = ANY($${params.length})`);
+  }
+  if (q.subClassification) {
+    params.push(q.subClassification);
+    conditions.push(`sub_classification = ANY($${params.length})`);
+  }
+  if (q.status) {
+    params.push(q.status);
+    conditions.push(`status = ANY($${params.length})`);
+  }
+  // Same fix as GET /api/assets and the Register Export: a summary as at a given date
+  // can never include an asset not yet capitalized as of that date.
+  params.push(asAt);
+  conditions.push(`date_acquired <= $${params.length}`);
+  if (q.dateAcquiredFrom) {
+    params.push(q.dateAcquiredFrom);
+    conditions.push(`date_acquired >= $${params.length}`);
+  }
+  if (q.dateAcquiredTo) {
+    params.push(q.dateAcquiredTo);
+    conditions.push(`date_acquired <= $${params.length}`);
+  }
+  const whereClause = `WHERE ${conditions.join(" AND ")}`;
+
+  const computedConditions: string[] = [];
+  for (const cond of q.conditions) {
+    const built = buildConditionSql(cond, params, { fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+    if ("error" in built) return { ok: false, status: 400, error: built.error };
+    computedConditions.push(built.sql);
+  }
+  const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
+  const filterSummaryText = buildFilterSummaryText(q, q.conditions);
+  const selectSql = summableSelectSql();
+
+  // Errors intentionally NOT caught here — this function has no `req` to log through,
+  // so both callers below wrap their own call in a try/catch that logs via req.log.error
+  // and reports the same plain-language 500, matching assetsExport.ts's own totals-query
+  // guard exactly.
+  const groupParams = [...params];
+  const groupCalcExtras = buildCalcCteExtras(groupParams, asAt, fy);
+  const { rows: groupRows } = await db.query(
+    `WITH calc_base AS (
+       SELECT assets.*,
+         ${groupCalcExtras}
+       FROM assets ${whereClause}
+     ), calc AS (
+       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+       FROM calc_base
+     )
+     SELECT
+       sub_classification, status, effective_location AS location,
+       COUNT(*) AS asset_count,
+       ${selectSql}
+     FROM calc ${computedWhereClause}
+     GROUP BY sub_classification, status, effective_location
+     ORDER BY sub_classification, status, effective_location`,
+    groupParams
+  );
+
+  // A genuinely independent second query (no GROUP BY) — not a JS sum of the rows just
+  // fetched — so the Grand Total is a real cross-check against the grouped query, not
+  // the same arithmetic restated.
+  const totalParams = [...params];
+  const totalCalcExtras = buildCalcCteExtras(totalParams, asAt, fy);
+  const { rows: totalRows } = await db.query(
+    `WITH calc_base AS (
+       SELECT assets.*,
+         ${totalCalcExtras}
+       FROM assets ${whereClause}
+     ), calc AS (
+       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+       FROM calc_base
+     )
+     SELECT COUNT(*) AS asset_count, ${selectSql}
+     FROM calc ${computedWhereClause}`,
+    totalParams
+  );
+
+  const ctx: LabelContext = { asAt, fyStart };
+  const columns = SUMMABLE_COLUMNS.map((c) => ({ key: c.key, label: resolveLabel(c, ctx) }));
+  const groups: RegisterSummaryGroup[] = groupRows.map((r) => ({
+    subClassification: r.sub_classification as string,
+    status: r.status as string,
+    location: r.location as string,
+    assetCount: Number(r.asset_count),
+    ...extractSummableTotals(r)
+  }));
+  const t = totalRows[0]!;
+  const grandTotal = { assetCount: Number(t.asset_count), ...extractSummableTotals(t) };
+
+  return { ok: true, result: { asAt, fyStart, filterSummaryText, columns, groups, grandTotal } };
+}
+
 export default async function reportsRoutes(app: FastifyInstance) {
   // Location Summary: count and total C1 Gross Block for assets whose Effective
   // Location matches the chosen center, computed with a single DB-level aggregate
@@ -1440,6 +1643,74 @@ export default async function reportsRoutes(app: FastifyInstance) {
     const totalPeriodDepreciation = breakdown.reduce((sum, b) => sum + b.total, 0);
 
     return { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
+  });
+
+  // Register Summary: the Register Export's own numeric columns, totaled by Sub
+  // Classification × Status × Location instead of one row per asset — for
+  // cross-checking against a manually-maintained FAR Excel file organized the same way.
+  // Same filters as the Register screen (Location, Sub Classification, Status, Date
+  // Acquired range, Excel-style conditions) — see computeRegisterSummary's own comment
+  // for why this reuses the export's shared SQL primitives rather than a hand-rolled
+  // second filter implementation.
+  app.get("/api/reports/register-summary", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
+    const parsed = registerSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query parameters.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    let outcome: Awaited<ReturnType<typeof computeRegisterSummary>>;
+    try {
+      outcome = await computeRegisterSummary(db, parsed.data, req.user!);
+    } catch (err) {
+      req.log.error({ err }, "Register Summary query failed");
+      reply.code(500);
+      return { error: "Could not compute the register summary with these filters — try removing or adjusting one of them." };
+    }
+    if (!outcome.ok) {
+      reply.code(outcome.status);
+      return { error: outcome.error };
+    }
+    return outcome.result;
+  });
+
+  // Same report as above, as a downloadable CSV — plain CSV (not styled .xlsx) to match
+  // the pattern the Register Export itself now uses, and because a summary table this
+  // small (grouped rows, not 2,50,000+) never had a performance reason to need anything
+  // heavier in the first place.
+  app.get("/api/reports/register-summary/export", { preHandler: requirePermission("reports", "export") }, async (req, reply) => {
+    const parsed = registerSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query parameters.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    let outcome: Awaited<ReturnType<typeof computeRegisterSummary>>;
+    try {
+      outcome = await computeRegisterSummary(db, parsed.data, req.user!);
+    } catch (err) {
+      req.log.error({ err }, "Register Summary export query failed");
+      reply.code(500);
+      return { error: "Could not export the register summary with these filters — try removing or adjusting one of them." };
+    }
+    if (!outcome.ok) {
+      reply.code(outcome.status);
+      return { error: outcome.error };
+    }
+    const { asAt, filterSummaryText, columns, groups, grandTotal } = outcome.result;
+
+    const lines = [
+      csvLine([`Filters applied: ${filterSummaryText}`]),
+      csvLine(["Sub Classification", "Status", "Location", "Asset Count", ...columns.map((c) => c.label)]),
+      ...groups.map((g) =>
+        csvLine([g.subClassification, g.status, g.location, g.assetCount, ...columns.map((c) => g[c.key] as number)])
+      ),
+      csvLine(["GRAND TOTAL", "", "", grandTotal.assetCount, ...columns.map((c) => grandTotal[c.key] as number)])
+    ];
+
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="register-summary-${asAt}.csv"`);
+    return lines.join("\r\n") + "\r\n";
   });
 
   // Movement schedule: paginated, filtered — each asset in a page expands into one row
