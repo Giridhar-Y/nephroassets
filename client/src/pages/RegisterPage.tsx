@@ -13,7 +13,7 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { SearchIcon } from "../lib/icons.js";
+import { SearchIcon, WarningIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
 import { useExport } from "../hooks/useExport.js";
 import { Tooltip } from "../components/Tooltip.js";
@@ -74,6 +74,18 @@ const CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterTy
   { id: "c1Nbv", label: "C1 NBV", type: "number" },
   { id: "c2Nbv", label: "C2 NBV", type: "number" }
 ];
+
+// Mirrors server/src/routes/assetsExport.ts's EXPORT_ROW_LIMIT exactly — kept as a
+// parallel constant rather than a shared import since client and server are separate TS
+// builds with no shared package boundary here (same convention as that file's own
+// GROUP_INFO). This is a client-side heads-up only: it warns before the user clicks
+// Export using the row count Register's own filtered view already loaded (no extra
+// fetch), but the server's own count at export time is what's actually authoritative —
+// clicking through anyway still gets a clean, correctly-worded rejection (useExport
+// already surfaces any non-2xx JSON `error` as a toast), just without the advance
+// warning. TEMPORARY, same as the server-side constant — remove both together once this
+// deployment moves off Vercel Hobby's 60s function-timeout ceiling.
+const EXPORT_ROW_LIMIT = 70_000;
 
 // Column labels for the filter-chips row (item 8) — CONDITION_COLUMNS above, plus the
 // four checklist filters (Sub Classification/Status/the two Locations) that are wired up
@@ -402,6 +414,21 @@ export function RegisterPage() {
               onDispose={() => setDisposeOpen(true)}
               onMerge={() => setMergeOpen(true)}
             />
+          )}
+          {/* Proactive, not blocking — `total` is Register's own already-loaded filtered
+              count (same filters the export itself uses), so this costs nothing extra
+              to check. The server's own count at export time stays authoritative
+              (clicking through anyway still gets a clean rejection, not a stuck
+              spinner), so a stale `total` here can only ever produce an unnecessary
+              warning, never a false "all clear." */}
+          {total !== null && total > EXPORT_ROW_LIMIT && (
+            <span
+              className="flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
+              title={`This filtered view has ${total.toLocaleString()} rows — more than a single Export request can generate right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). Narrow your filters (Center, Sub Classification, Status, or Date Acquired) to bring it under the limit.`}
+            >
+              <WarningIcon fontSize={14} />
+              Too many rows to export
+            </span>
           )}
           <ExportButton
             url={exportUrl}

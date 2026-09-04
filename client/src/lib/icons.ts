@@ -20,6 +20,7 @@ export {
   LockClosedRegular as LockIcon,
   DocumentSearchRegular as EmptyIcon,
   ErrorCircleRegular as ErrorIcon,
+  WarningRegular as WarningIcon,
   ArrowClockwiseRegular as RetryIcon,
   HistoryRegular as HistoryIcon,
   AddCircleRegular as AddCircleIcon,

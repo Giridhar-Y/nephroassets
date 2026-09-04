@@ -2,11 +2,13 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import assetsExportRoutes from "./assetsExport.js";
+import assetsExportRoutes, { EXPORT_ROW_LIMIT } from "./assetsExport.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
+import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
+import { bulkInsertAssets, bulkInsertTransfers } from "../loadtest/bulkInsert.js";
 
 const AS_AT = "2026-08-17";
 const FY_START = "2026-04-01";
@@ -399,6 +401,59 @@ describe("Register Export: GET /api/assets/export", () => {
     });
   });
 
+  // Temporary safety cap while this deployment stays on Vercel's Hobby plan (fixed 60s
+  // function timeout, not raisable) — see EXPORT_ROW_LIMIT's own comment in
+  // assetsExport.ts for the real 250k-row timing measurement it's sized against.
+  // Exercised here via a mocked count rather than actually inserting 70,000+ real rows —
+  // this is a fast, targeted test of the threshold check's own logic (does it
+  // reject/accept at the right boundary, with a clean JSON error instead of ever
+  // reaching reply.send(stream)); the real 250k-row scale is scale.loadtest.ts's job.
+  describe("row-count safety limit (temporary — see EXPORT_ROW_LIMIT's own comment)", () => {
+    async function withMockedRowCount(rowCount: number, run: () => Promise<void>) {
+      await insertAsset("EXP-ROWLIMIT-1");
+      const db = await getPool();
+      const originalQuery = db.query.bind(db);
+      const spy = vi.spyOn(db, "query").mockImplementation(async (...args: unknown[]) => {
+        const sql = args[0];
+        const result = (await (originalQuery as (...a: unknown[]) => Promise<unknown>)(...args)) as {
+          rows: Array<Record<string, unknown>>;
+        };
+        // Only countMatchingRows' own plain-count query (the fast path, no computed
+        // condition here) is touched — every other query, including the totals query
+        // and the batch loop's own row-fetching query, is left completely alone.
+        if (typeof sql === "string" && sql.includes("COUNT(*) AS count FROM assets") && result.rows[0]) {
+          result.rows[0]!.count = String(rowCount);
+        }
+        return result;
+      });
+      try {
+        await run();
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it(`rejects with a clean 400 (never reaching reply.send(stream)) when the filtered count exceeds EXPORT_ROW_LIMIT (${EXPORT_ROW_LIMIT.toLocaleString()})`, async () => {
+      await withMockedRowCount(EXPORT_ROW_LIMIT + 1, async () => {
+        const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+        expect(res.statusCode).toBe(400);
+        expect(res.headers["content-type"]).not.toContain("spreadsheetml"); // a real JSON error, not a file
+        const body = res.json();
+        expect(body.error).toContain(`${(EXPORT_ROW_LIMIT + 1).toLocaleString()} rows`);
+        expect(body.error).toMatch(/narrow your filters/i);
+      });
+    });
+
+    it("accepts a filtered count right at EXPORT_ROW_LIMIT itself (the check is exclusive on the high side)", async () => {
+      await withMockedRowCount(EXPORT_ROW_LIMIT, async () => {
+        const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+        expect(res.statusCode).toBe(200);
+        const worksheet = await readWorkbook(res.rawPayload);
+        expect(worksheet.rowCount).toBe(FIRST_DATA_ROW); // note + totals + group + header + the 1 real row
+      });
+    });
+  });
+
   describe("an unexpected DB-level query failure is reported gracefully, not as a raw 500", () => {
     it("the totals query throwing returns a plain-language JSON error, never the raw driver error text", async () => {
       await insertAsset("EXP-DBFAIL-1");
@@ -486,6 +541,101 @@ describe("Register Export: GET /api/assets/export", () => {
     it("rejects an unknown exception key with 400, matching GET /api/assets", async () => {
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=notARealException" });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  // Regression coverage for a reported production bug: a corrupted "far-register-....xlsx"
+  // download once the register held 217,000+ real assets. The full 250,000-row timing
+  // measurement lives in loadtest/scale.loadtest.ts (npm run test:scale) since seeding
+  // that many rows takes minutes; this file's own fixtures never exceeded
+  // EXPORT_BATCH_SIZE (2000) before now, so the batch-cursor loop's row-continuity
+  // across a real page boundary — and each asset's transfers being matched to the
+  // right FAR ID after the Map-based rewrite (previously an O(n²) `.filter()`) — had
+  // never actually been exercised here at more than a token handful of rows.
+  describe("multi-batch export (thousands of rows, spans real EXPORT_BATCH_SIZE=2000 pages) produces a structurally valid workbook", () => {
+    it("every asset appears exactly once, in FAR ID order, with each asset's own transfers correctly matched across a batch boundary", async () => {
+      const ASSET_COUNT = 4500; // 3 real batches: 2000 + 2000 + 500
+      const assets = generateAssets(ASSET_COUNT, 555);
+      const db = await getPool();
+      await bulkInsertAssets(db, assets, 1000);
+      const transfers = generateTransfers(assets, 999);
+      await bulkInsertTransfers(db, transfers, 1000);
+
+      const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+      expect(res.statusCode).toBe(200);
+
+      // ExcelJS's own zip/xlsx reader throws on a truncated or otherwise malformed
+      // archive — the direct proof this is a complete, valid file, not just "some
+      // bytes came back" (the exact failure mode the reported bug produced: a 200
+      // response Excel itself then refused to open cleanly).
+      const worksheet = await readWorkbook(res.rawPayload);
+      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW - 1 + ASSET_COUNT);
+
+      const exportedFarIds: string[] = [];
+      for (let r = FIRST_DATA_ROW; r <= worksheet.rowCount; r++) {
+        exportedFarIds.push(worksheet.getRow(r).getCell(1).value as string);
+      }
+      // No row dropped or duplicated across the 3-batch cursor walk.
+      expect(exportedFarIds).toEqual([...assets].map((a) => a.farId).sort());
+
+      // Current Location (column 6) reflects each asset's OWN latest transfer, not a
+      // neighbor's from the same batch — exactly what the old per-row `.filter()` (and
+      // the Map-based rewrite replacing it) both have to get right. Picks one asset
+      // known to have at least one transfer rather than asserting on all 4,500.
+      const transferredFarId = transfers[0]!.farId;
+      const rowIndex = exportedFarIds.indexOf(transferredFarId);
+      const expectedLocation = [...transfers]
+        .filter((t) => t.farId === transferredFarId)
+        .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate))
+        .at(-1)!.location;
+      expect(worksheet.getRow(FIRST_DATA_ROW + rowIndex).getCell(6).value).toBe(expectedLocation);
+    }, 30_000);
+  });
+
+  // A DB error genuinely thrown WHILE the process is still running (a bad query, a
+  // dropped connection) — not the same failure mode as a Vercel platform timeout/OOM
+  // kill, which terminates the process outright and never reaches this catch block at
+  // all (see assetsExport.ts's own comment on why that class of failure can't be made
+  // visible this way).
+  //
+  // Empirically found while writing this test (not assumed): `light-my-request`
+  // (Fastify's own injection library, which models real Node HTTP response semantics
+  // closely) rejects the whole request with "response destroyed before completion"
+  // when `stream.destroy(err)` runs after `reply.send(stream)` — it does NOT hand back
+  // a "successful" 200 with a merely-truncated body. That's real signal: destroying the
+  // stream is not the do-nothing-useful gesture it might look like — over a real HTTP
+  // connection this almost certainly aborts the response at the transport level (an
+  // abrupt close a browser's fetch()/download manager should surface as a failed
+  // request), not a completed-but-corrupted download. This sharpens where the actual
+  // silent-corruption risk lives: NOT the catchable-JS-error path this test covers
+  // (which already fails loudly, transport-level, on top of the app's own log line) —
+  // it's specifically a platform-level timeout/OOM kill, which skips this catch block
+  // (and therefore this transport-level abort) entirely, because the process is
+  // terminated outright rather than throwing.
+  describe("a genuine mid-stream DB failure (after headers are already sent) aborts the response and logs loudly, rather than completing a corrupted file silently", () => {
+    it("destroys the response (light-my-request surfaces this as a rejected request, the same signal a real client's aborted connection would give) and logs the failure server-side", async () => {
+      await insertAsset("EXP-MIDFAIL-1");
+      const db = await getPool();
+      const originalQuery = db.query.bind(db);
+      const spy = vi.spyOn(db, "query").mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        // Only the per-batch row-fetching query fails — the totals query (which runs
+        // BEFORE reply.send(stream), so a failure there is still a normal 500 today,
+        // already covered above) is left alone.
+        if (typeof sql === "string" && sql.includes("SELECT * FROM calc")) {
+          return Promise.reject(new Error("simulated mid-stream DB failure"));
+        }
+        return (originalQuery as (...a: unknown[]) => unknown)(...args);
+      });
+      const errorLogSpy = vi.spyOn(app.log, "error");
+
+      try {
+        await expect(authedInject(app, { method: "GET", url: "/api/assets/export" })).rejects.toThrow(/destroyed/i);
+        expect(errorLogSpy).toHaveBeenCalledWith(expect.anything(), "Register export failed mid-stream");
+      } finally {
+        spy.mockRestore();
+        errorLogSpy.mockRestore();
+      }
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type pg from "pg";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
@@ -43,6 +44,29 @@ const C2_EXPORT_KEYS = new Set([
 // at once — same scale concern that motivated the denormalized location column and the
 // PL/pgSQL report functions.
 const EXPORT_BATCH_SIZE = 2000;
+
+// TEMPORARY safety cap while this deployment is on Vercel's Hobby plan, which hard-caps
+// every serverless function invocation at 60s with NO way to raise it (Pro's
+// configurable maxDuration up to 300s isn't available on this account's current plan —
+// see project memory/session notes). Real measurement via the load test
+// (loadtest/scale.loadtest.ts) at this app's documented ~250,000-row full-register
+// scale: 93,214-123,055ms end-to-end for a full unfiltered export, and that's a LOWER
+// BOUND — same-process embedded Postgres, zero network latency, whereas production adds
+// a genuine round trip per batch to Supabase. Worse-case measured rate: 123,055ms /
+// 250,000 rows ≈ 0.49ms/row, which alone projects to ~122,000 rows before hitting 60s —
+// EXPORT_ROW_LIMIT sits well below that line, not right up against it, to leave real
+// margin for: production network latency (modest — Vercel's "sin1" region and
+// Supabase's "ap-southeast-1" are both Singapore, so same-region, but still nonzero over
+// ~2×(limit/EXPORT_BATCH_SIZE) real round trips), the run-to-run variance already
+// observed locally (93s -> 123s, +32%, identical code, identical machine, nothing else
+// changed), and real data being messier than the load test's synthetic ~10%-transferred
+// fixture (more transfers/asset, more disposed-asset calc paths).
+//
+// This is NOT a permanent design decision — raise or remove it entirely the moment
+// hosting changes (a Pro plan's higher maxDuration, or a persistent-process host with no
+// duration ceiling at all — server/src/index.ts is already built for that, see
+// render.yaml).
+export const EXPORT_ROW_LIMIT = 70_000;
 
 // Comma-separated multi-value filters — see the identical helper in assets.ts (the
 // non-export list route), which this route's filters intentionally mirror.
@@ -428,6 +452,55 @@ const SQL_SUM_EXPRESSIONS: Record<string, string> = {
   c2Nbv: "SUM((c2).nbv)"
 };
 
+/** Counts exactly the rows the export below would stream — as cheaply as the filters
+ *  actually require, and deliberately NOT by reading it off the totals query further
+ *  down (which was the first version of this check): that query always pays for the
+ *  full two-stage calc CTE (far_calc_component() evaluated per row) whether or not
+ *  anything actually needs it, which measured ~39s on its own at 250,000 rows — an
+ *  unfiltered, always-over-EXPORT_ROW_LIMIT request would then take 39s just to be told
+ *  no, nowhere near the "fast" rejection the limit is supposed to give.
+ *
+ *  A plain named-filter export (the common case — and the one most likely to actually
+ *  exceed EXPORT_ROW_LIMIT, since a computed-column filter typically narrows the result
+ *  on its own) doesn't need the CTE at all: `whereClause` filters real columns on
+ *  `assets` directly, so a bare COUNT(*) suffices. Only a genuine computed-column filter
+ *  (an Excel-style condition on a derived value like C1 NBV, or a dashboard exception)
+ *  actually requires evaluating the CTE to know which rows match — that's the only case
+ *  paying its cost, same reasoning the batch loop's own "can't stop early" ponytail
+ *  comment documents below.
+ *
+ *  Both branches read the SAME `whereClause`/`params`/`computedWhereClause` the totals
+ *  query and the batch loop also use — nothing here rebuilds any filter-building logic. */
+async function countMatchingRows(
+  db: pg.Pool,
+  whereClause: string,
+  params: unknown[],
+  computedConditions: string[],
+  computedWhereClause: string,
+  asAt: string,
+  fy: { fyStart: string; fyEnd: string; daysInFy: number }
+): Promise<number> {
+  if (computedConditions.length === 0) {
+    const { rows } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM assets ${whereClause}`, params);
+    return Number(rows[0]!.count);
+  }
+  const countParams = [...params];
+  const countCalcExtras = buildCalcCteExtras(countParams, asAt, fy);
+  const { rows } = await db.query<{ count: string }>(
+    `WITH calc_base AS (
+       SELECT assets.*,
+         ${countCalcExtras}
+       FROM assets ${whereClause}
+     ), calc AS (
+       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+       FROM calc_base
+     )
+     SELECT COUNT(*) AS count FROM calc ${computedWhereClause}`,
+    countParams
+  );
+  return Number(rows[0]!.count);
+}
+
 export default async function assetsExportRoutes(app: FastifyInstance) {
   // Register's "Export to Excel": exactly the same filters as GET /api/assets — the
   // named fields (center, sub classification, status, date range, FAR ID search) plus
@@ -561,6 +634,31 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     }).formatToParts(new Date());
     const part = (type: string) => exportedAtParts.find((p) => p.type === type)?.value ?? "";
     const exportedAtText = `${part("day")}-${part("month")}-${part("year")} ${part("hour")}:${part("minute")}`;
+
+    // Rejected up front, before the (expensive) totals query below even runs and well
+    // before reply.send(stream) — a normal JSON error response the client can actually
+    // show, not a 60s-timeout-killed truncated file. See EXPORT_ROW_LIMIT's own comment
+    // for why this deployment needs a cap at all right now, and countMatchingRows' own
+    // comment for why this is a separate, minimal query rather than reading a count off
+    // the totals query further down.
+    let rowCount: number;
+    try {
+      rowCount = await countMatchingRows(db, whereClause, params, computedConditions, computedWhereClause, asAt, {
+        fyStart: fy.fyStart,
+        fyEnd: fy.fyEnd,
+        daysInFy: fy.daysInFy
+      });
+    } catch (err) {
+      req.log.error({ err, whereClause, computedWhereClause }, "Register export row-count check failed");
+      reply.code(500);
+      return { error: "Could not export the register with these filters — try removing or adjusting one of them." };
+    }
+    if (rowCount > EXPORT_ROW_LIMIT) {
+      reply.code(400);
+      return {
+        error: `This export would include ${rowCount.toLocaleString()} rows, more than this deployment can reliably generate in one request right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). Narrow your filters — by Center, Sub Classification, Status, or Date Acquired range — and try again with a smaller result set.`
+      };
+    }
 
     // Totals row: one aggregate pass over every matching row (same filters, no cursor),
     // computed in Postgres via the same `far_calc_component` SQL port of the calc engine
@@ -724,8 +822,19 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       headerRow.font = { bold: true };
       headerRow.commit();
 
+      // Timing instrumentation — logged per batch (not just a final total) so a real
+      // Vercel function log shows exactly how far the export got and how long each
+      // stage took if the function is killed mid-export (a platform timeout/OOM kill
+      // terminates the process outright — no JS code runs at that point, including the
+      // catch block below, so this is the only way to see from the logs alone whether
+      // batch N was slow, or the process never got past batch N at all).
+      const exportStart = performance.now();
+      let batchNumber = 0;
+      let rowsExported = 0;
       let lastFarId: string | null = null;
       for (;;) {
+        batchNumber++;
+        const batchStart = performance.now();
         const batchParams = [...params];
         const batchConditions = [...conditions];
         if (lastFarId !== null) {
@@ -763,6 +872,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           batchParams
         );
         if (rows.length === 0) break;
+        const queryElapsedMs = performance.now() - batchStart;
 
         const farIds = rows.map((r) => r.far_id);
         const { rows: transferRows } = await db.query<TransferRow>(
@@ -771,10 +881,24 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
            ORDER BY far_id, transaction_date`,
           [farIds, asAt]
         );
+        // Grouped once per batch, O(rows + transfers) — same pattern reports.ts's
+        // streamAssetDepreciationBatches already uses at this app's 250k-row scale.
+        // The previous version called `transferRows.filter(t => t.far_id === row.far_id)`
+        // INSIDE the per-row loop below: O(batchSize × transferRows.length) per batch,
+        // which scales quadratically with how many transfers this batch's assets have —
+        // a real, confirmed CPU cost this route was the only batched-export route to
+        // still pay (found while investigating a reported corrupted-export bug at
+        // 217,000+ real rows).
+        const transfersByFarId = new Map<string, TransferRow[]>();
+        for (const t of transferRows) {
+          const list = transfersByFarId.get(t.far_id);
+          if (list) list.push(t);
+          else transfersByFarId.set(t.far_id, [t]);
+        }
 
         for (const row of rows) {
           const asset = mapAssetRow(row);
-          const relevantTransfers = transferRows.filter((t) => t.far_id === row.far_id).map(mapTransferRow);
+          const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
           const result = computeAsset(asset, fy, relevantTransfers);
           const values = exportColumns.map((c) => {
             const v = c.value(asset, result);
@@ -784,12 +908,23 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           worksheet.addRow(values).commit();
         }
 
+        rowsExported += rows.length;
+        const batchElapsedMs = performance.now() - batchStart;
+        req.log.info(
+          { batchNumber, rowsInBatch: rows.length, rowsExported, queryElapsedMs: Math.round(queryElapsedMs), batchElapsedMs: Math.round(batchElapsedMs), totalElapsedMs: Math.round(performance.now() - exportStart) },
+          "Register export: batch complete"
+        );
+
         lastFarId = rows[rows.length - 1]!.far_id;
         if (rows.length < EXPORT_BATCH_SIZE) break;
       }
 
       worksheet.commit();
       await workbook.commit();
+      req.log.info(
+        { rowsExported, batchNumber, totalElapsedMs: Math.round(performance.now() - exportStart) },
+        "Register export: complete"
+      );
     } catch (err) {
       app.log.error(err, "Register export failed mid-stream");
       stream.destroy(err instanceof Error ? err : new Error("Export failed"));
