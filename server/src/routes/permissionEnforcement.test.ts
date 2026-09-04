@@ -70,7 +70,9 @@ const GATED: Record<string, RouteCase[]> = {
     { method: "GET", url: "/api/reports/depreciation-posting" },
     { method: "GET", url: "/api/reports/transfer-depreciation/movement" },
     { method: "GET", url: "/api/reports/transfer-depreciation/location-wise" },
-    { method: "GET", url: "/api/reports/dashboard-summary" }
+    { method: "GET", url: "/api/reports/dashboard-summary" },
+    { method: "GET", url: "/api/reports/dashboard-totals" },
+    { method: "GET", url: "/api/reports/dashboard-trend" }
   ],
   "reports:export": [
     { method: "GET", url: "/api/reports/audit-reconciliation/export" },

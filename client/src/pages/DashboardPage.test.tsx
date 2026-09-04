@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage.js";
-import type { DashboardSummary } from "../api/client.js";
+import type { DashboardFastSummary, DashboardTotals, DashboardTrend } from "../api/client.js";
 import { formatCurrency, formatCurrencyCompact } from "../lib/format.js";
 
 // Expected currency text always comes from the app's own formatCurrency, never
@@ -28,27 +28,32 @@ function jsonResponse(body: unknown): Response {
 
 const EXCEPTION_ZERO = { count: 0 };
 
-// FYTD and Since Inception deliberately differ (an extra prior-FY disposal folded into
-// allTime only) so the scope toggle test below can prove it actually switches data, not
-// just relabels the same numbers.
-const SUMMARY: DashboardSummary = {
+// Since 2026-09-05, DashboardPage fetches 3 independent pieces in sequence (fast
+// summary, totals, trend — see api/client.ts's own comment) instead of one combined
+// response. Split into 3 fixtures matching that.
+const FAST: DashboardFastSummary = {
   asAt: "2026-08-17",
-  totals: {
-    grossBlock: 81066831400,
-    openingGrossBlock: 79000000000,
-    additionsFytd: 2066831400,
-    closingAccDep: 21825665600,
-    nbv: 59241165800,
-    assetCount: 3018,
-    qtyTotal: 3019
-  },
+  totals: { assetCount: 3018, qtyTotal: 3019 },
   // Deliberately NOT 3018 (== totals.assetCount) — a status-count badge showing the same
   // number as the Asset Count tile would make "3018" ambiguous on the page and mask a
   // real duplicate-render bug behind a self-inflicted fixture collision.
   statusCounts: [
     { status: "Active", count: 3000 },
     { status: "Disposed", count: 18 }
-  ],
+  ]
+};
+
+// FYTD and Since Inception deliberately differ (an extra prior-FY disposal folded into
+// allTime only) so the scope toggle test below can prove it actually switches data, not
+// just relabels the same numbers.
+const TOTALS: DashboardTotals = {
+  totals: {
+    grossBlock: 81066831400,
+    openingGrossBlock: 79000000000,
+    additionsFytd: 2066831400,
+    closingAccDep: 21825665600,
+    nbv: 59241165800
+  },
   depreciationFytd: 5000000,
   disposalPL: {
     gains: 100000,
@@ -62,10 +67,6 @@ const SUMMARY: DashboardSummary = {
       disposalCount: 5
     }
   },
-  nbvTrend: [
-    { asAt: "2025-12-31", nbv: 58000000000 },
-    { asAt: "2026-06-30", nbv: 59241165800 }
-  ],
   exceptions: {
     negativeNbv: EXCEPTION_ZERO,
     fullyDepreciatedActive: EXCEPTION_ZERO,
@@ -75,16 +76,32 @@ const SUMMARY: DashboardSummary = {
   }
 };
 
+const TREND: DashboardTrend = {
+  nbvTrend: [
+    { asAt: "2025-12-31", nbv: 58000000000 },
+    { asAt: "2026-06-30", nbv: 59241165800 }
+  ]
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   cleanup();
 });
 
 async function renderDashboard() {
-  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(SUMMARY));
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url.includes("dashboard-totals")) return Promise.resolve(jsonResponse(TOTALS));
+    if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+    if (url.includes("dashboard-summary")) return Promise.resolve(jsonResponse(FAST));
+    throw new Error(`renderDashboard: unexpected fetch URL ${url}`);
+  });
   vi.stubGlobal("fetch", fetchMock);
   render(<DashboardPage />);
-  await waitFor(() => expect(screen.getByText("3018")).toBeTruthy());
+  // Waits for all 3 pieces (sequential, not concurrent — see DashboardPage.tsx's own
+  // comment) to have arrived, not just the first — most existing assertions below read
+  // totals/trend-derived text that only renders once its own piece loads.
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy());
   return fetchMock;
 }
 
@@ -97,13 +114,37 @@ describe("DashboardPage: Center/Sub Classification filters removed", () => {
     expect(screen.queryByText("All Sub Classifications")).toBeNull();
   });
 
-  it("requests the summary for asAt only — no center/subClassification query params", async () => {
+  it("requests all 3 pieces for asAt only — no center/subClassification query params", async () => {
     const fetchMock = await renderDashboard();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const requestedUrl = fetchMock.mock.calls[0]![0] as string;
-    expect(requestedUrl).toContain("asAt=2026-08-17");
-    expect(requestedUrl).not.toContain("center=");
-    expect(requestedUrl).not.toContain("subClassification=");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls.some((u) => u.includes("/api/reports/dashboard-summary"))).toBe(true);
+    expect(urls.some((u) => u.includes("/api/reports/dashboard-totals"))).toBe(true);
+    expect(urls.some((u) => u.includes("/api/reports/dashboard-trend"))).toBe(true);
+    for (const url of urls) {
+      expect(url).toContain("asAt=2026-08-17");
+      expect(url).not.toContain("center=");
+      expect(url).not.toContain("subClassification=");
+    }
+  });
+
+  // The whole point of splitting the endpoint (see DashboardPage.tsx's own comment):
+  // the two slow requests must never fire concurrently with each other, so they never
+  // compete for the same database CPU the way the pre-split combined query did.
+  it("fetches the 3 pieces in sequence, never firing totals and trend concurrently", async () => {
+    const callOrder: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      callOrder.push(url);
+      if (url.includes("dashboard-totals")) return Promise.resolve(jsonResponse(TOTALS));
+      if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+      return Promise.resolve(jsonResponse(FAST));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(callOrder[0]).toContain("dashboard-summary");
+    expect(callOrder[1]).toContain("dashboard-totals");
+    expect(callOrder[2]).toContain("dashboard-trend");
   });
 });
 
@@ -116,22 +157,22 @@ describe("DashboardPage: new KPI fields", () => {
 
   it("shows the Opening + Additions breakdown under Gross Block, compact but with full precision on hover", async () => {
     await renderDashboard();
-    const openingCompact = escapeRegExp(formatCurrencyCompact(SUMMARY.totals.openingGrossBlock));
-    const additionsCompact = escapeRegExp(formatCurrencyCompact(SUMMARY.totals.additionsFytd));
+    const openingCompact = escapeRegExp(formatCurrencyCompact(TOTALS.totals.openingGrossBlock));
+    const additionsCompact = escapeRegExp(formatCurrencyCompact(TOTALS.totals.additionsFytd));
     const openingEl = screen.getByText(new RegExp(`Opening ${openingCompact}`));
     const additionsEl = screen.getByText(new RegExp(`\\+Additions ${additionsCompact} FYTD`));
     expect(openingEl).toBeTruthy();
     expect(additionsEl).toBeTruthy();
     // Full-precision figure is still there, just moved to the title (hover/tap), not lost.
-    expect(openingEl.title).toBe(formatCurrency(SUMMARY.totals.openingGrossBlock));
-    expect(additionsEl.title).toBe(formatCurrency(SUMMARY.totals.additionsFytd));
+    expect(openingEl.title).toBe(formatCurrency(TOTALS.totals.openingGrossBlock));
+    expect(additionsEl.title).toBe(formatCurrency(TOTALS.totals.additionsFytd));
   });
 
   it("shows FYTD Disposal P&L by default and switches to Since Inception via the toggle", async () => {
     await renderDashboard();
-    // FYTD figures from SUMMARY.disposalPL.
+    // FYTD figures from TOTALS.disposalPL.
     expect(screen.getByText("2 disposals")).toBeTruthy();
-    expect(screen.getByText(new RegExp(`Gains ${escapeRegExp(formatCurrency(SUMMARY.disposalPL.gains))}`))).toBeTruthy();
+    expect(screen.getByText(new RegExp(`Gains ${escapeRegExp(formatCurrency(TOTALS.disposalPL.gains))}`))).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Since Inception" }));
 
@@ -139,15 +180,15 @@ describe("DashboardPage: new KPI fields", () => {
     // just a label.
     expect(screen.getByText("5 disposals")).toBeTruthy();
     expect(
-      screen.getByText(new RegExp(`Gains ${escapeRegExp(formatCurrency(SUMMARY.disposalPL.allTime.gains))}`))
+      screen.getByText(new RegExp(`Gains ${escapeRegExp(formatCurrency(TOTALS.disposalPL.allTime.gains))}`))
     ).toBeTruthy();
     expect(screen.queryByText("2 disposals")).toBeNull();
   });
 
   it("always shows FYTD Deletions and Sale Proceeds regardless of the scope toggle", async () => {
     await renderDashboard();
-    const deletions = new RegExp(`Deletions \\(Cost, FYTD\\) ${escapeRegExp(formatCurrency(SUMMARY.disposalPL.totalDeletions))}`);
-    const proceeds = new RegExp(`Sale Proceeds \\(FYTD\\) ${escapeRegExp(formatCurrency(SUMMARY.disposalPL.saleProceeds))}`);
+    const deletions = new RegExp(`Deletions \\(Cost, FYTD\\) ${escapeRegExp(formatCurrency(TOTALS.disposalPL.totalDeletions))}`);
+    const proceeds = new RegExp(`Sale Proceeds \\(FYTD\\) ${escapeRegExp(formatCurrency(TOTALS.disposalPL.saleProceeds))}`);
     expect(screen.getByText(deletions)).toBeTruthy();
     expect(screen.getByText(proceeds)).toBeTruthy();
 
@@ -167,32 +208,32 @@ describe("DashboardPage: new KPI fields", () => {
 describe("DashboardPage: KPI headline values are compact, not full-precision", () => {
   it("shows Gross Block, Accumulated Depreciation, and Net Block as compact currency", async () => {
     await renderDashboard();
-    const grossBlockEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.grossBlock));
-    const accDepEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.closingAccDep));
-    const nbvEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.nbv));
+    const grossBlockEl = screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock));
+    const accDepEl = screen.getByText(formatCurrencyCompact(TOTALS.totals.closingAccDep));
+    const nbvEl = screen.getByText(formatCurrencyCompact(TOTALS.totals.nbv));
 
-    expect(grossBlockEl.title).toBe(formatCurrency(SUMMARY.totals.grossBlock));
-    expect(accDepEl.title).toBe(formatCurrency(SUMMARY.totals.closingAccDep));
-    expect(nbvEl.title).toBe(formatCurrency(SUMMARY.totals.nbv));
+    expect(grossBlockEl.title).toBe(formatCurrency(TOTALS.totals.grossBlock));
+    expect(accDepEl.title).toBe(formatCurrency(TOTALS.totals.closingAccDep));
+    expect(nbvEl.title).toBe(formatCurrency(TOTALS.totals.nbv));
 
     // The old full-precision strings should be nowhere in the visible text — only in
     // the title attributes just asserted above.
-    expect(screen.queryByText(formatCurrency(SUMMARY.totals.grossBlock))).toBeNull();
-    expect(screen.queryByText(formatCurrency(SUMMARY.totals.closingAccDep))).toBeNull();
-    expect(screen.queryByText(formatCurrency(SUMMARY.totals.nbv))).toBeNull();
+    expect(screen.queryByText(formatCurrency(TOTALS.totals.grossBlock))).toBeNull();
+    expect(screen.queryByText(formatCurrency(TOTALS.totals.closingAccDep))).toBeNull();
+    expect(screen.queryByText(formatCurrency(TOTALS.totals.nbv))).toBeNull();
   });
 
   it("uses whitespace-nowrap, not truncate, on the KPI headline values", async () => {
     await renderDashboard();
-    const nbvEl = screen.getByText(formatCurrencyCompact(SUMMARY.totals.nbv));
+    const nbvEl = screen.getByText(formatCurrencyCompact(TOTALS.totals.nbv));
     expect(nbvEl.className).toContain("whitespace-nowrap");
     expect(nbvEl.className).not.toContain("truncate");
   });
 
   it("shows the Depreciation Run-Rate headline as compact currency too", async () => {
     await renderDashboard();
-    const el = screen.getByText(formatCurrencyCompact(SUMMARY.depreciationFytd));
-    expect(el.title).toBe(formatCurrency(SUMMARY.depreciationFytd));
+    const el = screen.getByText(formatCurrencyCompact(TOTALS.depreciationFytd));
+    expect(el.title).toBe(formatCurrency(TOTALS.depreciationFytd));
   });
 });
 

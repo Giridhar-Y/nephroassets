@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   fetchDashboardSummary,
+  fetchDashboardTotals,
+  fetchDashboardTrend,
+  type DashboardFastSummary,
   type DashboardNbvTrendPoint,
   type DashboardStatusCount,
-  type DashboardSummary
+  type DashboardTotals,
+  type DashboardTrend
 } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
@@ -32,12 +36,21 @@ const KPI_TONE_CLASSES: Record<"cost" | "depreciation" | "net" | "count", string
   count: "border-transparent bg-gray-50"
 };
 
+// Since 2026-09-05, Dashboard loads in 3 independent pieces (fast summary, totals,
+// trend — see api/client.ts's own comment for why) rather than one combined response —
+// a tile whose figure comes from a still-loading piece shows this pulse in place of the
+// value instead of blocking the whole page behind the slowest piece.
+function SkeletonBar({ className = "h-6 w-24" }: { className?: string }) {
+  return <div className={`animate-pulse rounded bg-gray-200 ${className}`} />;
+}
+
 function KpiTile({
   label,
   value,
   fullValue,
   tone = "count",
   size = "normal",
+  loading = false,
   children
 }: {
   label: string;
@@ -50,17 +63,26 @@ function KpiTile({
   fullValue?: string;
   tone?: "cost" | "depreciation" | "net" | "count";
   size?: "normal" | "lg";
+  /** Shows a skeleton bar instead of `value` — the tile's underlying piece (totals or
+   *  trend) hasn't arrived yet, but the fast piece already has, so the page is rendering. */
+  loading?: boolean;
   children?: ReactNode;
 }) {
   return (
     <Card className={`px-6 py-5 ${KPI_TONE_CLASSES[tone]} ${CARD_HOVER}`}>
       <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</div>
-      <div
-        className={`mt-1 whitespace-nowrap font-heading font-extrabold text-ink ${size === "lg" ? "text-3xl" : "text-xl"}`}
-        title={fullValue ?? value}
-      >
-        {value}
-      </div>
+      {loading ? (
+        <div className="mt-1.5">
+          <SkeletonBar className={size === "lg" ? "h-8 w-32" : "h-6 w-24"} />
+        </div>
+      ) : (
+        <div
+          className={`mt-1 whitespace-nowrap font-heading font-extrabold text-ink ${size === "lg" ? "text-3xl" : "text-xl"}`}
+          title={fullValue ?? value}
+        >
+          {value}
+        </div>
+      )}
       {children}
     </Card>
   );
@@ -226,9 +248,15 @@ const EXCEPTION_TILE_TONE_CLASSES: Record<"danger" | "warning" | "info" | "neutr
 
 export function DashboardPage() {
   const { settings } = useSettings();
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [fast, setFast] = useState<DashboardFastSummary | null>(null);
+  const [totals, setTotals] = useState<DashboardTotals | null>(null);
+  const [trend, setTrend] = useState<DashboardTrend | null>(null);
+  const [loadingFast, setLoadingFast] = useState(true);
+  const [loadingTotals, setLoadingTotals] = useState(true);
+  const [loadingTrend, setLoadingTrend] = useState(true);
+  const [fastError, setFastError] = useState<string | null>(null);
+  const [totalsError, setTotalsError] = useState<string | null>(null);
+  const [trendError, setTrendError] = useState<string | null>(null);
   const [disposalScope, setDisposalScope] = useState<DisposalScope>("fytd");
   // Entrance fade/slide-in, once — a plain two-state CSS transition (no keyframes, no
   // animation library) rather than a per-tile stagger, restrained on purpose: this is a
@@ -238,16 +266,50 @@ export function DashboardPage() {
   const settingsKey = fySettingsKey(settings);
 
   // Fixed "whole register as of today" view — no Center/Sub Classification pickers.
-  // Backend filter support (dashboardSummaryQuerySchema/DashboardFilters) stays in place
-  // for Register's own use; this page simply never exercises it.
-  const load = useCallback(() => {
+  // Backend filter support (DashboardFilters) stays in place for Register's own use;
+  // this page simply never exercises it.
+  //
+  // Sequential, not Promise.all — each of the 3 pieces below is its own request AND its
+  // own database query. Running the totals+trend queries concurrently used to measure
+  // real CPU contention on Supabase's compute tier (130s combined vs. 38s for the trend
+  // query alone, at 220,000 assets — see reports.ts's computeDashboardFast comment for
+  // the full account). Awaiting each in turn means no two ever compete for the same
+  // database CPU at once, at the cost of a slightly later trend render — an easy trade,
+  // since fast/totals/trend each already render into their own section as soon as they
+  // individually arrive, rather than the page waiting on all three together.
+  const load = useCallback(async () => {
     if (!settings) return;
-    setLoading(true);
-    setError(null);
-    fetchDashboardSummary(settings.asAt)
-      .then(setSummary)
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load the dashboard."))
-      .finally(() => setLoading(false));
+    const asAt = settings.asAt;
+
+    setLoadingFast(true);
+    setFastError(null);
+    try {
+      setFast(await fetchDashboardSummary(asAt));
+    } catch (err) {
+      setFastError(err instanceof Error ? err.message : "Could not load the dashboard.");
+    } finally {
+      setLoadingFast(false);
+    }
+
+    setLoadingTotals(true);
+    setTotalsError(null);
+    try {
+      setTotals(await fetchDashboardTotals(asAt));
+    } catch (err) {
+      setTotalsError(err instanceof Error ? err.message : "Could not load the totals.");
+    } finally {
+      setLoadingTotals(false);
+    }
+
+    setLoadingTrend(true);
+    setTrendError(null);
+    try {
+      setTrend(await fetchDashboardTrend(asAt));
+    } catch (err) {
+      setTrendError(err instanceof Error ? err.message : "Could not load the trend.");
+    } finally {
+      setLoadingTrend(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.asAt, settingsKey]);
 
@@ -257,36 +319,42 @@ export function DashboardPage() {
   }, [load]);
 
   useEffect(() => {
-    if (!summary || mounted) return;
+    if (!fast || mounted) return;
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
-  }, [summary, mounted]);
+  }, [fast, mounted]);
 
-  const disposalPL = summary ? (disposalScope === "fytd" ? summary.disposalPL : summary.disposalPL.allTime) : null;
+  const disposalPL = totals ? (disposalScope === "fytd" ? totals.disposalPL : totals.disposalPL.allTime) : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
       <PageHeader icon={DashboardIcon} title="Finance FAR Dashboard" subtitle="A single-screen overview of the Fixed Asset Register." />
 
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
-        {error && (
-          <p className="mb-4 flex items-center gap-1.5 text-sm text-red-600">
-            <ErrorIcon fontSize={15} />
-            {error}{" "}
-            <button className="flex items-center gap-1 font-semibold underline" onClick={load}>
-              <RetryIcon fontSize={13} />
-              Retry
-            </button>
-          </p>
-        )}
+        {[
+          { message: fastError, retry: load },
+          { message: totalsError, retry: load },
+          { message: trendError, retry: load }
+        ]
+          .filter((e) => e.message)
+          .map((e, i) => (
+            <p key={i} className="mb-4 flex items-center gap-1.5 text-sm text-red-600">
+              <ErrorIcon fontSize={15} />
+              {e.message}{" "}
+              <button className="flex items-center gap-1 font-semibold underline" onClick={e.retry}>
+                <RetryIcon fontSize={13} />
+                Retry
+              </button>
+            </p>
+          ))}
 
-        {loading && !summary ? (
+        {loadingFast && !fast ? (
           <div className="grid grid-cols-4 gap-5">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-100" />
             ))}
           </div>
-        ) : summary && disposalPL ? (
+        ) : fast ? (
           <div
             className={`space-y-6 transition-all duration-500 ease-out ${
               mounted ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
@@ -295,51 +363,64 @@ export function DashboardPage() {
             <div className="grid grid-cols-4 gap-5">
               <KpiTile
                 label="Gross Block"
-                value={formatCurrencyCompact(summary.totals.grossBlock)}
-                fullValue={formatCurrency(summary.totals.grossBlock)}
+                value={totals ? formatCurrencyCompact(totals.totals.grossBlock) : ""}
+                fullValue={totals ? formatCurrency(totals.totals.grossBlock) : undefined}
                 tone="cost"
+                loading={!totals}
               >
-                <OpeningAdditionsBar opening={summary.totals.openingGrossBlock} additions={summary.totals.additionsFytd} />
+                {totals && (
+                  <OpeningAdditionsBar opening={totals.totals.openingGrossBlock} additions={totals.totals.additionsFytd} />
+                )}
               </KpiTile>
               <KpiTile
                 label="Accumulated Depreciation"
-                value={formatCurrencyCompact(summary.totals.closingAccDep)}
-                fullValue={formatCurrency(summary.totals.closingAccDep)}
+                value={totals ? formatCurrencyCompact(totals.totals.closingAccDep) : ""}
+                fullValue={totals ? formatCurrency(totals.totals.closingAccDep) : undefined}
                 tone="depreciation"
+                loading={!totals}
               />
               <KpiTile
                 label="Net Block"
-                value={formatCurrencyCompact(summary.totals.nbv)}
-                fullValue={formatCurrency(summary.totals.nbv)}
+                value={totals ? formatCurrencyCompact(totals.totals.nbv) : ""}
+                fullValue={totals ? formatCurrency(totals.totals.nbv) : undefined}
                 tone="net"
                 size="lg"
+                loading={!totals}
               >
-                <NetBlockDelta trend={summary.nbvTrend} />
+                {trend && <NetBlockDelta trend={trend.nbvTrend} />}
               </KpiTile>
-              <KpiTile label="Asset Count" value={String(summary.totals.assetCount)} tone="count">
-                <div className="mt-1 text-xs text-gray-500">Σ Qty: {summary.totals.qtyTotal.toLocaleString("en-IN")}</div>
-                <StatusMix statusCounts={summary.statusCounts} />
+              <KpiTile label="Asset Count" value={String(fast.totals.assetCount)} tone="count">
+                <div className="mt-1 text-xs text-gray-500">Σ Qty: {fast.totals.qtyTotal.toLocaleString("en-IN")}</div>
+                <StatusMix statusCounts={fast.statusCounts} />
               </KpiTile>
             </div>
 
             <div className="grid grid-cols-3 gap-5">
               <Card className={`p-6 ${CARD_HOVER}`}>
                 <h2 className="font-heading text-sm font-bold text-ink">Depreciation Run-Rate (FYTD)</h2>
-                <div
-                  className="mt-1 whitespace-nowrap text-2xl font-semibold text-ink"
-                  title={formatCurrency(summary.depreciationFytd)}
-                >
-                  {formatCurrencyCompact(summary.depreciationFytd)}
-                </div>
-                <div className="mt-3 text-brand-blue">
-                  <LineChart
-                    points={[
-                      { label: "FY Start", value: 0 },
-                      { label: "Now", value: summary.depreciationFytd }
-                    ]}
-                    height={24}
-                  />
-                </div>
+                {totals ? (
+                  <>
+                    <div
+                      className="mt-1 whitespace-nowrap text-2xl font-semibold text-ink"
+                      title={formatCurrency(totals.depreciationFytd)}
+                    >
+                      {formatCurrencyCompact(totals.depreciationFytd)}
+                    </div>
+                    <div className="mt-3 text-brand-blue">
+                      <LineChart
+                        points={[
+                          { label: "FY Start", value: 0 },
+                          { label: "Now", value: totals.depreciationFytd }
+                        ]}
+                        height={24}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-2">
+                    <SkeletonBar className="h-8 w-32" />
+                  </div>
+                )}
               </Card>
 
               <Card className={`p-6 ${CARD_HOVER}`}>
@@ -347,84 +428,107 @@ export function DashboardPage() {
                   <h2 className="font-heading text-sm font-bold text-ink">Disposal P&L</h2>
                   <DisposalScopeToggle scope={disposalScope} onChange={setDisposalScope} />
                 </div>
-                <div className="mt-3 flex justify-between text-xs text-gray-500">
-                  <span>Losses {formatCurrency(disposalPL.losses)}</span>
-                  <span>Gains {formatCurrency(disposalPL.gains)}</span>
-                </div>
-                <DivergingBar gains={disposalPL.gains} losses={disposalPL.losses} />
-                <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-xs text-gray-500">
-                    {disposalPL.disposalCount} disposal{disposalPL.disposalCount === 1 ? "" : "s"}
-                  </span>
-                  <span className="text-base font-semibold text-ink">Net {formatCurrency(disposalPL.gains + disposalPL.losses)}</span>
-                </div>
-                {/* Deletions/Sale Proceeds are only tracked FYTD (the export's own Disposal
-                    Inputs group has no all-time total either) — shown fixed regardless of
-                    the gains/losses toggle above, labelled so that's unambiguous. */}
-                <div className="mt-3 flex justify-between border-t border-gray-100 pt-3 text-[11px] text-gray-500">
-                  <span>Deletions (Cost, FYTD) {formatCurrency(summary.disposalPL.totalDeletions)}</span>
-                  <span>Sale Proceeds (FYTD) {formatCurrency(summary.disposalPL.saleProceeds)}</span>
-                </div>
+                {totals && disposalPL ? (
+                  <>
+                    <div className="mt-3 flex justify-between text-xs text-gray-500">
+                      <span>Losses {formatCurrency(disposalPL.losses)}</span>
+                      <span>Gains {formatCurrency(disposalPL.gains)}</span>
+                    </div>
+                    <DivergingBar gains={disposalPL.gains} losses={disposalPL.losses} />
+                    <div className="mt-3 flex items-baseline justify-between">
+                      <span className="text-xs text-gray-500">
+                        {disposalPL.disposalCount} disposal{disposalPL.disposalCount === 1 ? "" : "s"}
+                      </span>
+                      <span className="text-base font-semibold text-ink">
+                        Net {formatCurrency(disposalPL.gains + disposalPL.losses)}
+                      </span>
+                    </div>
+                    {/* Deletions/Sale Proceeds are only tracked FYTD (the export's own
+                        Disposal Inputs group has no all-time total either) — shown fixed
+                        regardless of the gains/losses toggle above, labelled so that's
+                        unambiguous. */}
+                    <div className="mt-3 flex justify-between border-t border-gray-100 pt-3 text-[11px] text-gray-500">
+                      <span>Deletions (Cost, FYTD) {formatCurrency(totals.disposalPL.totalDeletions)}</span>
+                      <span>Sale Proceeds (FYTD) {formatCurrency(totals.disposalPL.saleProceeds)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3">
+                    <SkeletonBar className="h-16 w-full" />
+                  </div>
+                )}
               </Card>
 
               <Card className={`p-6 ${CARD_HOVER}`}>
                 <h2 className="font-heading text-sm font-bold text-ink">Net Block Trend</h2>
-                <div className="mt-3 text-brand-blue">
-                  <LineChart
-                    points={summary.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
-                    height={44}
-                    showDots
-                  />
-                </div>
-                <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
-                  {summary.nbvTrend.map((t) => (
-                    <span key={t.asAt}>{t.asAt.slice(5, 7)}/{t.asAt.slice(2, 4)}</span>
-                  ))}
-                </div>
+                {trend ? (
+                  <>
+                    <div className="mt-3 text-brand-blue">
+                      <LineChart
+                        points={trend.nbvTrend.map((t) => ({ label: formatDateDDMMYYYY(t.asAt), value: t.nbv }))}
+                        height={44}
+                        showDots
+                      />
+                    </div>
+                    <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
+                      {trend.nbvTrend.map((t) => (
+                        <span key={t.asAt}>
+                          {t.asAt.slice(5, 7)}/{t.asAt.slice(2, 4)}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3">
+                    <SkeletonBar className="h-11 w-full" />
+                  </div>
+                )}
               </Card>
             </div>
 
             <div className="grid grid-cols-5 gap-5">
-              {EXCEPTION_KEYS.map((key) => {
-                const category = summary.exceptions[key];
-                const toneClasses = EXCEPTION_TILE_TONE_CLASSES[EXCEPTION_TONES[key]];
-                const tileContent = (
-                  <>
-                    <div className={`font-heading text-3xl font-extrabold ${category.count > 0 ? toneClasses.text : "text-gray-400"}`}>
-                      {category.count}
-                    </div>
-                    <div className="mt-1 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
-                  </>
-                );
-                // A plain native anchor — deliberately NOT react-router's <Link>. Link's
-                // own click handler bails out and lets the browser handle target="_blank"
-                // natively (confirmed against the installed react-router-dom source), but
-                // a real click still navigated the CURRENT tab instead of opening a new
-                // one. Using a bare <a> removes React/router entirely from the click path,
-                // leaving pure native browser semantics — right-click/middle-click/
-                // Ctrl+click all need to work, and a plain click must leave Dashboard
-                // exactly where it was. Register's own GET /api/assets?exception=<key>
-                // re-derives the exact row set from the same shared predicate this tile's
-                // count came from — see exceptionPredicates.ts — so the two can never
-                // silently disagree.
-                return category.count > 0 ? (
-                  <a
-                    key={key}
-                    href={`#/register?exception=${key}&asAt=${summary.asAt}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
-                    title="Open in Register (new tab)"
-                    className={`rounded-xl p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${toneClasses.bg}`}
-                  >
-                    {tileContent}
-                  </a>
-                ) : (
-                  <div key={key} className="rounded-xl bg-gray-50 p-5 text-left">
-                    {tileContent}
-                  </div>
-                );
-              })}
+              {!totals
+                ? Array.from({ length: 5 }).map((_, i) => <SkeletonBar key={i} className="h-20 w-full rounded-xl" />)
+                : EXCEPTION_KEYS.map((key) => {
+                    const category = totals.exceptions[key];
+                    const toneClasses = EXCEPTION_TILE_TONE_CLASSES[EXCEPTION_TONES[key]];
+                    const tileContent = (
+                      <>
+                        <div className={`font-heading text-3xl font-extrabold ${category.count > 0 ? toneClasses.text : "text-gray-400"}`}>
+                          {category.count}
+                        </div>
+                        <div className="mt-1 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
+                      </>
+                    );
+                    // A plain native anchor — deliberately NOT react-router's <Link>.
+                    // Link's own click handler bails out and lets the browser handle
+                    // target="_blank" natively (confirmed against the installed
+                    // react-router-dom source), but a real click still navigated the
+                    // CURRENT tab instead of opening a new one. Using a bare <a> removes
+                    // React/router entirely from the click path, leaving pure native
+                    // browser semantics — right-click/middle-click/Ctrl+click all need to
+                    // work, and a plain click must leave Dashboard exactly where it was.
+                    // Register's own GET /api/assets?exception=<key> re-derives the exact
+                    // row set from the same shared predicate this tile's count came from
+                    // — see exceptionPredicates.ts — so the two can never silently disagree.
+                    return category.count > 0 ? (
+                      <a
+                        key={key}
+                        href={`#/register?exception=${key}&asAt=${fast.asAt}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`${EXCEPTION_LABELS[key]}: ${category.count} — opens Register in a new tab`}
+                        title="Open in Register (new tab)"
+                        className={`rounded-xl p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${toneClasses.bg}`}
+                      >
+                        {tileContent}
+                      </a>
+                    ) : (
+                      <div key={key} className="rounded-xl bg-gray-50 p-5 text-left">
+                        {tileContent}
+                      </div>
+                    );
+                  })}
             </div>
           </div>
         ) : null}

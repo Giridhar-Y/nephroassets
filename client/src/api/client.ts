@@ -784,8 +784,15 @@ export function getRegisterSummaryExportUrl(filters: RegisterSummaryFilters): st
   return `/api/reports/register-summary/export?${registerSummaryParams(filters)}`;
 }
 
-// Finance FAR Dashboard — mirrors server/src/routes/reports.ts's computeDashboardSummary
-// response shape field-for-field.
+// Finance FAR Dashboard — mirrors server/src/routes/reports.ts's computeDashboardFast/
+// computeDashboardTotals/computeDashboardTrend response shapes field-for-field. Split
+// into 3 independent requests (2026-09-05) rather than one combined endpoint — see
+// computeDashboardFast's own comment in reports.ts for why: Vercel's per-request timeout
+// applies to the whole combined response, and real Supabase Pro showed genuine CPU
+// contention running the totals+trend queries concurrently (130s combined vs. 38s for
+// the trend query alone, at 220,000 assets). DashboardPage.tsx fetches all 3 in
+// sequence, never concurrently, so no two of these ever contend for the same database
+// CPU at once.
 export interface DashboardStatusCount {
   status: string;
   count: number;
@@ -800,18 +807,24 @@ export interface DashboardExceptionResult {
   count: number;
 }
 
-export interface DashboardSummary {
+/** Fast piece — a plain WHERE + COUNT/SUM/GROUP BY, no far_calc_component() call at
+ *  all. Loads first so the page has something to show immediately. */
+export interface DashboardFastSummary {
   asAt: string;
+  totals: { assetCount: number; qtyTotal: number };
+  statusCounts: DashboardStatusCount[];
+}
+
+/** Slow piece 1 — the full calc-engine totals scan (Gross Block, Acc Dep, NBV,
+ *  Disposal P&L, exception counts). */
+export interface DashboardTotals {
   totals: {
     grossBlock: number;
     openingGrossBlock: number;
     additionsFytd: number;
     closingAccDep: number;
     nbv: number;
-    assetCount: number;
-    qtyTotal: number;
   };
-  statusCounts: DashboardStatusCount[];
   depreciationFytd: number;
   disposalPL: {
     gains: number;
@@ -827,7 +840,6 @@ export interface DashboardSummary {
       disposalCount: number;
     };
   };
-  nbvTrend: DashboardNbvTrendPoint[];
   // Counts only — a tile's drill-through opens Register itself
   // (GET /api/assets?exception=<key>, the same shared predicate) for the actual rows,
   // with real pagination/sorting/export, rather than this endpoint carrying a second,
@@ -835,14 +847,33 @@ export interface DashboardSummary {
   exceptions: Record<import("../lib/exceptions.js").ExceptionKey, DashboardExceptionResult>;
 }
 
-export function fetchDashboardSummary(
-  asAt: string,
-  opts?: { center?: string; subClassification?: string }
-): Promise<DashboardSummary> {
+/** Slow piece 2 — the batched 6-trailing-quarter-end NBV trend. */
+export interface DashboardTrend {
+  nbvTrend: DashboardNbvTrendPoint[];
+}
+
+interface DashboardQueryOpts {
+  center?: string;
+  subClassification?: string;
+}
+
+function dashboardParams(asAt: string, opts?: DashboardQueryOpts): URLSearchParams {
   const params: Record<string, string> = { asAt };
   if (opts?.center) params.center = opts.center;
   if (opts?.subClassification) params.subClassification = opts.subClassification;
-  return request(`/api/reports/dashboard-summary?${new URLSearchParams(params)}`);
+  return new URLSearchParams(params);
+}
+
+export function fetchDashboardSummary(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardFastSummary> {
+  return request(`/api/reports/dashboard-summary?${dashboardParams(asAt, opts)}`);
+}
+
+export function fetchDashboardTotals(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTotals> {
+  return request(`/api/reports/dashboard-totals?${dashboardParams(asAt, opts)}`);
+}
+
+export function fetchDashboardTrend(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTrend> {
+  return request(`/api/reports/dashboard-trend?${dashboardParams(asAt, opts)}`);
 }
 
 export interface MovementScheduleRow {

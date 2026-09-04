@@ -245,40 +245,57 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
 
   // Investigating a reported production incident: with 217,000+ real assets, EVERY
   // screen in the app went unresponsive, not just Register/its export (already fixed
-  // separately). Dashboard is the app's landing page — computeDashboardSummary
-  // (reports.ts) originally fired the totals query + 6 NBV-trend queries (one full
-  // calc-CTE scan per trailing quarter, via Promise.all) + the status-breakdown query —
-  // up to 8 concurrent queries from a SINGLE page load. getPool() caps the pool at
-  // `max: 5` (db/pool.ts) for any real DATABASE_URL, which this harness's own vitest
-  // config points at a real (local) Postgres — so this reproduces the actual pool
-  // topology, not just query cost in isolation. Fixed by batching the 6 trend points
-  // into ONE query (buildDashboardTrendSql) — Dashboard's own connection usage is now 3,
-  // not 8. Measured 23.1s for 250,000 assets against this local harness (down from what
-  // 8-way parallel contention would have cost — the pre-fix 20,000-asset run alone
-  // already measured 7.8s). 60s budget: generous over that real local number (this
-  // repo's embedded-Postgres numbers run noisy/slow vs. real Supabase Pro — see Register
-  // Export's own test comment) while still matching a meaningful real ceiling (Vercel
-  // Hobby's request timeout).
-  it("Dashboard Summary: single load timing at full scale", async () => {
+  // separately). Dashboard is the app's landing page. First fix (2026-09-04): batched
+  // the 6 NBV-trend queries into 1 (buildDashboardTrendSql), cutting Dashboard's own
+  // connection usage from 8 to 3. Validated against real Supabase Pro (2026-09-05):
+  // the fix was real, but the combined 3-query request still measured 130s at 220,000
+  // assets — well past Vercel's 60s ceiling — because totals+trend running
+  // CONCURRENTLY genuinely contend for CPU on Supabase's compute tier (the trend query
+  // ALONE measured 38s; inferred from pg_settings to be Supabase's smallest "Micro"
+  // add-on, 2 vCPU). Second fix: split into 3 independent endpoints
+  // (dashboard-summary/dashboard-totals/dashboard-trend — see computeDashboardFast's own
+  // comment), each its own request, never run concurrently with each other by the
+  // client (DashboardPage.tsx fetches them in sequence). This local harness can't
+  // reproduce the real-Supabase CPU-contention gap (its embedded Postgres has no such
+  // constraint), but DOES reproduce the connection-pool topology (`max: 5`, real for any
+  // DATABASE_URL) — these tests assert each piece stays a cheap, independent request.
+  it("Dashboard fast summary (asset count/qty/status — no far_calc_component call): stays fast regardless of scale", async () => {
     const start = performance.now();
     const res = await authedInject(app, { method: "GET", url: `/api/reports/dashboard-summary?asAt=${AS_AT}` });
     const elapsedMs = performance.now() - start;
-    console.log(`Dashboard Summary (full ${ASSET_COUNT.toLocaleString()}-asset scan, 3 concurrent queries): ${elapsedMs.toFixed(0)}ms`);
+    console.log(`Dashboard fast summary (${ASSET_COUNT.toLocaleString()} assets): ${elapsedMs.toFixed(0)}ms`);
+    expect(res.statusCode).toBe(200);
+    expect(elapsedMs).toBeLessThan(3_000);
+  });
+
+  it("Dashboard totals (the full calc-CTE scan): single load timing at full scale", async () => {
+    const start = performance.now();
+    const res = await authedInject(app, { method: "GET", url: `/api/reports/dashboard-totals?asAt=${AS_AT}` });
+    const elapsedMs = performance.now() - start;
+    console.log(`Dashboard totals (full ${ASSET_COUNT.toLocaleString()}-asset scan): ${elapsedMs.toFixed(0)}ms`);
     expect(res.statusCode).toBe(200);
     expect(elapsedMs).toBeLessThan(60_000);
   });
 
-  // Direct test of the connection-pool-exhaustion hypothesis: fire a Dashboard load
-  // (now 3 concurrent queries post-fix, pool max 5 — see the Dashboard test above) at
-  // the same time as several requests to a TINY, unrelated endpoint (/api/meta/centers —
-  // a handful of rows, no join to `assets` at all). If the pool is a real bottleneck,
-  // the tiny requests queue behind Dashboard's own queries and take longer than they do
-  // standing alone — reproducing "every screen hung, not just the heavy one" from a
-  // single test. Before the trend-batching fix, this measured 4 of 5 concurrent
-  // /api/meta/centers calls at ~640ms each (a ~70x slowdown from a ~9ms baseline) at
-  // just 20,000 assets — direct proof of the mechanism, not just a slow query in
-  // isolation.
-  it("Connection pool: a concurrent Dashboard load starves an unrelated tiny request", async () => {
+  it("Dashboard trend (the batched 6-quarter-end query): single load timing at full scale", async () => {
+    const start = performance.now();
+    const res = await authedInject(app, { method: "GET", url: `/api/reports/dashboard-trend?asAt=${AS_AT}` });
+    const elapsedMs = performance.now() - start;
+    console.log(`Dashboard trend (full ${ASSET_COUNT.toLocaleString()}-asset scan): ${elapsedMs.toFixed(0)}ms`);
+    expect(res.statusCode).toBe(200);
+    expect(elapsedMs).toBeLessThan(60_000);
+  });
+
+  // Direct test of the connection-pool-exhaustion hypothesis, re-run against the split
+  // endpoints: fire ONE heavy Dashboard piece (dashboard-totals — 1 connection, not 8)
+  // concurrently with several requests to a TINY, unrelated endpoint
+  // (/api/meta/centers). If the pool is a real bottleneck, the tiny requests queue
+  // behind it and take longer than standing alone. Before ANY fix, this measured 4 of 5
+  // concurrent /api/meta/centers calls at ~640ms each (a ~70x slowdown from a ~9ms
+  // baseline) at just 20,000 assets — direct proof of the mechanism. With each Dashboard
+  // piece now down to a single query/connection, the blast radius on unrelated requests
+  // should be far smaller than that.
+  it("Connection pool: a concurrent Dashboard-totals load only mildly slows an unrelated tiny request", async () => {
     const baselineStart = performance.now();
     const baseline = await authedInject(app, { method: "GET", url: "/api/meta/centers" });
     const baselineMs = performance.now() - baselineStart;
@@ -287,7 +304,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
 
     const contendedStart = performance.now();
     const [, ...tinyResults] = await Promise.all([
-      authedInject(app, { method: "GET", url: `/api/reports/dashboard-summary?asAt=${AS_AT}` }),
+      authedInject(app, { method: "GET", url: `/api/reports/dashboard-totals?asAt=${AS_AT}` }),
       ...Array.from({ length: 5 }, async () => {
         const s = performance.now();
         const res = await authedInject(app, { method: "GET", url: "/api/meta/centers" });
@@ -297,7 +314,7 @@ describe(`load test: ${ASSET_COUNT.toLocaleString()} assets`, () => {
     const totalMs = performance.now() - contendedStart;
     const tinyTimes = tinyResults.map((r) => r.elapsedMs.toFixed(0)).join(", ");
     console.log(
-      `Concurrent with Dashboard: 5x /api/meta/centers took [${tinyTimes}]ms each (baseline was ${baselineMs.toFixed(0)}ms); whole batch: ${totalMs.toFixed(0)}ms`
+      `Concurrent with Dashboard totals: 5x /api/meta/centers took [${tinyTimes}]ms each (baseline was ${baselineMs.toFixed(0)}ms); whole batch: ${totalMs.toFixed(0)}ms`
     );
     for (const r of tinyResults) expect(r.statusCode).toBe(200);
   });

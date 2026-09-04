@@ -1371,7 +1371,7 @@ describe("Asset Movement & Depreciation Schedule export — reconciliation at sc
 // Finance FAR Dashboard — reuses far_calc_component/buildCalcCteExtras exactly like every
 // report above; these tests cover the aggregation/exception SQL this route adds on top,
 // not the calc math itself (already covered by sqlParity.test.ts and friends).
-describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", () => {
+describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary + dashboard-totals + dashboard-trend)", () => {
   let app: FastifyInstance;
   const fy = { asAt: AS_AT, fyStart: FY_START, fyEnd: FY_END, daysInFy: DAYS_IN_FY };
 
@@ -1643,20 +1643,31 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
       expectedQtyTotal += row.qty;
     }
 
-    const res = await authedInject(app, {
+    // assetCount/qtyTotal come from the fast endpoint (no far_calc_component call);
+    // grossBlock/closingAccDep/nbv/openingGrossBlock/additionsFytd come from the slow
+    // totals endpoint — two independent requests since the 2026-09-05 Dashboard split
+    // (see computeDashboardFast's own comment for why).
+    const fastRes = await authedInject(app, {
       method: "GET",
       url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
     });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.totals.assetCount).toBe(3);
+    expect(fastRes.statusCode).toBe(200);
+    const fastBody = fastRes.json();
+    expect(fastBody.totals.assetCount).toBe(3);
+    // qtyTotal (4: 1+1+2) provably differs from assetCount (3 rows) — the two metrics
+    // the dashboard's Asset Count tile shows side by side, per its own comment.
+    expect(fastBody.totals.qtyTotal).toBe(4);
+    expect(expectedQtyTotal).toBe(4);
+
+    const totalsRes = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
+    });
+    expect(totalsRes.statusCode).toBe(200);
+    const body = totalsRes.json();
     expect(body.totals.grossBlock).toBeCloseTo(expectedGrossBlock, 2);
     expect(body.totals.closingAccDep).toBeCloseTo(expectedClosingAccDep, 2);
     expect(body.totals.nbv).toBeCloseTo(expectedNbv, 2);
-    // qtyTotal (4: 1+1+2) provably differs from assetCount (3 rows) — the two metrics
-    // the dashboard's Asset Count tile shows side by side, per its own comment.
-    expect(body.totals.qtyTotal).toBe(4);
-    expect(expectedQtyTotal).toBe(4);
     expect(body.totals.openingGrossBlock).toBeCloseTo(expectedOpeningGrossBlock, 2);
     expect(body.totals.additionsFytd).toBeCloseTo(expectedAdditionsFytd, 2);
     expect(expectedAdditionsFytd).toBeGreaterThan(0); // proves the mid-year-addition fixture actually exercised this path
@@ -1684,7 +1695,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
 
     const res = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
+      url: `/api/reports/dashboard-trend?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Totals" })}`
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1709,7 +1720,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
 
     const res = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-DisposalScope" })}`
+      url: `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-DisposalScope" })}`
     });
     expect(res.statusCode).toBe(200);
     const { disposalPL } = res.json();
@@ -1755,10 +1766,10 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
     expect(unscopedRes.json().totals.assetCount).toBe(2);
   });
 
-  it("each exception category's dashboard-summary count matches exactly the fixture rows engineered to trip it, and none of the ones that shouldn't", async () => {
+  it("each exception category's dashboard-totals count matches exactly the fixture rows engineered to trip it, and none of the ones that shouldn't", async () => {
     const res = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
+      url: `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
     });
     expect(res.statusCode).toBe(200);
     const { exceptions } = res.json();
@@ -1777,7 +1788,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
   // `exception` key must be the exact same answer, because both are now computed by the
   // one shared predicate in exceptionPredicates.ts — not two independently-maintained
   // queries that could silently drift apart.
-  it("GET /api/assets?exception=<key> returns exactly the rows dashboard-summary counted, for every category", async () => {
+  it("GET /api/assets?exception=<key> returns exactly the rows dashboard-totals counted, for every category", async () => {
     const EXPECTED: Record<string, string[]> = {
       negativeNbv: ["DASH-NEGNBV"],
       fullyDepreciatedActive: ["DASH-FULLDEP", "DASH-PASTLIFE"],
@@ -1788,7 +1799,7 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary)", (
 
     const summaryRes = await authedInject(app, {
       method: "GET",
-      url: `/api/reports/dashboard-summary?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
+      url: `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Exceptions" })}`
     });
     const { exceptions } = summaryRes.json();
 

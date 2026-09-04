@@ -1210,7 +1210,60 @@ function trailingQuarterEnds(asAt: string, count: number): string[] {
   return dates;
 }
 
-async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+// Split into 3 independent pieces (computeDashboardFast/Totals/Trend below), each its
+// own route, each its own request from the client — NOT one handler running all three
+// concurrently via Promise.all like this used to. Two real problems with the combined
+// version, both found investigating a reported incident where EVERY screen in the app,
+// not just Dashboard, went unresponsive at 217,000+ real assets:
+//   1. Vercel's per-function timeout applies to the WHOLE combined response — the
+//      slowest of the three pieces determined whether the request as a whole failed, so
+//      even after batching the trend query down to one round trip, the combined
+//      request still measured 130s against real Supabase Pro at 220,000 assets, well
+//      past Vercel's 60s Hobby-plan ceiling. Splitting means each piece is timed out
+//      independently against its own request budget.
+//   2. Real hardware, not just local: validated directly against real Supabase Pro —
+//      running the totals + trend queries CONCURRENTLY (both calling
+//      far_calc_component() ~200,000+ times each) measured 130s combined, over 3x the
+//      38s the trend query alone took standing by itself. That gap is real CPU
+//      contention on Supabase's compute tier (inferred from pg_settings —
+//      shared_buffers/max_connections match Supabase's smallest "Micro" add-on, 2
+//      vCPU), not a pool-slot illusion: two CPU-bound scans fighting over 2 vCPUs are
+//      slower together than either alone. Running them as separate requests instead of
+//      concurrently avoids paying that contention penalty at all.
+// The fast piece (asset count/qty/status — no far_calc_component call at all) loads
+// first so the page has something to show immediately; totals and trend load
+// independently after, each with its own loading state (DashboardPage.tsx).
+
+/** Fast piece: asset count, qty total, status breakdown — a plain WHERE + COUNT/SUM/
+ *  GROUP BY over raw columns, no far_calc_component() call at all. Meant to return
+ *  quickly regardless of table size, so the Dashboard page always has something to show
+ *  on first paint even while the two calc-heavy pieces below are still loading. */
+async function computeDashboardFast(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+  const totalsBase = buildDashboardWhere(user, filters);
+  const totalsPromise = db.query<{ asset_count: string; qty_total: string }>(
+    `SELECT COUNT(*) AS asset_count, COALESCE(SUM(qty), 0) AS qty_total FROM assets WHERE ${totalsBase.whereSql}`,
+    totalsBase.params
+  );
+
+  const statusBase = buildDashboardWhere(user, filters);
+  const statusPromise = db.query<{ status: string; count: string }>(
+    `SELECT status, COUNT(*) AS count FROM assets WHERE ${statusBase.whereSql} GROUP BY status ORDER BY count DESC`,
+    statusBase.params
+  );
+
+  const [totalsRows, statusRows] = await Promise.all([totalsPromise, statusPromise]);
+  const t = totalsRows.rows[0]!;
+  return {
+    asAt: fy.asAt,
+    totals: { assetCount: Number(t.asset_count), qtyTotal: Number(t.qty_total) },
+    statusCounts: statusRows.rows.map((r) => ({ status: r.status, count: Number(r.count) }))
+  };
+}
+
+/** Slow piece 1: the full far_calc_component() totals scan (Gross Block, Acc Dep, NBV,
+ *  Disposal P&L, exception counts) — everything that genuinely needs the calc engine,
+ *  now its own request instead of racing the trend query for the same CPU. */
+async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
   const totalsBase = buildDashboardCalcCte(fy, user, filters);
   const fyStartIdx = totalsBase.params.push(fy.fyStart);
   const asAtIdx = totalsBase.params.push(fy.asAt);
@@ -1225,10 +1278,8 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
   const exceptionCountColumns = EXCEPTION_KEYS.map(
     (key, i) => `COUNT(*) FILTER (WHERE ${buildExceptionPredicate(key, totalsBase.params, fy)}) AS exception_count_${i}`
   ).join(",\n       ");
-  const totalsPromise = db.query<
+  const { rows } = await db.query<
     {
-      asset_count: string;
-      qty_total: string;
       gross_block: string;
       opening_gross_block: string;
       additions_fytd: string;
@@ -1247,8 +1298,6 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
   >(
     `${totalsBase.cteSql}
      SELECT
-       COUNT(*) AS asset_count,
-       COALESCE(SUM(qty), 0) AS qty_total,
        COALESCE(SUM((c1).gross_block + (c2).gross_block), 0) AS gross_block,
        -- Opening Gross Block / Additions Gross Block: fixed FY-Start snapshot and the
        -- as-of-AS_AT addition tranche the calc engine already computes per component (see
@@ -1280,48 +1329,15 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
     totalsBase.params
   );
 
-  const statusBase = buildDashboardWhere(user, filters);
-  const statusPromise = db.query<{ status: string; count: string }>(
-    `SELECT status, COUNT(*) AS count FROM assets WHERE ${statusBase.whereSql} GROUP BY status ORDER BY count DESC`,
-    statusBase.params
-  );
-
-  // NBV trend — 6 trailing calendar-quarter-ends, current FY's fy_start/fy_end/days_in_fy
-  // held fixed (only asAt varies per point). A point before the current FY's start
-  // therefore reflects this FY's opening balance rather than a true replay of an earlier
-  // FY's own depreciation (this app stores one FY's opening balance per asset, not a full
-  // multi-year history) — an accepted v1 approximation, not fabricated data: it's the same
-  // real calc engine, just read outside the window it was designed to be precise for. If
-  // this needs to be exact, or this gets slow at the app's documented 250k-asset scale,
-  // revisit with a monthly snapshot table — not needed for v1.
-  const trendDates = trailingQuarterEnds(fy.asAt, 6);
-  const trendPromise = (async () => {
-    const { sql, params } = buildDashboardTrendSql(trendDates, fy, user, filters);
-    const { rows } = await db.query<{ as_at: string; nbv: string }>(sql, params);
-    // LEFT/CROSS-JOIN edge case: a date with zero matching assets across the whole
-    // filtered set (only possible when the filters themselves match nothing at all,
-    // at any date) simply never appears in the grouped result — default it to 0 rather
-    // than pass NULL asset columns through far_calc_component for a row that doesn't
-    // exist.
-    const byDate = new Map(rows.map((r) => [r.as_at, Number(r.nbv)]));
-    return trendDates.map((date) => ({ asAt: date, nbv: byDate.get(date) ?? 0 }));
-  })();
-
-  const [totalsRows, statusRows, nbvTrend] = await Promise.all([totalsPromise, statusPromise, trendPromise]);
-
-  const t = totalsRows.rows[0]!;
+  const t = rows[0]!;
   return {
-    asAt: fy.asAt,
     totals: {
       grossBlock: Number(t.gross_block),
       openingGrossBlock: Number(t.opening_gross_block),
       additionsFytd: Number(t.additions_fytd),
       closingAccDep: Number(t.closing_acc_dep),
-      nbv: Number(t.nbv),
-      assetCount: Number(t.asset_count),
-      qtyTotal: Number(t.qty_total)
+      nbv: Number(t.nbv)
     },
-    statusCounts: statusRows.rows.map((r) => ({ status: r.status, count: Number(r.count) })),
     depreciationFytd: Number(t.dep_fytd),
     disposalPL: {
       gains: Number(t.gains),
@@ -1337,7 +1353,6 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
         disposalCount: Number(t.disposal_count_all_time)
       }
     },
-    nbvTrend,
     // Counts only — the sample rows this used to carry are gone: a tile's drill-through
     // now opens Register itself (GET /api/assets?exception=<key>, the same predicate),
     // which has real pagination/sorting/export instead of a capped read-only list.
@@ -1346,6 +1361,30 @@ async function computeDashboardSummary(db: Db, fy: Fy, user: Pick<AuthedUser, "c
       { count: number }
     >
   };
+}
+
+/** Slow piece 2: the NBV trend (6 trailing calendar-quarter-ends). Its own request, not
+ *  bundled with the totals query above — the two used to run concurrently via
+ *  Promise.all, which measured 130s combined on real Supabase Pro at 220,000 assets
+ *  vs. 38s for this query alone (real CPU contention on Supabase's compute tier, see
+ *  this section's own header comment). Current FY's fy_start/fy_end/days_in_fy held
+ *  fixed (only asAt varies per point). A point before the current FY's start therefore
+ *  reflects this FY's opening balance rather than a true replay of an earlier FY's own
+ *  depreciation (this app stores one FY's opening balance per asset, not a full
+ *  multi-year history) — an accepted v1 approximation, not fabricated data: it's the
+ *  same real calc engine, just read outside the window it was designed to be precise
+ *  for. If this needs to be exact, or stays too slow for comfort as data keeps growing,
+ *  revisit with a monthly snapshot table — not needed for v1. */
+async function computeDashboardTrend(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+  const trendDates = trailingQuarterEnds(fy.asAt, 6);
+  const { sql, params } = buildDashboardTrendSql(trendDates, fy, user, filters);
+  const { rows } = await db.query<{ as_at: string; nbv: string }>(sql, params);
+  // LEFT/CROSS-JOIN edge case: a date with zero matching assets across the whole
+  // filtered set (only possible when the filters themselves match nothing at all, at
+  // any date) simply never appears in the grouped result — default it to 0 rather than
+  // pass NULL asset columns through far_calc_component for a row that doesn't exist.
+  const byDate = new Map(rows.map((r) => [r.as_at, Number(r.nbv)]));
+  return { nbvTrend: trendDates.map((date) => ({ asAt: date, nbv: byDate.get(date) ?? 0 })) };
 }
 
 // Register Summary: same numeric columns as the Register Export (assetsExport.ts),
@@ -1873,7 +1912,10 @@ export default async function reportsRoutes(app: FastifyInstance) {
     await streamTransferDepreciationWorkbook(db, fy, parsed.data.conditions, stream, req.user!);
   });
 
-  // Finance FAR Dashboard — see computeDashboardSummary above.
+  // Finance FAR Dashboard, split into 3 independent requests — see the comment above
+  // computeDashboardFast for why (Vercel per-request timeout, real CPU contention on
+  // Supabase's compute tier). DashboardPage.tsx fires all 3 on load and renders each
+  // section as its own piece arrives, rather than waiting for the slowest.
   app.get("/api/reports/dashboard-summary", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = dashboardSummaryQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -1886,7 +1928,43 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
-    return computeDashboardSummary(db, fy, req.user!, {
+    return computeDashboardFast(db, fy, req.user!, {
+      center: parsed.data.center,
+      subClassification: parsed.data.subClassification
+    });
+  });
+
+  app.get("/api/reports/dashboard-totals", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
+    const parsed = dashboardSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    return computeDashboardTotals(db, fy, req.user!, {
+      center: parsed.data.center,
+      subClassification: parsed.data.subClassification
+    });
+  });
+
+  app.get("/api/reports/dashboard-trend", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
+    const parsed = dashboardSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Invalid query.", details: parsed.error.flatten() };
+    }
+    const db = await getPool();
+    const fy = await requireFySettings(db, { asAt: parsed.data.asAt });
+    if (!fy) {
+      reply.code(409);
+      return { error: "Financial year settings have not been configured yet." };
+    }
+    return computeDashboardTrend(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
