@@ -2,7 +2,6 @@ import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
-import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql } from "../auth/centerScope.js";
@@ -43,30 +42,65 @@ const C2_EXPORT_KEYS = new Set([
 // exporting the full 2,50,000+ row register doesn't hold the whole result set in memory
 // at once — same scale concern that motivated the denormalized location column and the
 // PL/pgSQL report functions.
-const EXPORT_BATCH_SIZE = 2000;
+//
+// Raised from 2,000 to 20,000 (a 10x cut in round trips) after profiling the export's
+// real bottleneck (2026-09-04, investigating why the fully-styled version took 93-123s
+// at 250k rows against Vercel's 60s Hobby-plan ceiling): per-batch instrumentation
+// showed the batch query itself was ~50% of total time — but that cost turned out to be
+// almost entirely WASTED work, not genuine per-row cost. The batch query always ran
+// through the same two-stage far_calc_component() CTE the totals/computed-filter path
+// needs, evaluating it for every row in the batch even when nothing downstream reads
+// those computed columns (the per-row export values are independently recomputed in JS
+// via computeAsset() regardless — see the batch loop's own comment). Skipping that CTE
+// entirely for the common case (no computed-column filter — see the batch query's own
+// branch below) turns this into a plain indexed range scan on `far_id`, cheap enough
+// that a much bigger batch is safe; the remaining reason to keep batching at all instead
+// of one huge query is memory (never holding the whole export in memory at once) and
+// giving up cleanly at a batch boundary, not query cost.
+const EXPORT_BATCH_SIZE = 20_000;
 
 // TEMPORARY safety cap while this deployment is on Vercel's Hobby plan, which hard-caps
-// every serverless function invocation at 60s with NO way to raise it (Pro's
-// configurable maxDuration up to 300s isn't available on this account's current plan —
-// see project memory/session notes). Real measurement via the load test
-// (loadtest/scale.loadtest.ts) at this app's documented ~250,000-row full-register
-// scale: 93,214-123,055ms end-to-end for a full unfiltered export, and that's a LOWER
-// BOUND — same-process embedded Postgres, zero network latency, whereas production adds
-// a genuine round trip per batch to Supabase. Worse-case measured rate: 123,055ms /
-// 250,000 rows ≈ 0.49ms/row, which alone projects to ~122,000 rows before hitting 60s —
-// EXPORT_ROW_LIMIT sits well below that line, not right up against it, to leave real
-// margin for: production network latency (modest — Vercel's "sin1" region and
-// Supabase's "ap-southeast-1" are both Singapore, so same-region, but still nonzero over
-// ~2×(limit/EXPORT_BATCH_SIZE) real round trips), the run-to-run variance already
-// observed locally (93s -> 123s, +32%, identical code, identical machine, nothing else
-// changed), and real data being messier than the load test's synthetic ~10%-transferred
-// fixture (more transfers/asset, more disposed-asset calc paths).
+// every serverless function invocation at 60s with NO way to raise it (staying on Hobby
+// is a deliberate choice for now — this is UAT, not full production yet — rather than a
+// Pro-plan upgrade or a hosting migration; Supabase's own Pro plan IS in use, though,
+// which is what made the fix below possible).
+//
+// The original version of this route (fully-styled ExcelJS output, 2,000-row batches
+// that always ran the full far_calc_component() calc CTE regardless of need) measured
+// 93,214-123,055ms for a 250,000-row export — that number came from the local load-test
+// harness's embedded Postgres, a LOWER BOUND with zero network latency. Investigating
+// why (2026-09-04) found two real, fixable costs: the batch query's calc CTE was mostly
+// wasted work (the exported row VALUES are independently recomputed in JS via
+// computeAsset() regardless — the CTE's own output was never read for that), and
+// ExcelJS's per-row styled-cell writing was ~40% of total time on its own. Fixed both:
+// the batch query skips the CTE entirely when there's no computed-column filter (see its
+// own branch below), batch size raised 2,000 -> 20,000 now that the query is cheap, and
+// the output switched from a styled .xlsx to plain CSV (same EXPORT_COLUMNS values,
+// just without ExcelJS's per-cell formatting machinery) for every export size, not kept
+// as a second parallel format.
+//
+// Re-measured end-to-end against the REAL Supabase Pro production database (not just
+// local embedded Postgres, which the same investigation also caught giving wildly
+// unreliable numbers for the totals query — 27s on one run, 73s on an identical
+// back-to-back run, almost certainly its tiny 128MB shared_buffers fighting the test
+// process for memory, not a real cost): 220,000 synthetic rows, unfiltered,
+// end-to-end (row-count check + totals query + full batched export) — 17,780ms. That's
+// with real Vercel-region-independent network latency included (the profiling script
+// ran the same queries the route does directly against the production instance), just
+// missing Vercel's own request-handling overhead, which is small next to a
+// multi-second budget.
+//
+// EXPORT_ROW_LIMIT is set well below the ~740,000-row point that rate (17,780ms /
+// 220,000 ≈ 0.081ms/row) alone projects to blow 60s — comfortable margin for real-world
+// variance, messier data than the synthetic fixture, and Vercel's own overhead this
+// measurement didn't include. Still a real cap, not removed outright, because none of
+// this has been verified beyond ~220,000 rows.
 //
 // This is NOT a permanent design decision — raise or remove it entirely the moment
 // hosting changes (a Pro plan's higher maxDuration, or a persistent-process host with no
 // duration ceiling at all — server/src/index.ts is already built for that, see
 // render.yaml).
-export const EXPORT_ROW_LIMIT = 70_000;
+export const EXPORT_ROW_LIMIT = 400_000;
 
 // Comma-separated multi-value filters — see the identical helper in assets.ts (the
 // non-export list route), which this route's filters intentionally mirror.
@@ -107,6 +141,23 @@ function ddmmyyyy(value: string | null): string {
   if (!value) return "";
   const [y, m, d] = value.split("-");
   return `${d}-${m}-${y}`;
+}
+
+// RFC4180 field escaping — same rule as the client's own csvEscape (BulkUploadPage.tsx's
+// downloadTemplate, csvChunking.ts): quote only when the value actually contains a
+// comma/quote/newline, doubling up any embedded quote. Numbers are written as plain,
+// unformatted values (no thousands separator) — machine-readable and unambiguous in
+// CSV, matching every other CSV this app already produces; a reader who wants
+// "1,23,456.00"-style display formatting gets that from Excel's own column formatting
+// after opening it, same as any other CSV import.
+function csvField(v: string | number | null): string {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function csvLine(values: Array<string | number | null>): string {
+  return values.map(csvField).join(",");
 }
 
 // The same 10 groups, in the same order, as client/src/lib/columns.ts (COLUMN_GROUPS) —
@@ -761,33 +812,32 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     }
     const exportColumns = shouldHideC2 ? EXPORT_COLUMNS.filter((c) => !C2_EXPORT_KEYS.has(c.key)) : EXPORT_COLUMNS;
 
-    reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    reply.header("Content-Disposition", `attachment; filename="far-register-${asAt}.xlsx"`);
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="far-register-${asAt}.csv"`);
 
     const stream = new PassThrough();
     reply.send(stream);
 
     try {
-      // useStyles: true — needed for bold headers and per-column number formatting.
-      // Column-level numFmt/width (set once, not per cell/row) keeps the per-row cost of
-      // this low even at 2,50,000+ rows, unlike setting styles on every individual cell.
-      const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true, useSharedStrings: false });
-      const worksheet = workbook.addWorksheet("Register");
-      worksheet.columns = exportColumns.map((c) => ({
-        width: c.width,
-        style: c.kind === "number" ? { numFmt: "#,##0.00" } : undefined
-      }));
+      // Plain CSV, not a styled .xlsx — replaces the old per-row-styled ExcelJS output
+      // outright rather than keeping both (2026-09-04, closing the same 60s-timeout gap
+      // EXPORT_ROW_LIMIT was a stopgap for): profiling found ExcelJS's own per-row
+      // styled-cell writing was ~40% of total export time on its own, on top of the
+      // ~50% spent in the batch query (see EXPORT_BATCH_SIZE's comment). Every value
+      // below is IDENTICAL data to what the old workbook wrote in the same 4 header
+      // rows + one row per asset — only the styling (bold, italic, per-group fill
+      // color, merged cells, column widths, number formatting) is gone, since none of
+      // it survives a CSV anyway. Kept as ONE format for every export size rather than
+      // maintaining a second, fully-styled code path alongside this one purely for
+      // small/filtered exports — same EXPORT_COLUMNS definitions drive both the values
+      // and the (now plain) column/group/totals rows, so there's nothing to keep in
+      // sync between two parallel renderers.
 
       // Row 1: filter-summary note — what this file represents and when it was pulled,
       // so it's never mistaken for the full register once it's out of context (e.g.
-      // forwarded, or opened weeks later). Merged across every column, styled as a
-      // distinct metadata line rather than a data row. Placed above the totals row
-      // (which every later row number below now accounts for via `.number`, not a
-      // hardcoded row index) instead of disrupting the column layout itself.
-      const noteRow = worksheet.addRow([`Filters applied: ${filterSummaryText}  —  Exported: ${exportedAtText} IST`]);
-      noteRow.font = { italic: true, color: { argb: "FF52525B" } };
-      worksheet.mergeCells(noteRow.number, 1, noteRow.number, exportColumns.length);
-      noteRow.commit();
+      // forwarded, or opened weeks later). A single field, not one per column (nothing
+      // to merge across in CSV).
+      stream.write(csvLine([`Filters applied: ${filterSummaryText}  —  Exported: ${exportedAtText} IST`]) + "\r\n");
 
       // Row 2: totals — "TOTAL" in the first column, a sum under every totalable numeric
       // column, blank everywhere else (text/date columns, and non-totalable numbers like
@@ -797,30 +847,20 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
         if (c.kind === "number" && c.totalable !== false) return totals[c.key] ?? 0;
         return "";
       });
-      const totalsRow = worksheet.addRow(totalsRowValues);
-      totalsRow.font = { bold: true };
-      totalsRow.commit();
+      stream.write(csvLine(totalsRowValues) + "\r\n");
 
-      // Row 3: group band — merged across each contiguous same-group run, bold, with a
-      // distinct muted fill per group (every cell in the run gets it, not just the
-      // merged range's top-left, so it renders correctly regardless of how a given
-      // reader handles merge-range styling).
-      const groupRow = worksheet.addRow(exportColumns.map(() => ""));
+      // Row 3: group band — the group label at each contiguous run's first column,
+      // blank for the rest of that run (exactly the same cell VALUES the old merged/
+      // filled version wrote — the merge and fill were a presentation layer on top of
+      // this same data, never part of it).
+      const groupRowValues = exportColumns.map<string>(() => "");
       for (const run of groupRuns(exportColumns)) {
-        const info = GROUP_INFO[run.groupKey]!;
-        groupRow.getCell(run.startCol).value = info.label;
-        for (let c = run.startCol; c <= run.endCol; c++) {
-          groupRow.getCell(c).fill = { type: "pattern", pattern: "solid", fgColor: { argb: info.fill } };
-        }
-        if (run.endCol > run.startCol) worksheet.mergeCells(groupRow.number, run.startCol, groupRow.number, run.endCol);
+        groupRowValues[run.startCol - 1] = GROUP_INFO[run.groupKey]!.label;
       }
-      groupRow.font = { bold: true };
-      groupRow.commit();
+      stream.write(csvLine(groupRowValues) + "\r\n");
 
       // Row 4: column names — resolves each column's live "as at ..." date text.
-      const headerRow = worksheet.addRow(exportColumns.map((c) => resolveLabel(c, ctx)));
-      headerRow.font = { bold: true };
-      headerRow.commit();
+      stream.write(csvLine(exportColumns.map((c) => resolveLabel(c, ctx))) + "\r\n");
 
       // Timing instrumentation — logged per batch (not just a final total) so a real
       // Vercel function log shows exactly how far the export got and how long each
@@ -842,45 +882,64 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           batchConditions.push(`far_id > $${batchParams.length}`);
         }
         const batchWhereClause = batchConditions.length > 0 ? `WHERE ${batchConditions.join(" AND ")}` : "";
-        // Same two-stage calc CTE as the totals query above (and GET /api/assets) — built
-        // fresh each batch since the cursor condition above changes every iteration, but
-        // `computedWhereClause`'s own SQL text (built once, outside this loop) still
-        // resolves correctly against whatever fresh params this batch pushes, since it
-        // only ever appends to `batchParams`, never renumbers what's already there.
-        // ponytail: a computed-column filter (e.g. C1 NBV > X) means Postgres can't stop
-        // at EXPORT_BATCH_SIZE raw rows the way the old unfiltered query could — it has to
-        // compute far_calc_component for every remaining row past the cursor to know
-        // which ones pass, every batch iteration, until it collects a full page or
-        // exhausts the table. Fine at this app's current ~3,015-row scale (matches the
-        // cost GET /api/assets already accepted for the same reason); if the register
-        // grows toward the 250k figure the other reports are built for and a heavily
-        // selective computed filter makes this visibly slow, revisit with a covering
-        // index or a materialized computed-value column.
-        const batchCalcExtras = buildCalcCteExtras(batchParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
-        batchParams.push(EXPORT_BATCH_SIZE);
 
-        const { rows } = await db.query<AssetRow>(
-          `WITH calc_base AS (
-             SELECT assets.*,
-               ${batchCalcExtras}
-             FROM assets ${batchWhereClause}
-           ), calc AS (
-             SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
-             FROM calc_base
-           )
-           SELECT * FROM calc ${computedWhereClause} ORDER BY far_id LIMIT $${batchParams.length}`,
-          batchParams
-        );
+        const assetQueryStart = performance.now();
+        let rows: AssetRow[];
+        if (computedConditions.length === 0) {
+          // The common case, and the one every large export actually takes (a
+          // computed-column filter typically narrows the result on its own well below
+          // EXPORT_ROW_LIMIT). No computed-column condition means nothing downstream
+          // reads far_calc_component()'s output for this batch at all — the exported
+          // row VALUES are independently recomputed in JS via computeAsset() just below
+          // regardless (it needs each asset's transfer history for location-derived
+          // fields the SQL function alone doesn't have), so the calc CTE's own columns
+          // would be pure waste here. A plain indexed range scan on `far_id` instead —
+          // this alone was roughly half of this route's total time before being found
+          // and fixed (2026-09-04, see EXPORT_BATCH_SIZE's own comment for the numbers).
+          batchParams.push(EXPORT_BATCH_SIZE);
+          ({ rows } = await db.query<AssetRow>(
+            `SELECT * FROM assets ${batchWhereClause} ORDER BY far_id LIMIT $${batchParams.length}`,
+            batchParams
+          ));
+        } else {
+          // A genuine computed-column filter (e.g. C1 NBV > X) or dashboard exception
+          // DOES need far_calc_component() evaluated to know which rows even match —
+          // same two-stage calc CTE as the totals query above (and GET /api/assets).
+          // ponytail: Postgres can't stop at EXPORT_BATCH_SIZE raw rows the way the
+          // no-computed-filter branch above can — it has to compute far_calc_component
+          // for every remaining row past the cursor to know which ones pass, every
+          // batch iteration, until it collects a full page or exhausts the table. A
+          // real, pre-existing cost this branch alone still pays; not fixed here (would
+          // need a covering index or a materialized computed-value column) since
+          // EXPORT_ROW_LIMIT already bounds how bad it can get.
+          const batchCalcExtras = buildCalcCteExtras(batchParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
+          batchParams.push(EXPORT_BATCH_SIZE);
+          ({ rows } = await db.query<AssetRow>(
+            `WITH calc_base AS (
+               SELECT assets.*,
+                 ${batchCalcExtras}
+               FROM assets ${batchWhereClause}
+             ), calc AS (
+               SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+               FROM calc_base
+             )
+             SELECT * FROM calc ${computedWhereClause} ORDER BY far_id LIMIT $${batchParams.length}`,
+            batchParams
+          ));
+        }
         if (rows.length === 0) break;
-        const queryElapsedMs = performance.now() - batchStart;
+        const assetQueryMs = performance.now() - assetQueryStart;
 
         const farIds = rows.map((r) => r.far_id);
+        const transferQueryStart = performance.now();
         const { rows: transferRows } = await db.query<TransferRow>(
           `SELECT far_id, transaction_date, location FROM transfers
            WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
            ORDER BY far_id, transaction_date`,
           [farIds, asAt]
         );
+        const transferQueryMs = performance.now() - transferQueryStart;
+        const rowBuildStart = performance.now();
         // Grouped once per batch, O(rows + transfers) — same pattern reports.ts's
         // streamAssetDepreciationBatches already uses at this app's 250k-row scale.
         // The previous version called `transferRows.filter(t => t.far_id === row.far_id)`
@@ -896,22 +955,39 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           else transfersByFarId.set(t.far_id, [t]);
         }
 
-        for (const row of rows) {
+        // One CSV line per row, joined and written to the stream once per batch rather
+        // than once per row — far fewer stream writes than the old per-row
+        // `worksheet.addRow(values).commit()` calls, on top of not paying for any
+        // per-cell styling at all.
+        const lines: string[] = new Array(rows.length);
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i]!;
           const asset = mapAssetRow(row);
           const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
           const result = computeAsset(asset, fy, relevantTransfers);
           const values = exportColumns.map((c) => {
             const v = c.value(asset, result);
             if (c.kind === "date") return ddmmyyyy(v as string | null);
-            return v ?? "";
+            return v;
           });
-          worksheet.addRow(values).commit();
+          lines[i] = csvLine(values);
         }
+        stream.write(lines.join("\r\n") + "\r\n");
 
         rowsExported += rows.length;
+        const rowBuildMs = performance.now() - rowBuildStart;
         const batchElapsedMs = performance.now() - batchStart;
         req.log.info(
-          { batchNumber, rowsInBatch: rows.length, rowsExported, queryElapsedMs: Math.round(queryElapsedMs), batchElapsedMs: Math.round(batchElapsedMs), totalElapsedMs: Math.round(performance.now() - exportStart) },
+          {
+            batchNumber,
+            rowsInBatch: rows.length,
+            rowsExported,
+            assetQueryMs: Math.round(assetQueryMs),
+            transferQueryMs: Math.round(transferQueryMs),
+            rowBuildMs: Math.round(rowBuildMs),
+            batchElapsedMs: Math.round(batchElapsedMs),
+            totalElapsedMs: Math.round(performance.now() - exportStart)
+          },
           "Register export: batch complete"
         );
 
@@ -919,8 +995,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
         if (rows.length < EXPORT_BATCH_SIZE) break;
       }
 
-      worksheet.commit();
-      await workbook.commit();
+      await new Promise<void>((resolve, reject) => stream.end((err: unknown) => (err ? reject(err) : resolve())));
       req.log.info(
         { rowsExported, batchNumber, totalElapsedMs: Math.round(performance.now() - exportStart) },
         "Register export: complete"

@@ -1,6 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
-import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import assetsExportRoutes, { EXPORT_ROW_LIMIT } from "./assetsExport.js";
 import assetsRoutes from "./assets.js";
@@ -36,11 +35,58 @@ async function insertAsset(farId: string, overrides: Record<string, unknown> = {
   await db.query(`INSERT INTO assets (${columns.join(", ")}) VALUES (${placeholders})`, values);
 }
 
-async function readWorkbook(payload: Buffer) {
-  const workbook = new ExcelJS.Workbook();
-  // Same upstream exceljs typings bug as bulkUpload.ts (global Buffer redeclaration).
-  await workbook.xlsx.load(payload as any);
-  return workbook.worksheets[0]!;
+/** Splits one CSV line into fields, honoring RFC4180 quoting — the read-side mirror of
+ *  assetsExport.ts's own csvField/csvLine (and the same algorithm as the client's
+ *  splitCsvFields in csvChunking.ts), ported here since server and client share no
+ *  package boundary. */
+function splitCsvFields(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      fields.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
+}
+
+/** Parses the export's CSV response into rows of string fields. 1-based row/column
+ *  accessors below (readRow/cell) match the row/column numbering this file used when it
+ *  parsed an xlsx workbook via ExcelJS's own 1-based API (NOTE_ROW=1 etc.) — most
+ *  assertions below only needed their VALUE comparisons updated for the move to CSV
+ *  (every field is a plain string now — no native number or null/blank distinction),
+ *  not their row/column arithmetic. */
+function readCsv(payload: Buffer): string[][] {
+  const text = payload.toString("utf-8");
+  const lines = text.split("\r\n").filter((l) => l.length > 0);
+  return lines.map(splitCsvFields);
+}
+
+function readRow(rows: string[][], rowNumber: number): string[] {
+  return rows[rowNumber - 1] ?? [];
+}
+
+function cell(rows: string[][], rowNumber: number, colNumber: number): string {
+  return readRow(rows, rowNumber)[colNumber - 1] ?? "";
 }
 
 function conditionsParam(conditions: unknown[]): string {
@@ -98,31 +144,22 @@ describe("Register Export: GET /api/assets/export", () => {
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
     expect(res.statusCode).toBe(200);
-    expect(res.headers["content-type"]).toContain("spreadsheetml");
+    expect(res.headers["content-type"]).toContain("text/csv");
     expect(res.headers["content-disposition"]).toContain("attachment");
 
-    const worksheet = await readWorkbook(res.rawPayload);
+    const rows = readCsv(res.rawPayload);
     // note row + totals row + group band row + column name row + 3 data rows
-    expect(worksheet.rowCount).toBe(7);
-    expect(worksheet.getRow(TOTALS_ROW).getCell(1).value).toBe("TOTAL");
-    expect(worksheet.getRow(GROUP_ROW).getCell(1).value).toBe("Asset Identification");
-    const headerRow = worksheet.getRow(HEADER_ROW).values as unknown[];
+    expect(rows.length).toBe(7);
+    expect(cell(rows, TOTALS_ROW, 1)).toBe("TOTAL");
+    expect(cell(rows, GROUP_ROW, 1)).toBe("Asset Identification");
+    const headerRow = readRow(rows, HEADER_ROW);
     expect(headerRow).toContain("FAR ID");
-    expect(worksheet.getRow(TOTALS_ROW).getCell(1).font?.bold).toBe(true);
-    expect(worksheet.getRow(GROUP_ROW).getCell(1).font?.bold).toBe(true);
-    expect(worksheet.getRow(HEADER_ROW).getCell(1).font?.bold).toBe(true);
-    // Group band keeps a distinct fill per group (color stays in the export even though
-    // the on-screen Register table dropped it) — column 1 (Asset ID) and column 14 (C1
-    // Opening, Gross Block group) must differ.
-    const g1Fill = worksheet.getRow(GROUP_ROW).getCell(1).fill as { fgColor?: { argb?: string } };
-    const g2Fill = worksheet.getRow(GROUP_ROW).getCell(14).fill as { fgColor?: { argb?: string } };
-    expect(g1Fill.fgColor?.argb).toBeTruthy();
-    expect(g1Fill.fgColor?.argb).not.toBe(g2Fill.fgColor?.argb);
-    // 40 columns, dates as DD-MM-YYYY, currency with 2 decimals
-    expect((worksheet.getRow(HEADER_ROW).values as unknown[]).length - 1).toBe(40);
-    const firstDataRow = worksheet.getRow(FIRST_DATA_ROW);
-    expect(firstDataRow.getCell(3).value).toBe("01-01-2020"); // Date Acquired
-    expect(worksheet.getColumn(14).numFmt).toBe("#,##0.00"); // C1 Opening (a numeric column)
+    // 40 columns, dates as DD-MM-YYYY. (Bold/italic fonts, per-group fill color, merged
+    // cells, and column number formatting were the old ExcelJS export's styling — none
+    // of it survives a plain CSV, by design; see assetsExport.ts's own comment on why
+    // this is one format for every export size now instead of two parallel ones.)
+    expect(headerRow.length).toBe(40);
+    expect(cell(rows, FIRST_DATA_ROW, 3)).toBe("01-01-2020"); // Date Acquired
   });
 
   it("excludes an asset from the export when AS_AT is before its own capitalization date", async () => {
@@ -130,10 +167,10 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-NEW", { date_acquired: "2026-06-01" });
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?asAt=2026-03-31" });
-    const worksheet = await readWorkbook(res.rawPayload);
+    const rows = readCsv(res.rawPayload);
     // note + totals + group band + header + only EXP-OLD (EXP-NEW isn't capitalized yet)
-    expect(worksheet.rowCount).toBe(5);
-    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+    expect(rows.length).toBe(5);
+    const dataRow = readRow(rows, FIRST_DATA_ROW);
     expect(dataRow).toContain("EXP-OLD");
     expect(dataRow).not.toContain("EXP-NEW");
   });
@@ -143,10 +180,9 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-5", { location: "Center-Other" });
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
-    const worksheet = await readWorkbook(res.rawPayload);
-    expect(worksheet.rowCount).toBe(5);
-    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
-    expect(dataRow).toContain("EXP-4");
+    const rows = readCsv(res.rawPayload);
+    expect(rows.length).toBe(5);
+    expect(readRow(rows, FIRST_DATA_ROW)).toContain("EXP-4");
   });
 
   it("applies capLocation (raw capitalization location, not the current post-transfer one)", async () => {
@@ -159,10 +195,9 @@ describe("Register Export: GET /api/assets/export", () => {
     await db.query(`UPDATE assets SET revised_location = 'Center-Other' WHERE far_id = 'EXP-CAPLOC-1'`);
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?capLocation=Center-Export" });
-    const worksheet = await readWorkbook(res.rawPayload);
-    expect(worksheet.rowCount).toBe(5);
-    const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
-    expect(dataRow).toContain("EXP-CAPLOC-1");
+    const rows = readCsv(res.rawPayload);
+    expect(rows.length).toBe(5);
+    expect(readRow(rows, FIRST_DATA_ROW)).toContain("EXP-CAPLOC-1");
   });
 
   it("sums numeric columns (Qty and C1 Opening Cost) into the totals row, respecting the same filters", async () => {
@@ -170,20 +205,18 @@ describe("Register Export: GET /api/assets/export", () => {
     await insertAsset("EXP-TOTALS-2", { qty: 3, c1_opening_cost: 25000, location: "Center-Other" });
 
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export?center=Center-Export" });
-    const worksheet = await readWorkbook(res.rawPayload);
-    const totalsRow = worksheet.getRow(TOTALS_ROW);
+    const rows = readCsv(res.rawPayload);
     // Qty is column 11, C1 Opening Cost is column 14 (see EXPORT_COLUMNS order).
-    expect(totalsRow.getCell(11).value).toBe(2);
-    expect(totalsRow.getCell(14).value).toBe(10000);
+    expect(cell(rows, TOTALS_ROW, 11)).toBe("2");
+    expect(cell(rows, TOTALS_ROW, 14)).toBe("10000");
   });
 
   it("blanks the totals row for non-numeric and non-totalable columns (Useful Life)", async () => {
     await insertAsset("EXP-BLANK-1", { useful_life_c1_years: 7 });
     const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
-    const worksheet = await readWorkbook(res.rawPayload);
-    const totalsRow = worksheet.getRow(TOTALS_ROW);
-    expect(totalsRow.getCell(2).value).toBeNull(); // Sub Classification
-    expect(totalsRow.getCell(12).value).toBeNull(); // Useful Life C1 (Yrs)
+    const rows = readCsv(res.rawPayload);
+    expect(cell(rows, TOTALS_ROW, 2)).toBe(""); // Sub Classification
+    expect(cell(rows, TOTALS_ROW, 12)).toBe(""); // Useful Life C1 (Yrs)
   });
 
   it("409s when financial year settings are missing", async () => {
@@ -202,8 +235,8 @@ describe("Register Export: GET /api/assets/export", () => {
     it("reads 'No filters applied' plus an export timestamp when nothing is filtered", async () => {
       await insertAsset("EXP-NOTE-1");
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      const rows = readCsv(res.rawPayload);
+      const note = cell(rows, NOTE_ROW, 1);
       expect(note).toContain("Filters applied: No filters applied");
       expect(note).toMatch(/Exported: \d{2}-\d{2}-\d{4} \d{2}:\d{2} IST/);
     });
@@ -211,9 +244,8 @@ describe("Register Export: GET /api/assets/export", () => {
     it("describes an applied named filter (Status)", async () => {
       await insertAsset("EXP-NOTE-2", { status: "Disposed" });
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export?status=Disposed" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
-      expect(note).toContain("Filters applied: Status: Disposed");
+      const rows = readCsv(res.rawPayload);
+      expect(cell(rows, NOTE_ROW, 1)).toContain("Filters applied: Status: Disposed");
     });
 
     it("describes an applied column condition, including a computed column (C1 NBV)", async () => {
@@ -222,9 +254,8 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
-      expect(note).toContain("Filters applied: C1 NBV: greater than ₹5,00,000");
+      const rows = readCsv(res.rawPayload);
+      expect(cell(rows, NOTE_ROW, 1)).toContain("Filters applied: C1 NBV: greater than ₹5,00,000");
     });
 
     it("combines a named filter and a condition in one note, semicolon-separated", async () => {
@@ -233,18 +264,8 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?status=Active&${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
-      expect(note).toContain("Filters applied: Status: Active; C1 NBV: greater than ₹5,00,000");
-    });
-
-    it("is styled as italic metadata, not a bold data/header row", async () => {
-      await insertAsset("EXP-NOTE-STYLE-1");
-      const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const noteCell = worksheet.getRow(NOTE_ROW).getCell(1);
-      expect(noteCell.font?.italic).toBe(true);
-      expect(noteCell.font?.bold).not.toBe(true);
+      const rows = readCsv(res.rawPayload);
+      expect(cell(rows, NOTE_ROW, 1)).toContain("Filters applied: Status: Active; C1 NBV: greater than ₹5,00,000");
     });
   });
 
@@ -257,10 +278,9 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?${conditionsParam([{ columnId: "assetDescription", op: "contains", value: "dialysis" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      expect(worksheet.rowCount).toBe(5);
-      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
-      expect(dataRow).toContain("EXP-COND-1");
+      const rows = readCsv(res.rawPayload);
+      expect(rows.length).toBe(5);
+      expect(readRow(rows, FIRST_DATA_ROW)).toContain("EXP-COND-1");
     });
 
     it("a number condition on a computed field (C1 NBV) filters via the same far_calc_component CTE the grid uses", async () => {
@@ -271,9 +291,9 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      expect(worksheet.rowCount).toBe(5);
-      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      const rows = readCsv(res.rawPayload);
+      expect(rows.length).toBe(5);
+      const dataRow = readRow(rows, FIRST_DATA_ROW);
       expect(dataRow).toContain("EXP-COND-HIGH");
       expect(dataRow).not.toContain("EXP-COND-LOW");
     });
@@ -286,9 +306,8 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const totalsRow = worksheet.getRow(TOTALS_ROW);
-      expect(totalsRow.getCell(11).value).toBe(3); // Qty total — only the HIGH asset counted
+      const rows = readCsv(res.rawPayload);
+      expect(cell(rows, TOTALS_ROW, 11)).toBe("3"); // Qty total — only the HIGH asset counted
     });
 
     it("an unknown columnId is rejected with 400, matching GET /api/assets", async () => {
@@ -314,14 +333,12 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: `/api/assets/export?${conditionsParam([{ columnId: "c1Nbv", op: "gt", value: "500000" }])}`
       });
-      const worksheet = await readWorkbook(res.rawPayload);
+      const rows = readCsv(res.rawPayload);
       const farIds: string[] = [];
-      for (let r = FIRST_DATA_ROW; r <= worksheet.rowCount; r++) {
-        farIds.push(worksheet.getRow(r).getCell(1).value as string);
+      for (let r = FIRST_DATA_ROW; r <= rows.length; r++) {
+        farIds.push(cell(rows, r, 1));
       }
-      expect(farIds.sort()).toEqual(
-        Array.from({ length: 5 }, (_, i) => `EXP-COND-BATCH-MATCH-${i}`).sort()
-      );
+      expect(farIds.sort()).toEqual(Array.from({ length: 5 }, (_, i) => `EXP-COND-BATCH-MATCH-${i}`).sort());
     });
 
     it("filters on Last Transaction Date (regression — shares assetColumnFilters.ts's buildCalcCteExtras with GET /api/assets, so the same column-name collision would have broken this route too)", async () => {
@@ -335,9 +352,9 @@ describe("Register Export: GET /api/assets/export", () => {
         url: `/api/assets/export?${conditionsParam([{ columnId: "lastDateOfTransaction", op: "after", value: "2026-01-01" }])}`
       });
       expect(res.statusCode).toBe(200);
-      const worksheet = await readWorkbook(res.rawPayload);
-      expect(worksheet.rowCount).toBe(5);
-      const dataRow = worksheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      const rows = readCsv(res.rawPayload);
+      expect(rows.length).toBe(5);
+      const dataRow = readRow(rows, FIRST_DATA_ROW);
       expect(dataRow).toContain("EXP-LTD-NEW");
       expect(dataRow).not.toContain("EXP-LTD-OLD");
     });
@@ -358,8 +375,8 @@ describe("Register Export: GET /api/assets/export", () => {
         url: "/api/assets/export?subClassification=C1-Only-Export"
       });
       expect(res.statusCode).toBe(200);
-      const worksheet = await readWorkbook(res.rawPayload);
-      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      const rows = readCsv(res.rawPayload);
+      const headerRow = readRow(rows, HEADER_ROW);
       // 40 columns total normally, 12 of them Component 2 — see assetsExport.ts's
       // C2_EXPORT_KEYS.
       expect(headerRow.length).toBe(28);
@@ -371,8 +388,8 @@ describe("Register Export: GET /api/assets/export", () => {
       await insertAsset("EXP-MIXED-1", { sub_classification: "Mixed-Export" });
 
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export?subClassification=Mixed-Export" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      const rows = readCsv(res.rawPayload);
+      const headerRow = readRow(rows, HEADER_ROW);
       expect(headerRow.length).toBe(40);
       expect(headerRow.some((h) => /\bC2\b/.test(h))).toBe(true);
     });
@@ -385,8 +402,8 @@ describe("Register Export: GET /api/assets/export", () => {
         method: "GET",
         url: "/api/assets/export?subClassification=C1-Only-Export,Mixed-Export"
       });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const headerRow = (worksheet.getRow(HEADER_ROW).values as unknown[]).slice(1) as string[];
+      const rows = readCsv(res.rawPayload);
+      const headerRow = readRow(rows, HEADER_ROW);
       expect(headerRow.length).toBe(40);
       expect(headerRow.some((h) => /\bC2\b/.test(h))).toBe(true);
     });
@@ -395,19 +412,19 @@ describe("Register Export: GET /api/assets/export", () => {
       await insertAsset("EXP-UNFILTERED-1", { sub_classification: "C1-Only-Export" });
 
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const headerRow = worksheet.getRow(HEADER_ROW).values as unknown[];
-      expect(headerRow.length - 1).toBe(40);
+      const rows = readCsv(res.rawPayload);
+      expect(readRow(rows, HEADER_ROW).length).toBe(40);
     });
   });
 
   // Temporary safety cap while this deployment stays on Vercel's Hobby plan (fixed 60s
   // function timeout, not raisable) — see EXPORT_ROW_LIMIT's own comment in
-  // assetsExport.ts for the real 250k-row timing measurement it's sized against.
-  // Exercised here via a mocked count rather than actually inserting 70,000+ real rows —
-  // this is a fast, targeted test of the threshold check's own logic (does it
+  // assetsExport.ts for the real Supabase Pro timing measurement it's sized against.
+  // Exercised here via a mocked count rather than actually inserting 400,000+ real
+  // rows — this is a fast, targeted test of the threshold check's own logic (does it
   // reject/accept at the right boundary, with a clean JSON error instead of ever
-  // reaching reply.send(stream)); the real 250k-row scale is scale.loadtest.ts's job.
+  // reaching reply.send(stream)); the real full-scale numbers are scale.loadtest.ts's
+  // job.
   describe("row-count safety limit (temporary — see EXPORT_ROW_LIMIT's own comment)", () => {
     async function withMockedRowCount(rowCount: number, run: () => Promise<void>) {
       await insertAsset("EXP-ROWLIMIT-1");
@@ -437,7 +454,7 @@ describe("Register Export: GET /api/assets/export", () => {
       await withMockedRowCount(EXPORT_ROW_LIMIT + 1, async () => {
         const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
         expect(res.statusCode).toBe(400);
-        expect(res.headers["content-type"]).not.toContain("spreadsheetml"); // a real JSON error, not a file
+        expect(res.headers["content-type"]).not.toContain("text/csv"); // a real JSON error, not a file
         const body = res.json();
         expect(body.error).toContain(`${(EXPORT_ROW_LIMIT + 1).toLocaleString()} rows`);
         expect(body.error).toMatch(/narrow your filters/i);
@@ -448,8 +465,8 @@ describe("Register Export: GET /api/assets/export", () => {
       await withMockedRowCount(EXPORT_ROW_LIMIT, async () => {
         const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
         expect(res.statusCode).toBe(200);
-        const worksheet = await readWorkbook(res.rawPayload);
-        expect(worksheet.rowCount).toBe(FIRST_DATA_ROW); // note + totals + group + header + the 1 real row
+        const rows = readCsv(res.rawPayload);
+        expect(rows.length).toBe(FIRST_DATA_ROW); // note + totals + group + header + the 1 real row
       });
     });
   });
@@ -493,9 +510,9 @@ describe("Register Export: GET /api/assets/export", () => {
 
       const exportRes = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=missingData" });
       expect(exportRes.statusCode).toBe(200);
-      const worksheet = await readWorkbook(exportRes.rawPayload);
-      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW);
-      expect(worksheet.getRow(FIRST_DATA_ROW).getCell(1).value).toBe("EXP-EXC-MISSING");
+      const rows = readCsv(exportRes.rawPayload);
+      expect(rows.length).toBe(FIRST_DATA_ROW);
+      expect(cell(rows, FIRST_DATA_ROW, 1)).toBe("EXP-EXC-MISSING");
 
       const registerRes = await authedInject(app, { method: "GET", url: "/api/assets?exception=missingData" });
       const registerFarIds = registerRes.json().items.map((i: { asset: { farId: string } }) => i.asset.farId);
@@ -510,9 +527,9 @@ describe("Register Export: GET /api/assets/export", () => {
 
       const exportRes = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=pastUsefulLifeActive" });
       expect(exportRes.statusCode).toBe(200);
-      const worksheet = await readWorkbook(exportRes.rawPayload);
-      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW);
-      expect(worksheet.getRow(FIRST_DATA_ROW).getCell(1).value).toBe("EXP-EXC-EXPIRED");
+      const rows = readCsv(exportRes.rawPayload);
+      expect(rows.length).toBe(FIRST_DATA_ROW);
+      expect(cell(rows, FIRST_DATA_ROW, 1)).toBe("EXP-EXC-EXPIRED");
 
       const registerRes = await authedInject(app, { method: "GET", url: "/api/assets?exception=pastUsefulLifeActive" });
       const registerFarIds = registerRes.json().items.map((i: { asset: { farId: string } }) => i.asset.farId);
@@ -523,17 +540,16 @@ describe("Register Export: GET /api/assets/export", () => {
       await insertAsset("EXP-EXC-NOTE", { serial_no: null });
 
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export?exception=missingData" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
-      expect(note).toMatch(/Dashboard Exception: Missing Data/);
+      const rows = readCsv(res.rawPayload);
+      expect(cell(rows, NOTE_ROW, 1)).toMatch(/Dashboard Exception: Missing Data/);
     });
 
     it("combines with a named filter in the note, semicolon-separated, same as an Excel-style condition would", async () => {
       await insertAsset("EXP-EXC-COMBINED", { serial_no: null, status: "Active" });
 
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export?status=Active&exception=missingData" });
-      const worksheet = await readWorkbook(res.rawPayload);
-      const note = worksheet.getRow(NOTE_ROW).getCell(1).value as string;
+      const rows = readCsv(res.rawPayload);
+      const note = cell(rows, NOTE_ROW, 1);
       expect(note).toMatch(/Status: Active/);
       expect(note).toMatch(/Dashboard Exception: Missing Data/);
     });
@@ -545,16 +561,16 @@ describe("Register Export: GET /api/assets/export", () => {
   });
 
   // Regression coverage for a reported production bug: a corrupted "far-register-....xlsx"
-  // download once the register held 217,000+ real assets. The full 250,000-row timing
+  // download once the register held 217,000+ real assets. The full-scale timing
   // measurement lives in loadtest/scale.loadtest.ts (npm run test:scale) since seeding
   // that many rows takes minutes; this file's own fixtures never exceeded
-  // EXPORT_BATCH_SIZE (2000) before now, so the batch-cursor loop's row-continuity
-  // across a real page boundary — and each asset's transfers being matched to the
-  // right FAR ID after the Map-based rewrite (previously an O(n²) `.filter()`) — had
-  // never actually been exercised here at more than a token handful of rows.
-  describe("multi-batch export (thousands of rows, spans real EXPORT_BATCH_SIZE=2000 pages) produces a structurally valid workbook", () => {
+  // EXPORT_BATCH_SIZE before now, so the batch-cursor loop's row-continuity across a
+  // real page boundary — and each asset's transfers being matched to the right FAR ID
+  // after the Map-based rewrite (previously an O(n²) `.filter()`) — had never actually
+  // been exercised here at more than a token handful of rows.
+  describe(`multi-batch export (thousands of rows, spans a real EXPORT_BATCH_SIZE page) produces a complete, well-formed CSV`, () => {
     it("every asset appears exactly once, in FAR ID order, with each asset's own transfers correctly matched across a batch boundary", async () => {
-      const ASSET_COUNT = 4500; // 3 real batches: 2000 + 2000 + 500
+      const ASSET_COUNT = 4500; // spans a real batch boundary regardless of EXPORT_BATCH_SIZE's exact value
       const assets = generateAssets(ASSET_COUNT, 555);
       const db = await getPool();
       await bulkInsertAssets(db, assets, 1000);
@@ -564,18 +580,20 @@ describe("Register Export: GET /api/assets/export", () => {
       const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
       expect(res.statusCode).toBe(200);
 
-      // ExcelJS's own zip/xlsx reader throws on a truncated or otherwise malformed
-      // archive — the direct proof this is a complete, valid file, not just "some
-      // bytes came back" (the exact failure mode the reported bug produced: a 200
-      // response Excel itself then refused to open cleanly).
-      const worksheet = await readWorkbook(res.rawPayload);
-      expect(worksheet.rowCount).toBe(FIRST_DATA_ROW - 1 + ASSET_COUNT);
+      // A killed-mid-stream write would leave the payload not ending in a line
+      // terminator, or with fewer lines than expected — the direct proof this is a
+      // complete file, not just "some bytes came back" (the exact failure mode the
+      // reported bug produced: a 200 response that then turned out incomplete).
+      const text = res.rawPayload.toString("utf-8");
+      expect(text.endsWith("\r\n")).toBe(true);
+      const rows = readCsv(res.rawPayload);
+      expect(rows.length).toBe(FIRST_DATA_ROW - 1 + ASSET_COUNT);
 
       const exportedFarIds: string[] = [];
-      for (let r = FIRST_DATA_ROW; r <= worksheet.rowCount; r++) {
-        exportedFarIds.push(worksheet.getRow(r).getCell(1).value as string);
+      for (let r = FIRST_DATA_ROW; r <= rows.length; r++) {
+        exportedFarIds.push(cell(rows, r, 1));
       }
-      // No row dropped or duplicated across the 3-batch cursor walk.
+      // No row dropped or duplicated across the batch cursor walk.
       expect(exportedFarIds).toEqual([...assets].map((a) => a.farId).sort());
 
       // Current Location (column 6) reflects each asset's OWN latest transfer, not a
@@ -588,7 +606,7 @@ describe("Register Export: GET /api/assets/export", () => {
         .filter((t) => t.farId === transferredFarId)
         .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate))
         .at(-1)!.location;
-      expect(worksheet.getRow(FIRST_DATA_ROW + rowIndex).getCell(6).value).toBe(expectedLocation);
+      expect(cell(rows, FIRST_DATA_ROW + rowIndex, 6)).toBe(expectedLocation);
     }, 30_000);
   });
 
@@ -619,10 +637,12 @@ describe("Register Export: GET /api/assets/export", () => {
       const originalQuery = db.query.bind(db);
       const spy = vi.spyOn(db, "query").mockImplementation((...args: unknown[]) => {
         const sql = args[0];
-        // Only the per-batch row-fetching query fails — the totals query (which runs
-        // BEFORE reply.send(stream), so a failure there is still a normal 500 today,
-        // already covered above) is left alone.
-        if (typeof sql === "string" && sql.includes("SELECT * FROM calc")) {
+        // Only the per-batch row-fetching query fails — matches either the fast
+        // no-CTE branch or the CTE branch (both end the same way), so this stays
+        // correct regardless of which one a given request takes. The totals query
+        // (which runs BEFORE reply.send(stream), so a failure there is still a normal
+        // 500 today, already covered above) and the row-count check are left alone.
+        if (typeof sql === "string" && sql.includes("ORDER BY far_id LIMIT")) {
           return Promise.reject(new Error("simulated mid-stream DB failure"));
         }
         return (originalQuery as (...a: unknown[]) => unknown)(...args);
