@@ -373,6 +373,27 @@ CREATE TABLE master_activity_log (
 );
 CREATE INDEX idx_master_activity_log_created_at ON master_activity_log (created_at DESC);
 
+-- AI Register Search audit trail + per-user daily cost cap — see routes/aiSearch.ts and
+-- ai/registerSearch.ts. `applied_filters`/`warnings` capture the *translated,
+-- server-validated* result actually offered to the user (never the model's raw output
+-- verbatim), so this doubles as a quality-review log without also being a second
+-- untrusted copy of whatever the model said. `matched=false` rows are kept, not filtered
+-- out — a string of them is itself useful signal that the prompt or the feature's scope
+-- needs work.
+CREATE TABLE ai_search_log (
+  id                  BIGSERIAL PRIMARY KEY,
+  user_id             BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  question            TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  matched             BOOLEAN NOT NULL,
+  applied_filters     JSONB,
+  warnings            JSONB,
+  prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+  completion_tokens   INTEGER NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_ai_search_log_user_created ON ai_search_log (user_id, created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

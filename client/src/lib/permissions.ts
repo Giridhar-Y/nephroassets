@@ -6,7 +6,7 @@ import type { AuthUser } from "../api/client.js";
 // deploy, never at runtime. The server is the actual enforcement; this copy only drives
 // the Permissions panel's checkbox grid and nav/route visibility.
 export const PERMISSION_REGISTRY = {
-  register: ["view", "edit", "export"],
+  register: ["view", "edit", "export", "aiSearch"],
   assetHistory: ["view"],
   transfers: ["view", "create", "delete"],
   capitalization: ["view", "create", "delete"],
@@ -48,6 +48,7 @@ const ACTION_LABELS: Record<string, string> = {
   edit: "Edit",
   delete: "Delete",
   export: "Export",
+  aiSearch: "AI Search",
   undo: "Undo",
   resetPassword: "Reset Password",
   managePermissions: "Manage Permissions",

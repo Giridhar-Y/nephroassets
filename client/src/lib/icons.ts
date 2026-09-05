@@ -49,5 +49,6 @@ export {
   PhoneDesktopAddRegular as InstallIcon,
   ShareIosRegular as ShareIcon,
   WifiOffRegular as OfflineIcon,
-  DataBarVerticalRegular as DashboardIcon
+  DataBarVerticalRegular as DashboardIcon,
+  SparkleRegular as AiSearchIcon
 } from "@fluentui/react-icons";

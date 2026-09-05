@@ -1187,3 +1187,35 @@ export function saveUserPermissions(
     body: JSON.stringify({ grants, centerAccess })
   });
 }
+
+// AI Register Search (routes/aiSearch.ts) — turns a plain-English question into the
+// same filter shape AssetFilters/ColumnCondition already use, so RegisterPage applies
+// the result exactly like a manually-picked filter (via FiltersContext.mergeFilters).
+export interface AiSearchStatus {
+  enabled: boolean;
+  dailyLimit: number;
+  remainingToday: number;
+}
+
+export function fetchAiSearchStatus(): Promise<AiSearchStatus> {
+  return request("/api/ai/register-search/status");
+}
+
+export interface AiSearchResult {
+  applied: boolean;
+  explanation: string;
+  warnings: string[];
+  remainingToday: number;
+  globalSearch?: string;
+  subClassification?: string[];
+  status?: string[];
+  center?: string[];
+  capLocation?: string[];
+  dateAcquiredFrom?: string;
+  dateAcquiredTo?: string;
+  conditions: ColumnCondition[];
+}
+
+export function runAiSearch(question: string): Promise<AiSearchResult> {
+  return request("/api/ai/register-search", { method: "POST", body: JSON.stringify({ question }) });
+}

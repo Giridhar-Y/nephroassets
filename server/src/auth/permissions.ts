@@ -14,7 +14,11 @@ import type { Role } from "./middleware.js";
 // alongside Capitalization's own code, because that's where the Edit button is in the
 // UI, not because of which route file happens to define it.
 export const PERMISSION_REGISTRY = {
-  register: ["view", "edit", "export"],
+  // "aiSearch" is POST /api/ai/register-search (routes/aiSearch.ts) — split out from
+  // "view" so a deployment worried about OpenAI cost can grant Register access without
+  // AI Search, or revoke just AI Search from a specific user without touching their
+  // ordinary Register access.
+  register: ["view", "edit", "export", "aiSearch"],
   assetHistory: ["view"],
   transfers: ["view", "create", "delete"],
   capitalization: ["view", "create", "delete"],
@@ -60,14 +64,14 @@ function grants<M extends Module>(module: M, ...actions: Array<ActionFor<M>>): P
 // genuinely gated endpoint.
 const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[]> = {
   viewer: [
-    ...grants("register", "view", "export"),
+    ...grants("register", "view", "export", "aiSearch"),
     ...grants("assetHistory", "view"),
     ...grants("reports", "view", "export"),
     ...grants("masters", "view"),
     ...grants("settings", "view")
   ],
   editor: [
-    ...grants("register", "view", "edit", "export"),
+    ...grants("register", "view", "edit", "export", "aiSearch"),
     ...grants("assetHistory", "view"),
     ...grants("transfers", "view", "create"),
     ...grants("capitalization", "view", "create"),
@@ -80,7 +84,7 @@ const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[
     ...grants("settings", "view")
   ],
   admin: [
-    ...grants("register", "view", "edit", "export"),
+    ...grants("register", "view", "edit", "export", "aiSearch"),
     ...grants("assetHistory", "view"),
     ...grants("transfers", "view", "create", "delete"),
     ...grants("capitalization", "view", "create", "delete"),

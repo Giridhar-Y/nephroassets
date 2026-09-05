@@ -408,6 +408,30 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       PRIMARY KEY (user_id, center_id)
     );
     CREATE INDEX IF NOT EXISTS idx_user_center_access_user ON user_center_access (user_id);
+
+    -- AI Register Search audit trail + per-user daily cost cap — see routes/aiSearch.ts
+    -- and ai/registerSearch.ts. applied_filters/warnings capture the *translated,
+    -- server-validated* result actually offered to the user (never the model's raw
+    -- output verbatim), so this doubles as a quality-review log (which questions didn't
+    -- match, which values failed to resolve) without also being a second untrusted copy
+    -- of whatever the model said. matched=false rows are kept, not filtered out — see
+    -- that file's own comment. IF NOT EXISTS makes this a no-op on every boot after the
+    -- first.
+    CREATE TABLE IF NOT EXISTS ai_search_log (
+      id                  BIGSERIAL PRIMARY KEY,
+      user_id             BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      question            TEXT NOT NULL,
+      model               TEXT NOT NULL,
+      matched             BOOLEAN NOT NULL,
+      applied_filters     JSONB,
+      warnings            JSONB,
+      prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+      completion_tokens   INTEGER NOT NULL DEFAULT 0,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    -- Serves both the daily-cap COUNT(*) query (user_id + a created_at floor) and any
+    -- future "review recent AI searches" screen ordered newest-first.
+    CREATE INDEX IF NOT EXISTS idx_ai_search_log_user_created ON ai_search_log (user_id, created_at DESC);
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

@@ -196,7 +196,11 @@ export const TOTAL_WDV_AND_PROFIT_LOSS_SQL = `
 // DualModeFilterPanel column labels exactly — kept as a parallel definition (same
 // no-shared-package convention as GROUP_INFO in assetsExport.ts) so the export's summary
 // reads with the same names the user just saw on screen.
-const COLUMN_LABELS: Record<string, string> = {
+// Exported for aiSearch.ts's prompt/grounding — the AI Register Search feature reuses
+// these exact display names (rather than a third hand-copied label list) so its
+// "Applied: ..." recap and this export's filter-summary note always agree on what a
+// column is called.
+export const COLUMN_LABELS: Record<string, string> = {
   farId: "FAR ID",
   subClassification: "Sub Classification",
   dateAcquired: "Date Acquired",

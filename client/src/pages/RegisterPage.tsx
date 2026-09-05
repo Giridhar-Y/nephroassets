@@ -19,6 +19,7 @@ import { useExport } from "../hooks/useExport.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 import { GridViewControls } from "../components/ui/GridViewControls.js";
+import { AiSearchButton } from "../components/AiSearchPanel.js";
 import { formatCompactIndianCount } from "../lib/format.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
@@ -437,6 +438,7 @@ export function RegisterPage() {
             onExport={runRegisterExport}
           />
           <ColumnPicker prefs={columnPrefs} />
+          <AiSearchButton />
           <GridViewControls density={density} onDensityChange={setDensity} expanded={gridExpanded} onExpandedChange={setGridExpanded} />
         </div>
       </div>

@@ -18,6 +18,16 @@ interface FiltersContextValue {
   setFilter: <K extends keyof AssetFilters>(key: K, value: AssetFilters[K]) => void;
   clearFilter: (key: keyof AssetFilters) => void;
   clearAll: () => void;
+  /** Applies several fields in one state update (and one sessionStorage write) instead
+   *  of one setFilter() call per field — for a caller like AI Register Search that
+   *  resolves a whole filter set at once and needs it to land as a single, undoable
+   *  change rather than a rapid sequence of partial ones. Returns the filters snapshot
+   *  from just before the merge, so the caller can offer an exact "Undo" back to it. */
+  mergeFilters: (partial: Partial<AssetFilters>) => AssetFilters;
+  /** Replaces the whole filters object outright — used to restore an exact prior
+   *  snapshot (e.g. AI Register Search's "Undo" toast action), where a plain merge could
+   *  leave a field the snapshot never had. */
+  replaceFilters: (next: AssetFilters) => void;
 }
 
 const FiltersContext = createContext<FiltersContextValue | null>(null);
@@ -61,8 +71,16 @@ export function FiltersProvider({ children }: { children: ReactNode }) {
 
   const clearAll = () => setFilters({});
 
+  const mergeFilters: FiltersContextValue["mergeFilters"] = (partial) => {
+    const before = filters;
+    setFilters((prev) => ({ ...prev, ...partial }));
+    return before;
+  };
+
+  const replaceFilters = (next: AssetFilters) => setFilters(next);
+
   return (
-    <FiltersContext.Provider value={{ filters, setFilter, clearFilter, clearAll }}>
+    <FiltersContext.Provider value={{ filters, setFilter, clearFilter, clearAll, mergeFilters, replaceFilters }}>
       {children}
     </FiltersContext.Provider>
   );

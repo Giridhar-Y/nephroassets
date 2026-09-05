@@ -11,6 +11,7 @@ import bulkTransfersRoutes from "./bulkTransfers.js";
 import bulkMergeRoutes from "./bulkMerge.js";
 import reportsRoutes from "./reports.js";
 import activityLogRoutes from "./activityLog.js";
+import aiSearchRoutes from "./aiSearch.js";
 import mastersRoutes from "./masters.js";
 import bulkMastersRoutes from "./bulkMasters.js";
 import settingsRoutes from "./settings.js";
@@ -44,6 +45,13 @@ interface RouteCase {
 const GATED: Record<string, RouteCase[]> = {
   "register:view": [{ method: "GET", url: "/api/assets" }, { method: "GET", url: "/api/assets/DOES-NOT-EXIST" }],
   "register:export": [{ method: "GET", url: "/api/assets/export" }],
+  // OPENAI_API_KEY is unset in tests, so the handler always 503s past the permission
+  // gate — that's still "not blocked by the gate" (not 401/403), which is all this suite
+  // proves; the AI translation logic itself is covered by ai/registerSearch.test.ts.
+  "register:aiSearch": [
+    { method: "GET", url: "/api/ai/register-search/status" },
+    { method: "POST", url: "/api/ai/register-search", payload: { question: "test" } }
+  ],
   "register:edit": [
     { method: "PATCH", url: "/api/assets/DOES-NOT-EXIST" },
     { method: "POST", url: "/api/assets/merge", payload: { parentFarId: "DOES-NOT-EXIST", childFarIds: ["ALSO-NOT"] } }
@@ -136,6 +144,7 @@ describe("Permission enforcement — every (module, action) pair, at the API lev
     await app.register(bulkMergeRoutes);
     await app.register(reportsRoutes);
     await app.register(activityLogRoutes);
+    await app.register(aiSearchRoutes);
     await app.register(mastersRoutes);
     await app.register(bulkMastersRoutes);
     await app.register(settingsRoutes);
