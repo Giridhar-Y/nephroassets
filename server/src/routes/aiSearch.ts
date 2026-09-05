@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
 import { loadActiveMasterMaps, type MasterLookupMaps } from "./bulkParse.js";
+import { describeCondition, describeNamedFilters } from "./assetColumnFilters.js";
 import { buildSystemPrompt, REGISTER_SEARCH_JSON_SCHEMA, translateModelOutput } from "../ai/registerSearch.js";
 
 // AI Register Search — "ask a question, get the register filtered" (see the AI icon
@@ -121,6 +122,14 @@ export default async function aiSearchRoutes(app: FastifyInstance) {
     }
 
     const translated = translateModelOutput(callResult.raw, masters);
+    // Deterministic, server-generated recap — reuses the SAME description functions the
+    // Register Export's own filter-summary note already uses, built from `translated`
+    // (the actual validated filters about to be applied), never from the model's own
+    // `explanation` text. What the client shows in its "Filters found" review list is
+    // guaranteed to match what Apply actually does, since both read the same data.
+    const filterDescriptions = translated.applied
+      ? [...describeNamedFilters(translated), ...translated.conditions.map(describeCondition)]
+      : [];
 
     // Logged regardless of whether anything actually got applied — a string of
     // "matched: false" rows is itself useful signal (the prompt needs work, or users are
@@ -142,6 +151,6 @@ export default async function aiSearchRoutes(app: FastifyInstance) {
       )
       .catch((err) => req.log.error({ err }, "AI Register Search: failed to write ai_search_log (non-fatal)"));
 
-    return { ...translated, remainingToday: Math.max(0, DAILY_LIMIT - usedToday - 1) };
+    return { ...translated, filterDescriptions, remainingToday: Math.max(0, DAILY_LIMIT - usedToday - 1) };
   });
 }

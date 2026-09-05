@@ -86,7 +86,7 @@ export function buildSystemPrompt(
     centerList
       ? `Active Centers (locations): ${centerList}`
       : "Centers/locations aren't listed here (too many) — extract the location name/code exactly as given in the question; an unmatched value is dropped server-side with a warning, so a best-effort attempt is safe.",
-    'Prefer the named fields subClassification/status/center(=current location)/capLocation(=capitalized location) for an exact "is one of these values" request — use the EXACT spelling/casing from the active lists above (or the question\'s own text for a center, if centers aren\'t listed), never a paraphrase or synonym; a value that doesn\'t match exactly is silently dropped. Use conditions[] (columnId effectiveLocation for current location, location for capitalized location) only for contains/not-equals/other operators.',
+    'Prefer the named fields subClassification/status/center(=current location)/capLocation(=capitalized location) for an exact "is one of these values" request — use the EXACT spelling/casing from the active lists above (or the question\'s own text for a center, if centers aren\'t listed), never a paraphrase or synonym; a value that doesn\'t match exactly is silently dropped. Use conditions[] (columnId effectiveLocation for current location, location for capitalized location) only for contains/not-equals/other operators — NEVER also add a conditions[] equals entry for a column already covered by one of these named fields; that produces two duplicate filters for the same thing, not one. There is no named field for Date Acquired — always express it via conditions[] (columnId dateAcquired, ops before/after/between/etc.), never any other way.',
     `conditions[] columns, format id(Label):type — text ops: equals,notEquals,contains,notContains,beginsWith,endsWith,blank,notBlank. number ops: equals,notEquals,gt,gte,lt,lte,between,blank,notBlank. date ops: equals,before,after,between,today,thisWeek,thisMonth,thisFY,lastFY,blank,notBlank (thisFY/lastFY need no value). Columns: ${COLUMN_LIST_TEXT}`,
     // Most cost/value columns are split per-component (c1X/c2X) with no combined column
     // at all — the model has to pick ONE dynamically based on what the question actually
@@ -119,8 +119,6 @@ export const REGISTER_SEARCH_JSON_SCHEMA = {
       "status",
       "center",
       "capLocation",
-      "dateAcquiredFrom",
-      "dateAcquiredTo",
       "conditions"
     ],
     properties: {
@@ -131,8 +129,13 @@ export const REGISTER_SEARCH_JSON_SCHEMA = {
       status: { type: "array", items: { type: "string" } },
       center: { type: "array", items: { type: "string" }, description: "Current (effective) location" },
       capLocation: { type: "array", items: { type: "string" }, description: "Capitalized (original) location" },
-      dateAcquiredFrom: { type: ["string", "null"] },
-      dateAcquiredTo: { type: ["string", "null"] },
+      // No dateAcquiredFrom/dateAcquiredTo — see this schema's own git history for why:
+      // having both this AND conditions[] (columnId dateAcquired) meant the model could
+      // (and did) populate both for the same request, producing a duplicate, and
+      // RegisterPage has no chip UI for these fields at all (legacy, kept only for old
+      // saved links) — so a value set here filtered data with no visible way to see or
+      // remove it. conditions[] is now the ONLY path for Date Acquired, which already has
+      // a real, removable chip.
       conditions: {
         type: "array",
         items: {
@@ -159,8 +162,6 @@ const modelOutputSchema = z.object({
   status: z.array(z.string()),
   center: z.array(z.string()),
   capLocation: z.array(z.string()),
-  dateAcquiredFrom: z.string().nullable(),
-  dateAcquiredTo: z.string().nullable(),
   conditions: z.array(
     z.object({
       columnId: z.string(),
@@ -181,8 +182,6 @@ export interface TranslatedFilters {
   status?: string[];
   center?: string[];
   capLocation?: string[];
-  dateAcquiredFrom?: string;
-  dateAcquiredTo?: string;
   conditions: Array<RawCondition & { type: "text" | "number" | "date" }>;
 }
 
@@ -224,7 +223,7 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
     return { applied: false, explanation: out.explanation.slice(0, 200) || "Couldn't turn that into a filter.", warnings, conditions: [] };
   }
 
-  const conditions: Array<RawCondition & { type: "text" | "number" | "date" }> = [];
+  let conditions: Array<RawCondition & { type: "text" | "number" | "date" }> = [];
   for (const cond of out.conditions) {
     const type = REGISTER_COLUMNS[cond.columnId];
     if (!type) {
@@ -252,19 +251,28 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
   const status = resolveNames(out.status, masters.statuses, "Status", warnings);
   const center = resolveNames(out.center, masters.centers, "location", warnings);
   const capLocation = resolveNames(out.capLocation, masters.centers, "location", warnings);
-  const dateAcquiredFrom = out.dateAcquiredFrom && DATE_RE.test(out.dateAcquiredFrom) ? out.dateAcquiredFrom : undefined;
-  const dateAcquiredTo = out.dateAcquiredTo && DATE_RE.test(out.dateAcquiredTo) ? out.dateAcquiredTo : undefined;
   const globalSearch = out.globalSearch?.trim() ? out.globalSearch.trim().slice(0, 100) : undefined;
 
+  // Dedup: the model shouldn't ever set both a named field AND an equals-op condition
+  // on the column that same named field already covers (found live: "Dialysis machines"
+  // produced both subClassification=["Dialysis Machines"] AND a conditions[] entry
+  // "subClassification equals Dialysis Machines" — two chips for one filter). The named
+  // field is always the intended channel for an exact-match request per the prompt's own
+  // instruction; a same-column equals condition alongside it is redundant by
+  // construction, not a legitimate second constraint, so it's dropped silently (not a
+  // warning — the result is correct either way, there's nothing wrong to flag). Only
+  // equals is dropped: a genuinely different operator (contains, notEquals, ...) on the
+  // same column is a real, distinct constraint the named field can't express, kept as-is.
+  const namedFieldPopulated: Record<string, boolean> = {
+    subClassification: subClassification.length > 0,
+    status: status.length > 0,
+    effectiveLocation: center.length > 0,
+    location: capLocation.length > 0
+  };
+  conditions = conditions.filter((cond) => !(cond.op === "equals" && namedFieldPopulated[cond.columnId]));
+
   const appliedSomething =
-    conditions.length > 0 ||
-    subClassification.length > 0 ||
-    status.length > 0 ||
-    center.length > 0 ||
-    capLocation.length > 0 ||
-    !!dateAcquiredFrom ||
-    !!dateAcquiredTo ||
-    !!globalSearch;
+    conditions.length > 0 || subClassification.length > 0 || status.length > 0 || center.length > 0 || capLocation.length > 0 || !!globalSearch;
 
   return {
     applied: appliedSomething,
@@ -277,8 +285,6 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
     ...(status.length ? { status } : {}),
     ...(center.length ? { center } : {}),
     ...(capLocation.length ? { capLocation } : {}),
-    ...(dateAcquiredFrom ? { dateAcquiredFrom } : {}),
-    ...(dateAcquiredTo ? { dateAcquiredTo } : {}),
     conditions
   };
 }

@@ -347,7 +347,12 @@ export interface NamedFilterQuery {
   globalSearch?: string;
 }
 
-function describeNamedFilters(q: NamedFilterQuery): string[] {
+// Exported for aiSearch.ts — builds the "Filters found" review list from the actual
+// validated, server-side filter shape (this same function, already used for the export's
+// own filter-summary note), never from the model's own explanation text. What the user
+// reviews before applying is guaranteed to describe exactly what will be applied,
+// because it's generated from the identical data, not a second, independently-worded copy.
+export function describeNamedFilters(q: NamedFilterQuery): string[] {
   const lines: string[] = [];
   if (q.center?.length) lines.push(`Current Location: ${q.center.join(", ")}`);
   if (q.capLocation?.length) lines.push(`Capitalized Location: ${q.capLocation.join(", ")}`);

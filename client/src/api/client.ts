@@ -1206,13 +1206,20 @@ export interface AiSearchResult {
   explanation: string;
   warnings: string[];
   remainingToday: number;
+  // Deterministic, server-generated plain-English lines describing exactly what will be
+  // applied — reuses the SAME description functions the Register Export's own filter-
+  // summary note already uses (server/src/ai/registerSearch.ts's own comment has the
+  // full reasoning), never built from the model's own explanation text. This is what the
+  // review step's "Filters found" list renders directly, not a client-side reconstruction.
+  filterDescriptions: string[];
   globalSearch?: string;
   subClassification?: string[];
   status?: string[];
   center?: string[];
   capLocation?: string[];
-  dateAcquiredFrom?: string;
-  dateAcquiredTo?: string;
+  // No dateAcquiredFrom/dateAcquiredTo — Date Acquired filtering only ever comes through
+  // `conditions` (columnId "dateAcquired") now; see registerSearch.ts's schema comment
+  // for why (RegisterPage has no chip UI for those two fields at all).
   conditions: ColumnCondition[];
 }
 

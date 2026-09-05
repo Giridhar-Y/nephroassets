@@ -3,8 +3,6 @@ import { fetchAiSearchStatus, runAiSearch, type AiSearchResult, type AiSearchSta
 import { useFilters } from "../lib/FiltersContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission } from "../lib/permissions.js";
-import { ALL_COLUMNS } from "../lib/columns.js";
-import { OPERATORS_BY_TYPE } from "../lib/columnFilters.js";
 import { Modal } from "./ui/Modal.js";
 import { Button } from "./ui/Button.js";
 import { useToast } from "./Toast.js";
@@ -35,42 +33,8 @@ function applyResultToFilters(result: AiSearchResult): Partial<AssetFilters> {
   if (result.status?.length) partial.status = result.status;
   if (result.center?.length) partial.center = result.center;
   if (result.capLocation?.length) partial.capLocation = result.capLocation;
-  if (result.dateAcquiredFrom) partial.dateAcquiredFrom = result.dateAcquiredFrom;
-  if (result.dateAcquiredTo) partial.dateAcquiredTo = result.dateAcquiredTo;
   if (result.conditions.length) partial.conditions = result.conditions;
   return partial;
-}
-
-// Reuses Register's own column labels/operator labels (ALL_COLUMNS, OPERATORS_BY_TYPE) —
-// the same names/wording a manually-picked filter already shows — so a reviewed AI
-// filter reads exactly like one the user picked by hand, not a second, differently-worded
-// vocabulary.
-const COLUMN_LABELS: Record<string, string> = Object.fromEntries(ALL_COLUMNS.map((c) => [c.id, c.label]));
-const OPERATOR_LABELS: Record<string, string> = Object.fromEntries(
-  Object.values(OPERATORS_BY_TYPE)
-    .flat()
-    .map((op) => [op.value, op.label])
-);
-
-/** One human-readable line per filter field the AI actually set — the thing a user scans
- *  to answer "did it understand me correctly?" before committing to anything. Named
- *  fields first (the common case), then each Excel-style condition. */
-function describeFilters(result: AiSearchResult): string[] {
-  const lines: string[] = [];
-  if (result.globalSearch) lines.push(`Search: "${result.globalSearch}"`);
-  if (result.subClassification?.length) lines.push(`Sub Classification: ${result.subClassification.join(", ")}`);
-  if (result.status?.length) lines.push(`Status: ${result.status.join(", ")}`);
-  if (result.center?.length) lines.push(`Current Location: ${result.center.join(", ")}`);
-  if (result.capLocation?.length) lines.push(`Capitalized Location: ${result.capLocation.join(", ")}`);
-  if (result.dateAcquiredFrom) lines.push(`Date Acquired from: ${result.dateAcquiredFrom}`);
-  if (result.dateAcquiredTo) lines.push(`Date Acquired to: ${result.dateAcquiredTo}`);
-  for (const cond of result.conditions) {
-    const column = COLUMN_LABELS[cond.columnId] ?? cond.columnId;
-    const op = OPERATOR_LABELS[cond.op] ?? cond.op;
-    const value = cond.op === "between" ? `${cond.value} – ${cond.valueTo}` : cond.value;
-    lines.push(value ? `${column} ${op.toLowerCase()} ${value}` : `${column} ${op.toLowerCase()}`);
-  }
-  return lines;
 }
 
 // The AI icon next to Register's density/full-screen controls (GridViewControls) — opens
@@ -128,8 +92,8 @@ export function AiSearchButton() {
       if (recentResultCache.size > 20) recentResultCache.delete(recentResultCache.keys().next().value!);
 
       setStatus((prev) => (prev ? { ...prev, remainingToday: result.remainingToday } : prev));
-      // Always lands in the review step, matched or not — describeFilters([]) for an
-      // unmatched result just renders empty, and the explanation alone (e.g. "that's not
+      // Always lands in the review step, matched or not — an unmatched result's
+      // filterDescriptions is just [], and the explanation alone (e.g. "that's not
       // something Register can filter on") is exactly what the user needs to see next.
       setPending(result);
     } catch (err) {
@@ -149,7 +113,10 @@ export function AiSearchButton() {
     });
   }
 
-  const filterLines = pending ? describeFilters(pending) : [];
+  // Server-generated, deterministic — see AiSearchResult.filterDescriptions' own comment
+  // in api/client.ts. Not reconstructed here, so what's shown is guaranteed to match
+  // what Apply actually does.
+  const filterLines = pending?.filterDescriptions ?? [];
 
   return (
     <>

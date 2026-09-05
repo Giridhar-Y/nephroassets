@@ -26,8 +26,6 @@ function output(overrides: Partial<ModelOutput>): ModelOutput {
     status: [],
     center: [],
     capLocation: [],
-    dateAcquiredFrom: null,
-    dateAcquiredTo: null,
     conditions: [],
     ...overrides
   };
@@ -112,6 +110,52 @@ describe("translateModelOutput", () => {
     expect(result.applied).toBe(false);
     expect(result.conditions).toEqual([]);
   });
+
+  // Regression coverage for a real bug found live-testing: "Dialysis machines acquired
+  // after April 2022 with NBV above 2 lakhs" produced BOTH subClassification=["Dialysis
+  // Machines"] AND a redundant conditions[] entry "subClassification equals Dialysis
+  // Machines" — two chips for the one filter. The named field is always the intended
+  // channel for an exact-match request; a same-column equals condition alongside it is
+  // dropped, not applied twice.
+  it("drops a conditions[] equals entry that duplicates an already-populated named field", () => {
+    const result = translateModelOutput(
+      output({
+        subClassification: ["Dialysis Machines"],
+        conditions: [
+          { columnId: "subClassification", op: "equals", value: "Dialysis Machines", valueTo: null },
+          { columnId: "dateAcquired", op: "after", value: "2022-04-30", valueTo: null }
+        ]
+      }),
+      masters
+    );
+    expect(result.subClassification).toEqual(["Dialysis Machines"]);
+    // The redundant subClassification condition is gone; the genuinely distinct
+    // dateAcquired condition (no named field could have expressed this) survives.
+    expect(result.conditions).toEqual([{ columnId: "dateAcquired", op: "after", type: "date", value: "2022-04-30", valueTo: undefined }]);
+  });
+
+  it("keeps a conditions[] entry on the same column as a named field when the operator isn't equals — a real, distinct constraint", () => {
+    const result = translateModelOutput(
+      output({
+        status: ["Active"],
+        conditions: [{ columnId: "status", op: "notEquals", value: "Disposed", valueTo: null }]
+      }),
+      masters
+    );
+    expect(result.status).toEqual(["Active"]);
+    expect(result.conditions).toEqual([{ columnId: "status", op: "notEquals", type: "text", value: "Disposed", valueTo: undefined }]);
+  });
+
+  it("keeps an equals condition on a column no named field covers, even when other named fields are populated", () => {
+    const result = translateModelOutput(
+      output({
+        status: ["Active"],
+        conditions: [{ columnId: "serialNo", op: "equals", value: "SN-100001", valueTo: null }]
+      }),
+      masters
+    );
+    expect(result.conditions).toEqual([{ columnId: "serialNo", op: "equals", type: "text", value: "SN-100001", valueTo: undefined }]);
+  });
 });
 
 describe("buildSystemPrompt", () => {
@@ -122,14 +166,15 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("profitLoss");
     // A rough cost/size guard — this whole thing is the fixed prefix sent on every
     // request, so it staying compact is itself part of "keep input short" (max ~4 chars/
-    // token in English, so this bounds it well under 1,200 tokens). Grows with the real
+    // token in English, so this bounds it well under 1,300 tokens). Grows with the real
     // master-list sizes (see the two tests below) — this fixture's tiny lists keep the
     // static/column-list portion the dominant cost here, same as before grounding was
-    // added. Raised twice from the original 3500: the grounding fix (real Sub
-    // Classification/Status values + two new instructions) and the C1/C2 column-
-    // disambiguation instruction — both real, deliberate tradeoffs (see
-    // buildSystemPrompt's own comments for the bugs each one fixes), not drift.
-    expect(prompt.length).toBeLessThan(4200);
+    // added. Raised three times from the original 3500: the grounding fix (real Sub
+    // Classification/Status values + two new instructions), the C1/C2 column-
+    // disambiguation instruction, and the named-field-vs-conditions[] duplicate-filter
+    // instruction — all real, deliberate tradeoffs (see buildSystemPrompt's own comments
+    // for the bugs each one fixes), not drift.
+    expect(prompt.length).toBeLessThan(4500);
   });
 
   // Regression coverage for a real failure found live-testing: asked "Active dialysis
