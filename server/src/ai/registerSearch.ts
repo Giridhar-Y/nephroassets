@@ -46,13 +46,51 @@ const COLUMN_LIST_TEXT = Object.entries(REGISTER_COLUMNS)
   .map(([id, type]) => `${id}(${COLUMN_LABELS[id] ?? id}):${type}`)
   .join(", ");
 
-export function buildSystemPrompt(todayIso: string): string {
+function joinSorted(values: Iterable<string>): string {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b)).join(", ");
+}
+
+// Real master-list values were previously left out of the prompt entirely — the model
+// only ever saw the FIELD NAMES (subClassification/status/center), never the actual
+// active values, so it had to guess an exact string from world knowledge alone. Found
+// investigating a real live-tested failure: asked "Active dialysis machines at
+// Center-010", the model correctly guessed "Active" and "Center-010" (both easy — one's
+// generic, the other was typed verbatim in the question) but silently OMITTED
+// subClassification entirely rather than guess "Dialysis Machines" wrong — while its own
+// `explanation` field claimed it had. Grounding the prompt with the real active values
+// fixes the guessing problem at the source; the two instructions below fix the two
+// failure modes that guessing left behind (omitting a named entity, and an explanation
+// that overclaims what was actually set).
+export function buildSystemPrompt(
+  todayIso: string,
+  masters: Pick<MasterLookupMaps, "subClassifications" | "statuses" | "centers">
+): string {
+  const subClassificationList = joinSorted(masters.subClassifications.values());
+  const statusList = joinSorted(masters.statuses.values());
+  // Centers can run into the hundreds at this app's real scale (500+, per its own
+  // documented target) — inlining all of them on every request would meaningfully
+  // inflate token cost for comparatively little benefit, since a location named in the
+  // question is usually specific enough to extract directly. Included only when small
+  // enough that the cost is negligible; above that, the model makes its own best-effort
+  // extraction and resolveNames' post-hoc validation (with a visible warning on a miss)
+  // is the safety net instead — same graceful-degradation shape, just without the
+  // grounding this size of list can't afford.
+  const centerValues = [...new Set(masters.centers.values())];
+  const centerList = centerValues.length <= 150 ? joinSorted(centerValues) : null;
+
   return [
     "You translate a Fixed Asset Register search question into a strict JSON filter object for a finance app. Output ONLY values from the vocabulary below — never invent column ids, operators, or SQL.",
     `Today: ${todayIso}. Amounts are Indian Rupees (₹); "lakh"=100000, "crore"=10000000.`,
-    'Prefer the named fields subClassification/status/center(=current location)/capLocation(=capitalized location) for an exact "is one of these values" request. Use conditions[] (columnId effectiveLocation for current location, location for capitalized location) only for contains/not-equals/other operators.',
+    `Active Sub Classifications: ${subClassificationList}`,
+    `Active Statuses: ${statusList}`,
+    centerList
+      ? `Active Centers (locations): ${centerList}`
+      : "Centers/locations aren't listed here (too many) — extract the location name/code exactly as given in the question; an unmatched value is dropped server-side with a warning, so a best-effort attempt is safe.",
+    'Prefer the named fields subClassification/status/center(=current location)/capLocation(=capitalized location) for an exact "is one of these values" request — use the EXACT spelling/casing from the active lists above (or the question\'s own text for a center, if centers aren\'t listed), never a paraphrase or synonym; a value that doesn\'t match exactly is silently dropped. Use conditions[] (columnId effectiveLocation for current location, location for capitalized location) only for contains/not-equals/other operators.',
     `conditions[] columns, format id(Label):type — text ops: equals,notEquals,contains,notContains,beginsWith,endsWith,blank,notBlank. number ops: equals,notEquals,gt,gte,lt,lte,between,blank,notBlank. date ops: equals,before,after,between,today,thisWeek,thisMonth,thisFY,lastFY,blank,notBlank (thisFY/lastFY need no value). Columns: ${COLUMN_LIST_TEXT}`,
-    "value/valueTo are always strings (numbers as plain digits, dates as YYYY-MM-DD). Set matched=false with a short explanation if the question isn't about filtering this register (e.g. small talk, or asks for something outside these columns) — never guess."
+    "value/valueTo are always strings (numbers as plain digits, dates as YYYY-MM-DD). Set matched=false with a short explanation if the question isn't about filtering this register (e.g. small talk, or asks for something outside these columns) — never guess.",
+    "Every entity the question explicitly names (a sub classification, status, or location) MUST appear in the output — attempt the closest matching value from the active lists above rather than omitting it. A wrong guess is dropped safely server-side and costs nothing; silently omitting a named entity produces an incomplete filter with no visible sign anything was left out.",
+    "explanation must describe ONLY the filters you actually set in the fields above — never mention a value you left out or didn't include."
   ].join("\n");
 }
 

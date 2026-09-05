@@ -116,13 +116,47 @@ describe("translateModelOutput", () => {
 
 describe("buildSystemPrompt", () => {
   it("includes today's date and every REGISTER_COLUMNS column id, and stays compact", () => {
-    const prompt = buildSystemPrompt("2026-08-17");
+    const prompt = buildSystemPrompt("2026-08-17", masters);
     expect(prompt).toContain("2026-08-17");
     expect(prompt).toContain("c1Nbv");
     expect(prompt).toContain("profitLoss");
     // A rough cost/size guard — this whole thing is the fixed prefix sent on every
     // request, so it staying compact is itself part of "keep input short" (max ~4 chars/
-    // token in English, so this bounds it well under 1,000 tokens).
-    expect(prompt.length).toBeLessThan(3500);
+    // token in English, so this bounds it well under 1,000 tokens). Grows with the real
+    // master-list sizes (see the two tests below) — this fixture's tiny lists keep the
+    // static/column-list portion the dominant cost here, same as before grounding was
+    // added. Raised from 3500 when the grounding fix (real Sub Classification/Status
+    // values + two new instructions) added ~250 chars of fixed cost — a real, deliberate
+    // tradeoff (see buildSystemPrompt's own comment for the bug this fixes), not drift.
+    expect(prompt.length).toBeLessThan(3800);
+  });
+
+  // Regression coverage for a real failure found live-testing: asked "Active dialysis
+  // machines at Center-010", the model correctly guessed "Active"/"Center-010" (both
+  // easy to extract verbatim from the question) but silently omitted subClassification
+  // rather than guess "Dialysis Machines" — because the prompt never told it that value
+  // existed at all. Grounding the prompt with the real active Sub Classification/Status
+  // values is the actual fix; this only proves the grounding data reaches the prompt,
+  // not that any particular model will always pick it up correctly (that needs a real
+  // OpenAI call, out of scope for a pure/offline test).
+  it("includes the real active Sub Classification and Status values so the model isn't guessing blind", () => {
+    const prompt = buildSystemPrompt("2026-08-17", masters);
+    expect(prompt).toContain("Dialysis Machines");
+    expect(prompt).toContain("Active");
+    expect(prompt).toContain("Disposed");
+  });
+
+  it("includes Centers when the active list is small, omits it (with a fallback instruction) when too large to afford", () => {
+    const small = buildSystemPrompt("2026-08-17", masters);
+    expect(small).toContain("Hyderabad");
+    expect(small).toContain("Chennai");
+
+    const manyCenters: MasterLookupMaps = {
+      ...masters,
+      centers: new Map(Array.from({ length: 200 }, (_, i) => [`center-${i}`, `Center-${i}`]))
+    };
+    const large = buildSystemPrompt("2026-08-17", manyCenters);
+    expect(large).not.toContain("Center-0,");
+    expect(large).toContain("extract the location name/code exactly as given in the question");
   });
 });

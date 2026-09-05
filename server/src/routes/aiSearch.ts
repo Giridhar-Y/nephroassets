@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
-import { loadActiveMasterMaps } from "./bulkParse.js";
+import { loadActiveMasterMaps, type MasterLookupMaps } from "./bulkParse.js";
 import { buildSystemPrompt, REGISTER_SEARCH_JSON_SCHEMA, translateModelOutput } from "../ai/registerSearch.js";
 
 // AI Register Search — "ask a question, get the register filtered" (see the AI icon
@@ -25,7 +25,11 @@ interface OpenAiChatResponse {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
-async function callOpenAi(question: string, todayIso: string): Promise<{ raw: unknown; promptTokens: number; completionTokens: number }> {
+async function callOpenAi(
+  question: string,
+  todayIso: string,
+  masters: MasterLookupMaps
+): Promise<{ raw: unknown; promptTokens: number; completionTokens: number }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw Object.assign(new Error("AI Search is not configured on this server yet."), { statusCode: 503 });
 
@@ -40,7 +44,7 @@ async function callOpenAi(question: string, todayIso: string): Promise<{ raw: un
       // safety net: a runaway/looping completion can't burn tokens past this cap.
       max_tokens: 500,
       messages: [
-        { role: "system", content: buildSystemPrompt(todayIso) },
+        { role: "system", content: buildSystemPrompt(todayIso, masters) },
         { role: "user", content: question }
       ],
       response_format: { type: "json_schema", json_schema: REGISTER_SEARCH_JSON_SCHEMA }
@@ -99,10 +103,16 @@ export default async function aiSearchRoutes(app: FastifyInstance) {
       return { error: `You've reached today's AI Search limit (${DAILY_LIMIT}). Try again tomorrow, or filter manually.` };
     }
 
+    // Loaded before the OpenAI call, not after — the prompt itself needs these real
+    // active values to ground the model's guesses (see buildSystemPrompt's own comment
+    // for the real failure this fixes), not just to validate its output afterward. Same
+    // maps serve both, one query instead of two.
+    const masters = await loadActiveMasterMaps(db);
+
     const todayIso = new Date().toISOString().slice(0, 10);
     let callResult: Awaited<ReturnType<typeof callOpenAi>>;
     try {
-      callResult = await callOpenAi(parsed.data.question, todayIso);
+      callResult = await callOpenAi(parsed.data.question, todayIso, masters);
     } catch (err) {
       const statusCode = (err as { statusCode?: number }).statusCode ?? 502;
       req.log.error({ err }, "AI Register Search: OpenAI call failed");
@@ -110,7 +120,6 @@ export default async function aiSearchRoutes(app: FastifyInstance) {
       return { error: err instanceof Error ? err.message : "AI Search failed." };
     }
 
-    const masters = await loadActiveMasterMaps(db);
     const translated = translateModelOutput(callResult.raw, masters);
 
     // Logged regardless of whether anything actually got applied — a string of
