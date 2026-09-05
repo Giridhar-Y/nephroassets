@@ -122,13 +122,14 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("profitLoss");
     // A rough cost/size guard — this whole thing is the fixed prefix sent on every
     // request, so it staying compact is itself part of "keep input short" (max ~4 chars/
-    // token in English, so this bounds it well under 1,000 tokens). Grows with the real
+    // token in English, so this bounds it well under 1,200 tokens). Grows with the real
     // master-list sizes (see the two tests below) — this fixture's tiny lists keep the
     // static/column-list portion the dominant cost here, same as before grounding was
-    // added. Raised from 3500 when the grounding fix (real Sub Classification/Status
-    // values + two new instructions) added ~250 chars of fixed cost — a real, deliberate
-    // tradeoff (see buildSystemPrompt's own comment for the bug this fixes), not drift.
-    expect(prompt.length).toBeLessThan(3800);
+    // added. Raised twice from the original 3500: the grounding fix (real Sub
+    // Classification/Status values + two new instructions) and the C1/C2 column-
+    // disambiguation instruction — both real, deliberate tradeoffs (see
+    // buildSystemPrompt's own comments for the bugs each one fixes), not drift.
+    expect(prompt.length).toBeLessThan(4200);
   });
 
   // Regression coverage for a real failure found live-testing: asked "Active dialysis
