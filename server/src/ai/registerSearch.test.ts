@@ -57,6 +57,20 @@ describe("translateModelOutput", () => {
     expect(result.conditions).toEqual([{ columnId: "c1Nbv", op: "gt", type: "number", value: "500000", valueTo: undefined }]);
   });
 
+  // Regression coverage for a real bug found live-testing: a quoted numeric string
+  // value (e.g. "50000") reliably triggered a severe generation degeneracy (the model
+  // hallucinating fragments of closing JSON syntax into the string before closing it,
+  // confirmed by inspecting a raw completion). Switching the schema to allow a bare
+  // JSON number fixed the degeneracy — this proves that number gets coerced back to the
+  // same string every other column/type check downstream still expects.
+  it("coerces a bare-number condition value/valueTo to a string", () => {
+    const result = translateModelOutput(
+      output({ conditions: [{ columnId: "c1Nbv", op: "between", value: 50000, valueTo: 100000 }] }),
+      masters
+    );
+    expect(result.conditions).toEqual([{ columnId: "c1Nbv", op: "between", type: "number", value: "50000", valueTo: "100000" }]);
+  });
+
   it("drops a condition on a column that doesn't exist, with a warning — never lets it through as SQL surface", () => {
     const result = translateModelOutput(
       output({ conditions: [{ columnId: "dropTableAssets", op: "gt", value: "0", valueTo: null }] }),
@@ -166,15 +180,20 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("profitLoss");
     // A rough cost/size guard — this whole thing is the fixed prefix sent on every
     // request, so it staying compact is itself part of "keep input short" (max ~4 chars/
-    // token in English, so this bounds it well under 1,300 tokens). Grows with the real
-    // master-list sizes (see the two tests below) — this fixture's tiny lists keep the
-    // static/column-list portion the dominant cost here, same as before grounding was
-    // added. Raised three times from the original 3500: the grounding fix (real Sub
-    // Classification/Status values + two new instructions), the C1/C2 column-
-    // disambiguation instruction, and the named-field-vs-conditions[] duplicate-filter
-    // instruction — all real, deliberate tradeoffs (see buildSystemPrompt's own comments
-    // for the bugs each one fixes), not drift.
-    expect(prompt.length).toBeLessThan(4500);
+    // token in English, so this bounds it well under 1,700 tokens — still a small
+    // fraction of a cent on gpt-4o-mini). Grows with the real master-list sizes (see the
+    // two tests below) — this fixture's tiny lists keep the static/column-list portion
+    // the dominant cost here, same as before grounding was added. Raised four times from
+    // the original 3500: the grounding fix, the C1/C2 column-disambiguation instruction,
+    // the named-field-vs-conditions[] duplicate-filter instruction, and the finance-
+    // terminology mappings + worked examples (the biggest single jump — real domain
+    // jargon needed concrete examples, not just an abstract rule, to reliably stick) —
+    // all real, deliberate tradeoffs (see buildSystemPrompt's own comments for the bugs
+    // each one fixes), not drift. Two more additions since: the generic-descriptive-noun
+    // guard (a vague word like "machines" alone isn't a Sub Classification name), and the
+    // bare-JSON-number instruction for numeric conditions (a quoted numeric string was a
+    // real, live-tested generation-instability trigger).
+    expect(prompt.length).toBeLessThan(7300);
   });
 
   // Regression coverage for a real failure found live-testing: asked "Active dialysis
