@@ -125,9 +125,9 @@ export function AiSearchButton() {
         aria-label="Ask AI to filter the Register"
         title="Ask AI to filter the Register"
         onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 rounded-full bg-brand-teal px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-brand-teal/90"
+        className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-gray-300 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
       >
-        <AiSearchIcon fontSize={14} />
+        <AiSearchIcon fontSize={14} className="text-brand-teal" />
         Ask AI
       </button>
 
@@ -141,7 +141,7 @@ export function AiSearchButton() {
               <div>
                 <h2 className="font-heading text-base font-semibold text-ink">Ask AI to filter the Register</h2>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Describe what you're looking for — AI turns it into the same filters you'd pick by hand.
+                  Describe what you're looking for, in your own words — we'll turn it into the same filters you'd set by hand.
                 </p>
               </div>
             </div>
@@ -171,7 +171,7 @@ export function AiSearchButton() {
                 }}
                 maxLength={300}
                 placeholder="e.g. Dialysis machines at Hyderabad acquired after April 2024 with NBV over ₹2 lakh"
-                className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-ink placeholder:text-gray-400 focus:border-brand-teal focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+                className="w-full resize-none rounded-lg border border-gray-300 bg-gray-50 p-3 text-sm text-ink placeholder:text-gray-400 focus:border-accent focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent"
               />
 
               {error && (
@@ -187,7 +187,7 @@ export function AiSearchButton() {
                     key={q}
                     type="button"
                     onClick={() => setQuestion(q)}
-                    className="rounded-full border border-gray-200 px-2.5 py-1 text-[11px] text-gray-600 transition-colors hover:border-brand-teal hover:text-brand-teal"
+                    className="rounded-full border border-gray-200 px-2.5 py-1 text-[11px] text-gray-600 transition-colors hover:border-accent hover:text-accent"
                   >
                     {q}
                   </button>
@@ -195,8 +195,14 @@ export function AiSearchButton() {
               </div>
 
               <div className="mt-5 flex items-center justify-between border-t border-gray-100 pt-4">
-                <span className="text-[11px] text-gray-400">
-                  {status ? `${status.remainingToday} of ${status.dailyLimit} searches left today` : ""}
+                <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                  {status && (
+                    <>
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-300" />
+                      <span className="font-semibold text-gray-500">{status.remainingToday}</span> of {status.dailyLimit} searches left
+                      today
+                    </>
+                  )}
                 </span>
                 <div className="flex gap-2">
                   <Button type="button" variant="secondary" size="sm" onClick={reset}>
@@ -206,7 +212,6 @@ export function AiSearchButton() {
                     type="submit"
                     size="sm"
                     disabled={loading || !question.trim() || (status ? status.remainingToday <= 0 : false)}
-                    className="!bg-brand-teal hover:!bg-brand-teal/90"
                   >
                     {loading ? "Thinking…" : "Ask AI"}
                   </Button>
@@ -260,7 +265,7 @@ export function AiSearchButton() {
                     Discard
                   </Button>
                   {filterLines.length > 0 && (
-                    <Button type="button" size="sm" onClick={apply} className="!bg-brand-teal hover:!bg-brand-teal/90">
+                    <Button type="button" size="sm" onClick={apply}>
                       Apply Filters
                     </Button>
                   )}

@@ -94,9 +94,44 @@ export function buildSystemPrompt(
     // exceptions (already combined columns), stated explicitly so the model doesn't
     // needlessly split those into c1/c2 too.
     "Pick the column that matches what the question actually asks, dynamically per question — never a fixed default. NBV/Gross Block/Acc Dep/Opening NBV/Period Depreciation each have separate c1/c2 columns with no combined column at all: if the question says \"C2\"/\"component 2\" use the c2 column, otherwise use the c1 column (the common case). \"WDV\"/\"written down value\" alone means totalWdv (already C1+C2 combined) — do not split it. \"Profit\"/\"loss\"/\"gain on disposal\" means profitLoss (already combined).",
-    "value/valueTo are always strings (numbers as plain digits, dates as YYYY-MM-DD). Set matched=false with a short explanation if the question isn't about filtering this register (e.g. small talk, or asks for something outside these columns) — never guess.",
+    // Found live-testing: "Disposed assets with a loss" returned matched=false — the
+    // model had the profitLoss COLUMN from the line above but no grounding for which
+    // operator/value "a loss" actually means, nor that "disposed" here is the Status
+    // value, not a number, and bailed out entirely rather than partially match. An
+    // abstract column-name rule isn't enough for domain jargon; worked examples below
+    // fix this at the source the same way real active values fixed the earlier
+    // guessing-blind bug.
+    "Finance-team phrasing this app's users actually use: \"a loss\"/\"loss on disposal\" -> profitLoss op lt value 0. \"a gain\"/\"profit on disposal\" -> profitLoss op gt value 0. \"disposed\"/\"written off\" AS A STATUS (not a number) -> status:[\"Disposed\"], using the exact active Status spelling above. \"book value\"/\"net block\"/\"NBV\" -> c1Nbv/c2Nbv (current value, any asset) — NOT the same figure as \"WDV\"/\"written down value\" (totalWdv/c1Wdv/c2Wdv, only meaningful for a disposed asset at its disposal date); never substitute one for the other. \"gross block\"/\"cost\"/\"original cost\" -> c1GrossBlock/c2GrossBlock. \"fully depreciated\"/\"fully written down\" -> ONE condition on the c1 NBV column, op equals, value 0 (same C1-unless-C2-is-specified default as above — do NOT add a second condition for c2Nbv too; two near-identical conditions in one answer is exactly the case found live-testing to destabilize generation). \"capitalized\"/\"added\" used as a VERB about when an asset entered the register (not \"capitalized location\", a real different field) -> dateAcquired.",
+    "Examples of the phrasing above (each is a separate, finished, unrelated example — not something to continue or quote back):",
+    // Deliberately paraphrased, not verbatim identical to any question this feature is
+    // actually tested with — an exact string match between a worked example and the
+    // live question was found live-testing to trigger a severe generation instability
+    // (the model repeating closing JSON syntax hundreds of times until the token cap,
+    // confirmed by inspecting a raw completion directly), seemingly from the model
+    // getting confused between "recall the example" and "answer fresh" when the two are
+    // identical text. Paraphrasing teaches the same mapping without that exact-echo risk.
+    'Example question: "Write-offs that lost money". Example answer\'s only non-empty fields: status is ["Disposed"], conditions is one entry: column profitLoss, operator lt, value 0 (bare number, no quotes).',
+    'Example question: "Equipment sold at a profit". Example answer\'s only non-empty field: conditions is one entry: column profitLoss, operator gt, value 0 (bare number, no quotes).',
+    'Example question: "WDV less than one lakh". Example answer\'s only non-empty field: conditions is one entry: column totalWdv, operator lt, value 100000 (bare number, no quotes).',
+    // Found live-testing: a QUOTED numeric string (e.g. value:"50000") reliably
+    // triggered the same repetition degeneracy as the worked-example-echo bug above —
+    // inspecting a raw completion showed the model writing the digits correctly, then
+    // continuing to hallucinate fragments of the JSON it was about to close (e.g.
+    // "}]}},{") INTO that same string before finally closing the quote, sometimes
+    // running all the way to max_tokens. A bare (unquoted) JSON number for a number-type
+    // column's value doesn't show this at all in repeated live testing — the string
+    // grammar is where the instability lives, not the number itself.
+    "For a NUMBER-type column (see the type after each column id above), value/valueTo must be a bare JSON number — e.g. 50000, not \"50000\" — never a quoted string. For a text or date column, they're still plain strings (dates as YYYY-MM-DD). Try hard to match the question using the vocabulary, term mappings, and examples above before giving up — set matched=false only if the question truly isn't about filtering this register (small talk, or something entirely outside these columns), never just because the phrasing doesn't look like a column name.",
     "Every entity the question explicitly names (a sub classification, status, or location) MUST appear in the output — attempt the closest matching value from the active lists above rather than omitting it. A wrong guess is dropped safely server-side and costs nothing; silently omitting a named entity produces an incomplete filter with no visible sign anything was left out.",
-    "explanation must describe ONLY the filters you actually set in the fields above — never mention a value you left out or didn't include."
+    // Found live-testing: a generic descriptive noun ("machines", "equipment",
+    // "assets") with no specific category named made the model guess MULTIPLE real Sub
+    // Classifications at once (uncertain how many count), which measurably correlated
+    // with a garbled/repeated value later in that same response — an unstable
+    // generation pattern, not just an imprecise guess. Narrowing this to "only when
+    // named specifically" removes the ambiguity that triggered it, and is also just
+    // more correct: guessing 2-3 categories for a vague word is presumptuous either way.
+    "A generic descriptive word alone (\"machines\", \"equipment\", \"assets\", \"items\") is NOT a Sub Classification name — only set subClassification when the question names an actual specific active value from the list above (or an unambiguous synonym of exactly one of them). Leave it empty rather than guessing which 2-3 real categories a vague word might mean.",
+    "explanation must describe ONLY the filters you actually set in the fields above — never mention a value you left out or didn't include. When matched=false (or nothing ends up applied), phrase explanation warmly and helpfully, never as a flat failure — suggest the kind of thing to mention instead, e.g. \"Try mentioning a status, location, sub classification, date range, or amount — like 'Disposed assets with a loss' or 'Dialysis machines at Hyderabad'.\""
   ].join("\n");
 }
 
@@ -145,8 +180,10 @@ export const REGISTER_SEARCH_JSON_SCHEMA = {
           properties: {
             columnId: { type: "string" },
             op: { type: "string" },
-            value: { type: ["string", "null"] },
-            valueTo: { type: ["string", "null"] }
+            // "number" alongside "string" — see buildSystemPrompt's own comment on why a
+            // number-type column's value must be a bare JSON number, not a quoted string.
+            value: { type: ["string", "number", "null"] },
+            valueTo: { type: ["string", "number", "null"] }
           }
         }
       }
@@ -166,8 +203,11 @@ const modelOutputSchema = z.object({
     z.object({
       columnId: z.string(),
       op: z.string(),
-      value: z.string().nullable(),
-      valueTo: z.string().nullable()
+      // number alongside string — see REGISTER_SEARCH_JSON_SCHEMA's matching comment;
+      // translateModelOutput coerces a number back to a string immediately, so every
+      // caller downstream still only ever sees a string.
+      value: z.union([z.string(), z.number()]).nullable(),
+      valueTo: z.union([z.string(), z.number()]).nullable()
     })
   )
 });
@@ -211,20 +251,35 @@ function resolveNames(names: string[], map: Map<string, string>, label: string, 
  *  list, the operator sets above, the DB's active master lists) regardless of what the
  *  strict JSON-schema response_format already constrained, exactly the same
  *  "trust but verify" the rest of this app applies to bulk-upload input. */
+// Fallback only — the model is now instructed (buildSystemPrompt's own final line) to
+// phrase its own `explanation` warmly and actionably whenever nothing matches; this
+// covers the rare case where that field itself comes back empty. Reassuring, plain-
+// language, and actionable (suggests what to try) rather than a flat "failed" statement,
+// per this app's brand voice guidelines.
+const NO_MATCH_FALLBACK =
+  "I couldn't match that to a register filter — try mentioning a status, location, sub classification, date range, or amount, like \"Disposed assets with a loss\" or \"Dialysis machines at Hyderabad\".";
+
 export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): TranslatedFilters {
   const parsed = modelOutputSchema.safeParse(raw);
   if (!parsed.success) {
-    return { applied: false, explanation: "The AI's response wasn't understood — try rephrasing your question.", warnings: [], conditions: [] };
+    return { applied: false, explanation: "That didn't come back in a shape I understood — mind trying again, maybe with simpler wording?", warnings: [], conditions: [] };
   }
   const out = parsed.data;
   const warnings: string[] = [];
 
   if (!out.matched) {
-    return { applied: false, explanation: out.explanation.slice(0, 200) || "Couldn't turn that into a filter.", warnings, conditions: [] };
+    return { applied: false, explanation: out.explanation.slice(0, 200) || NO_MATCH_FALLBACK, warnings, conditions: [] };
   }
 
   let conditions: Array<RawCondition & { type: "text" | "number" | "date" }> = [];
   for (const cond of out.conditions) {
+    // The model may send value/valueTo as a bare JSON number (see this file's own
+    // REGISTER_SEARCH_JSON_SCHEMA comment) — coerced to a string immediately so every
+    // check and caller below (DATE_RE, buildConditionSql, ...) only ever sees a string,
+    // same as before that schema change.
+    const value = typeof cond.value === "number" ? String(cond.value) : cond.value;
+    const valueTo = typeof cond.valueTo === "number" ? String(cond.valueTo) : cond.valueTo;
+
     const type = REGISTER_COLUMNS[cond.columnId];
     if (!type) {
       warnings.push(`Ignored an unrecognized column "${cond.columnId}".`);
@@ -234,7 +289,7 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
       warnings.push(`Ignored an unsupported operator "${cond.op}" for ${COLUMN_LABELS[cond.columnId] ?? cond.columnId}.`);
       continue;
     }
-    if (type === "date" && cond.value && !["today", "thisWeek", "thisMonth", "thisFY", "lastFY", "blank", "notBlank"].includes(cond.op) && !DATE_RE.test(cond.value)) {
+    if (type === "date" && value && !["today", "thisWeek", "thisMonth", "thisFY", "lastFY", "blank", "notBlank"].includes(cond.op) && !DATE_RE.test(value)) {
       warnings.push(`Ignored an invalid date for ${COLUMN_LABELS[cond.columnId] ?? cond.columnId}.`);
       continue;
     }
@@ -242,8 +297,8 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
       columnId: cond.columnId,
       op: cond.op,
       type,
-      value: cond.value ?? undefined,
-      valueTo: cond.valueTo ?? undefined
+      value: value ?? undefined,
+      valueTo: valueTo ?? undefined
     });
   }
 
@@ -278,7 +333,7 @@ export function translateModelOutput(raw: unknown, masters: MasterLookupMaps): T
     applied: appliedSomething,
     explanation: appliedSomething
       ? out.explanation.slice(0, 200) || "Filters applied."
-      : out.explanation.slice(0, 200) || "Couldn't match that to any filterable value.",
+      : out.explanation.slice(0, 200) || NO_MATCH_FALLBACK,
     warnings,
     ...(globalSearch ? { globalSearch } : {}),
     ...(subClassification.length ? { subClassification } : {}),
