@@ -33,21 +33,6 @@ export function formatCompactIndianCount(n: number): string {
   return `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(1)}${suffix}`;
 }
 
-// "Just now" / "5m ago" / "3h ago" / "2d ago" — for the notifications bell, where an
-// absolute timestamp is less useful than "was this recent". Falls back to a plain date
-// past a week old rather than an ever-growing "14d ago".
-export function formatRelativeTime(epochMs: number): string {
-  const seconds = Math.floor((Date.now() - epochMs) / 1000);
-  if (seconds < 60) return "Just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(epochMs).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
-}
-
 // ₹-prefixed sibling of formatCompactIndianCount above, same K/L/Cr shorthand and 1
 // decimal place — for a KPI headline figure inside a fixed-width card, where
 // formatCurrency's full-precision string (e.g. "₹81,06,68,314") can genuinely overflow a

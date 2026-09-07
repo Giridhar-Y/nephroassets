@@ -50,9 +50,5 @@ export {
   ShareIosRegular as ShareIcon,
   WifiOffRegular as OfflineIcon,
   DataBarVerticalRegular as DashboardIcon,
-  SparkleRegular as AiSearchIcon,
-  AlertOnRegular as BellIcon,
-  SaveRegular as SaveIcon,
-  SaveCopyRegular as SaveAsNewIcon,
-  PersonRegular as PersonIcon
+  SparkleRegular as AiSearchIcon
 } from "@fluentui/react-icons";

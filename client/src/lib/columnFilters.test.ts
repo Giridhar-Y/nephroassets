@@ -28,13 +28,4 @@ describe("isConditionComplete", () => {
     expect(isConditionComplete(cond({ type: "number", op: "between", value: "10", valueTo: "" }))).toBe(false);
     expect(isConditionComplete(cond({ type: "number", op: "between", value: "10", valueTo: "20" }))).toBe(true);
   });
-
-  // "in" ("is any of") is the one op whose value is an array — an empty array is
-  // falsy-by-length but truthy-as-a-value (`[] || x` picks `[]`, not `x`), so this needs
-  // its own length check rather than the plain value !== "" the other ops use.
-  it("in needs a non-empty array value", () => {
-    expect(isConditionComplete(cond({ op: "in" }))).toBe(false);
-    expect(isConditionComplete(cond({ op: "in", value: [] }))).toBe(false);
-    expect(isConditionComplete(cond({ op: "in", value: ["FAR-1", "FAR-2"] }))).toBe(true);
-  });
 });

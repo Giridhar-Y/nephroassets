@@ -432,11 +432,6 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     -- Serves both the daily-cap COUNT(*) query (user_id + a created_at floor) and any
     -- future "review recent AI searches" screen ordered newest-first.
     CREATE INDEX IF NOT EXISTS idx_ai_search_log_user_created ON ai_search_log (user_id, created_at DESC);
-
-    -- Real Profile feature — see schema.sql's users table comment for the full
-    -- reasoning. IF NOT EXISTS makes this a no-op on every boot after the first, and on
-    -- a brand-new database where schema.sql already created the column directly.
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

@@ -3,7 +3,6 @@ import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { BulkUploadPage } from "./BulkUploadPage.js";
 import { ToastProvider } from "../components/Toast.js";
-import { NotificationsProvider } from "../lib/NotificationsContext.js";
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -57,9 +56,7 @@ describe("BulkUploadPage preview: virtualization", () => {
     render(
       <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
         <ToastProvider>
-        <NotificationsProvider>
           <BulkUploadPage />
-        </NotificationsProvider>
         </ToastProvider>
       </MemoryRouter>
     );
@@ -109,9 +106,7 @@ describe("BulkUploadPage preview: virtualization", () => {
     render(
       <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
         <ToastProvider>
-        <NotificationsProvider>
           <BulkUploadPage />
-        </NotificationsProvider>
         </ToastProvider>
       </MemoryRouter>
     );
@@ -162,9 +157,7 @@ describe("BulkUploadPage preview: expand to full screen", () => {
     render(
       <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
         <ToastProvider>
-        <NotificationsProvider>
           <BulkUploadPage />
-        </NotificationsProvider>
         </ToastProvider>
       </MemoryRouter>
     );
@@ -331,9 +324,7 @@ describe("BulkUploadPage preview: error review (Export Errors, default filter, g
     render(
       <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
         <ToastProvider>
-        <NotificationsProvider>
           <BulkUploadPage />
-        </NotificationsProvider>
         </ToastProvider>
       </MemoryRouter>
     );
@@ -362,9 +353,7 @@ describe("BulkUploadPage preview: error review (Export Errors, default filter, g
     render(
       <MemoryRouter initialEntries={["/bulk-upload?type=transfers"]}>
         <ToastProvider>
-        <NotificationsProvider>
           <BulkUploadPage />
-        </NotificationsProvider>
         </ToastProvider>
       </MemoryRouter>
     );

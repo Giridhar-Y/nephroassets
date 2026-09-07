@@ -6,7 +6,6 @@ import { useSettings } from "../lib/SettingsContext.js";
 import { useColumnPrefs } from "../lib/useColumnPrefs.js";
 import { useAssetList } from "../hooks/useAssetList.js";
 import { ColumnPicker } from "../components/ColumnPicker.js";
-import { useSetRegisterAssetCount } from "../components/Layout.js";
 import { TransferModal } from "../components/TransferModal.js";
 import { DisposalModal } from "../components/DisposalModal.js";
 import { MergeModal } from "../components/MergeModal.js";
@@ -105,7 +104,6 @@ const CONDITION_COLUMN_LABELS: Record<string, string> = Object.fromEntries([
 // need nothing appended.
 function describeCondition(c: ColumnCondition): string {
   const opLabel = OPERATORS_BY_TYPE[c.type].find((o) => o.value === c.op)?.label ?? c.op;
-  if (Array.isArray(c.value)) return `${opLabel} ${c.value.length <= 4 ? c.value.join(", ") : `(${c.value.length} values)`}`;
   if (c.value === undefined || c.value === "") return opLabel;
   return c.valueTo ? `${opLabel} ${c.value}–${c.valueTo}` : `${opLabel} ${c.value}`;
 }
@@ -113,8 +111,8 @@ function describeCondition(c: ColumnCondition): string {
 export function RegisterPage() {
   const { user } = useAuth();
   const { settings } = useSettings();
-  const { filters, setFilter, clearFilter, clearAll, replaceFilters } = useFilters();
-  const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" }, filters, replaceFilters);
+  const { filters, setFilter, clearFilter, clearAll } = useFilters();
+  const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" });
   const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
 
   // Finance FAR Dashboard drill-through: a tile links here with ?exception=<key>&asAt=...
@@ -183,10 +181,6 @@ export function RegisterPage() {
     effectiveSettings,
     assetListFilters
   );
-  // Published to the global header (next to Figures As Of) — see Layout.tsx's own
-  // comment. `total` already reflects the current filters/AS_AT (useAssetList's own
-  // includeTotal fetch), so this needs no extra query of its own.
-  useSetRegisterAssetCount(total);
   const [density, setDensity] = useDensity();
   const [selectionState, setSelectionState] = useState<SelectionState>({
     selected: new Set(),

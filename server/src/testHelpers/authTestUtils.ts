@@ -77,9 +77,6 @@ export async function createTestUser(overrides: {
    *  seeds those, same as it already must for any other center-referencing fixture).
    *  Omitted or empty means unscoped, same as every user gets by default. */
   centerAccess?: string[];
-  /** Omitted (the common case) leaves display_name NULL, exercising the real default —
-   *  a test asserting the email-prefix fallback wants that, not an explicit override. */
-  displayName?: string;
 }): Promise<{ id: number; username: string; password: string }> {
   const db = await getPool();
   // Same reasoning as getSharedAuthHeader's own call — a test file that only ever calls
@@ -88,8 +85,8 @@ export async function createTestUser(overrides: {
   const password = overrides.password ?? "correct-horse-battery-staple";
   const passwordHash = await hashPassword(password);
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (username, email, password_hash, role, status, must_change_password, display_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO users (username, email, password_hash, role, status, must_change_password)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
     [
       overrides.username,
@@ -97,8 +94,7 @@ export async function createTestUser(overrides: {
       passwordHash,
       overrides.role ?? "editor",
       overrides.status ?? "active",
-      overrides.mustChangePassword ?? false,
-      overrides.displayName ?? null
+      overrides.mustChangePassword ?? false
     ]
   );
   const id = Number(rows[0]!.id);

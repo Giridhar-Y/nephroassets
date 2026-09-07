@@ -314,13 +314,11 @@ export function AdminPage() {
 
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("");
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editEmail, setEditEmail] = useState("");
-  const [editDisplayName, setEditDisplayName] = useState("");
   const [editRole, setEditRole] = useState<Role>("");
 
   const [reveal, setReveal] = useState<{ username: string; password: string } | null>(null);
@@ -352,19 +350,10 @@ export function AdminPage() {
     if (!username.trim() || !email.trim() || password.length < 8) return;
     setBusy(true);
     try {
-      await createAdminUser({
-        username: username.trim(),
-        email: email.trim(),
-        password,
-        role,
-        // Omitted (not an empty string) when left blank, so the server's own
-        // email-prefix fallback applies rather than persisting a blank string.
-        ...(displayName.trim() ? { displayName: displayName.trim() } : {})
-      });
+      await createAdminUser({ username: username.trim(), email: email.trim(), password, role });
       setReveal({ username: username.trim(), password });
       setUsername("");
       setEmail("");
-      setDisplayName("");
       setPassword("");
       setRole(defaultRoleName(roles));
       load();
@@ -378,23 +367,13 @@ export function AdminPage() {
   function startEdit(row: AdminUser) {
     setEditingId(row.id);
     setEditEmail(row.email);
-    setEditDisplayName(row.displayName);
     setEditRole(row.role);
   }
 
   async function saveEdit(row: AdminUser) {
     setBusy(true);
     try {
-      await updateAdminUser(row.id, {
-        email: editEmail.trim(),
-        role: editRole,
-        // Only sent when actually changed from the pre-filled value — that pre-fill is
-        // row.displayName, which for a user who's never set one IS the email-prefix
-        // fallback, not a real stored value. Sending it back untouched would lock in
-        // that fallback as an explicit display_name, so it'd stop tracking a later
-        // email change — an unintended side effect of an edit that never touched the name.
-        ...(editDisplayName.trim() !== row.displayName ? { displayName: editDisplayName.trim() } : {})
-      });
+      await updateAdminUser(row.id, { email: editEmail.trim(), role: editRole });
       showToast(`${row.username} updated.`);
       setEditingId(null);
       load();
@@ -457,15 +436,6 @@ export function AdminPage() {
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Display Name</label>
-            <input
-              className={INPUT_CLASS}
-              placeholder="Optional — defaults to email"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Temporary Password</label>
             <input
               className={INPUT_CLASS}
@@ -493,7 +463,6 @@ export function AdminPage() {
           <thead className="border-b-2 border-gray-300 bg-gray-50">
             <tr>
               <th className={TH_CLASS}>Username</th>
-              <th className={TH_CLASS}>Display Name</th>
               <th className={TH_CLASS}>Email</th>
               <th className={TH_CLASS}>Status</th>
               <th className={TH_CLASS}>Role</th>
@@ -509,13 +478,6 @@ export function AdminPage() {
                   {editingId === row.id ? (
                     <>
                       <td className={`${TD_CLASS} font-medium`}>{row.username}</td>
-                      <td className={TD_CLASS}>
-                        <input
-                          className={INPUT_CLASS}
-                          value={editDisplayName}
-                          onChange={(e) => setEditDisplayName(e.target.value)}
-                        />
-                      </td>
                       <td className={TD_CLASS}>
                         <input className={INPUT_CLASS} value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
                       </td>
@@ -537,7 +499,7 @@ export function AdminPage() {
                           type="button"
                           className="font-medium text-accent hover:underline disabled:opacity-50"
                           onClick={() => saveEdit(row)}
-                          disabled={busy || !editEmail.trim() || !editDisplayName.trim()}
+                          disabled={busy || !editEmail.trim()}
                         >
                           Save
                         </button>
@@ -556,7 +518,6 @@ export function AdminPage() {
                         {row.username}
                         {isSelf && <span className="ml-1.5 text-xs font-normal text-gray-400">(you)</span>}
                       </td>
-                      <td className={TD_CLASS}>{row.displayName}</td>
                       <td className={TD_CLASS}>{row.email}</td>
                       <td className={TD_CLASS}>
                         <StatusBadge status={row.status} />

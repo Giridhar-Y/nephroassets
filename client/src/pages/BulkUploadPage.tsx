@@ -26,7 +26,6 @@ import {
   UploadIcon
 } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
-import { useNotifications } from "../lib/NotificationsContext.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 
 type UploadType = "assets" | "disposals" | "transfers" | "merge" | "masters";
@@ -350,12 +349,6 @@ const RESULT_GRID_COLS = "grid-cols-[56px_180px_1fr]";
 
 export function BulkUploadPage() {
   const { showToast } = useToast();
-  // Same reasoning as useExport.ts's own comment: commitBulkUploadChunked is a plain
-  // async function with no AbortController tied to this component — navigating away
-  // mid-upload doesn't stop it, it keeps posting chunks and finishes in the background.
-  // The toast below is easy to miss once you're no longer on this page; this gives that
-  // completion a persistent record too.
-  const { addNotification } = useNotifications();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const resultScrollRef = useRef<HTMLDivElement>(null);
@@ -536,13 +529,9 @@ export function BulkUploadPage() {
       setResult(res);
       setStep("result");
       const skipped = res.errors.length > 0 ? ` ${res.errors.length} row${res.errors.length === 1 ? "" : "s"} skipped due to errors.` : "";
-      const message = `${file.name}: ${res.added} added, ${res.updated} updated.${skipped}`;
-      showToast(message, res.processed > 0 ? "success" : "error");
-      addNotification(message, res.processed > 0 ? "success" : "error");
+      showToast(`${res.added} added, ${res.updated} updated.${skipped}`, res.processed > 0 ? "success" : "error");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not upload the file.";
-      setError(message);
-      addNotification(`${file.name}: ${message}`, "error");
+      setError(err instanceof Error ? err.message : "Could not upload the file.");
     } finally {
       setConfirming(false);
     }

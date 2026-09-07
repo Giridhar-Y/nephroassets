@@ -5,14 +5,10 @@ import { sessionCookieOptions, SESSION_COOKIE_NAME, signSession } from "../auth/
 import { hashPassword, verifyPassword } from "../auth/password.js";
 import { isIpLockedOut, isLockedOut, LOCKOUT_WINDOW_MINUTES, recordLoginAttempt } from "../auth/rateLimit.js";
 import type { Role } from "../auth/middleware.js";
-import { resolveDisplayName } from "../auth/middleware.js";
 import { fetchCenterScope } from "../auth/centerScope.js";
 
 const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 const changePasswordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8) });
-// 80 chars — generous for a real name/nickname, short enough to never overflow the
-// header greeting or an admin's user-list column.
-const updateProfileSchema = z.object({ displayName: z.string().trim().min(1).max(80) });
 
 // Has no corresponding real user — bcrypt.compare against this pays the same hashing
 // cost as a real lookup, so a nonexistent username doesn't respond measurably faster
@@ -42,13 +38,12 @@ export default async function authRoutes(app: FastifyInstance) {
       id: string;
       username: string;
       email: string;
-      display_name: string | null;
       password_hash: string;
       role: Role;
       must_change_password: boolean;
       status: string;
     }>(
-      `SELECT id, username, email, display_name, password_hash, role, must_change_password, status FROM users WHERE LOWER(username) = LOWER($1)`,
+      `SELECT id, username, email, password_hash, role, must_change_password, status FROM users WHERE LOWER(username) = LOWER($1)`,
       [username]
     );
     const row = rows[0];
@@ -86,7 +81,6 @@ export default async function authRoutes(app: FastifyInstance) {
         id: Number(row!.id),
         username: row!.username,
         email: row!.email,
-        displayName: resolveDisplayName(row!.display_name, row!.email),
         role: row!.role,
         mustChangePassword: row!.must_change_password,
         permissions: permRows.map((p) => `${p.module}:${p.action}`),
@@ -133,23 +127,6 @@ export default async function authRoutes(app: FastifyInstance) {
       newHash,
       req.user!.id
     ]);
-    return { ok: true };
-  });
-
-  // Self-service — same shape as change-password above (self-scoped to the caller's own
-  // row via req.user!.id, no admin permission needed), but not listed in
-  // ALLOWED_WHILE_MUST_CHANGE_PASSWORD: a forced-temp-password session should finish
-  // that flow before touching anything else. The client re-reads /api/auth/me
-  // afterward (refreshUser()) rather than this returning the updated user itself —
-  // same pattern change-password already established.
-  app.patch("/api/auth/profile", async (req, reply) => {
-    const parsed = updateProfileSchema.safeParse(req.body);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: "Display name must be 1–80 characters." };
-    }
-    const db = await getPool();
-    await db.query(`UPDATE users SET display_name = $1 WHERE id = $2`, [parsed.data.displayName, req.user!.id]);
     return { ok: true };
   });
 }

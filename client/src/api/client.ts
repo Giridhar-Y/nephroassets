@@ -1077,10 +1077,6 @@ export interface AuthUser {
   id: number;
   username: string;
   email: string;
-  /** Always a real, non-empty string — server/src/auth/middleware.ts's
-   *  resolveDisplayName falls back to the part of `email` before "@" when the user has
-   *  never set one, so this is never blank. */
-  displayName: string;
   role: Role;
   mustChangePassword: boolean;
   /** `"module:action"` strings — see server/src/auth/permissions.ts's PERMISSION_REGISTRY.
@@ -1124,21 +1120,12 @@ export function changePassword(currentPassword: string, newPassword: string): Pr
   });
 }
 
-// Self-service — updates the signed-in caller's own display name. Returns just {ok},
-// same as changePassword above; the caller re-reads /api/auth/me (AuthContext's
-// refreshUser) to pick up the new value rather than this returning it directly.
-export function updateProfile(displayName: string): Promise<{ ok: true }> {
-  return request("/api/auth/profile", { method: "PATCH", body: JSON.stringify({ displayName }) });
-}
-
 // --- Admin: user management -------------------------------------------------------
 
 export interface AdminUser {
   id: number;
   username: string;
   email: string;
-  /** Always a real, non-empty string — same fallback as AuthUser.displayName. */
-  displayName: string;
   role: Role;
   status: "active" | "disabled";
   mustChangePassword: boolean;
@@ -1155,15 +1142,13 @@ export function createAdminUser(payload: {
   email: string;
   password: string;
   role: Role;
-  /** Optional — falls back to the email-prefix rule (server-side) when left blank. */
-  displayName?: string;
 }): Promise<AdminUser> {
   return request("/api/admin/users", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function updateAdminUser(
   id: number,
-  payload: Partial<{ email: string; role: Role; status: "active" | "disabled"; displayName: string }>
+  payload: Partial<{ email: string; role: Role; status: "active" | "disabled" }>
 ): Promise<AdminUser> {
   return request(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
