@@ -1,10 +1,11 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useEffect, useState, type ComponentType } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type Dispatch, type SetStateAction } from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission, type Module } from "../lib/permissions.js";
-import { formatDate } from "../lib/format.js";
+import { formatCompactIndianCount, formatDate } from "../lib/format.js";
 import { useToast } from "./Toast.js";
+import { NotificationsBell } from "./NotificationsBell.js";
 import { LogoSymbol, Wordmark } from "./Logo.js";
 import { InstallAppButton } from "./InstallAppButton.js";
 import { IosInstallHint } from "./IosInstallHint.js";
@@ -69,6 +70,77 @@ const NAV_ITEMS: NavItem[] = [
 
 const ADMIN_NAV_ITEM: NavItem = { to: "/admin", label: "Admin", icon: AdminIcon, module: "admin", action: "view" };
 
+// Register publishes its own live "how many assets match the current view" count up
+// into the global header (next to Figures As Of) via this context — the header itself
+// has no idea what page it's on, and Register's count depends on state (filters, AS_AT)
+// that only RegisterPage has, so a context is the plumbing that lets one page's number
+// show up in a shared layout without those other pages knowing anything about Register.
+// null = nothing published (every page but Register), so the badge renders nothing.
+const RegisterAssetCountContext = createContext<Dispatch<SetStateAction<number | null>>>(() => {});
+
+/** Register's total (see useAssetList's own `total` — already the exact count for the
+ *  current filters/AS_AT, no extra query) — call with that value on every render; it's
+ *  cleared automatically on unmount so navigating away from Register doesn't leave a
+ *  stale count showing on some other page. */
+export function useSetRegisterAssetCount(count: number | null): void {
+  const setCount = useContext(RegisterAssetCountContext);
+  useEffect(() => {
+    setCount(count);
+    return () => setCount(null);
+  }, [count, setCount]);
+}
+
+const LAST_GREETED_DATE_KEY = "nephroassets.lastGreetedDate";
+
+/** Pure decision logic, pulled out of useGreeting below purely so it's directly
+ *  unit-testable without mounting a component or mocking Date/localStorage — see
+ *  Layout.greeting.test.ts. `isReturnVisit` is whether today's date already matches
+ *  LAST_GREETED_DATE_KEY; `hour` is 0-23 local time. */
+export function formatGreeting(displayName: string, hour: number, isReturnVisit: boolean): string {
+  if (isReturnVisit) return `Welcome back, ${displayName}`;
+  const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  return `Good ${timeOfDay}, ${displayName}`;
+}
+
+/** "Good morning, X" the first time the app loads today; "Welcome back, X" on any later
+ *  load the same day (a reload, or leaving and coming back) so it doesn't read as a
+ *  static label. Computed once per mount (the ref guard), not recomputed if
+ *  `displayName` itself changes later in the same session (e.g. right after saving a
+ *  new one on the Profile page) — the greeting is a "how's your day going" moment, not
+ *  a live-bound label that should flicker back to the time-of-day phrasing mid-session.
+ *  localStorage, not sessionStorage: swept on logout same as everything else under the
+ *  nephroassets.* prefix (persistedUiState.ts), so a same-day re-login starts fresh with
+ *  the fuller greeting rather than "welcome back" for what's genuinely a new sign-in. */
+function useGreeting(displayName: string | undefined): string | null {
+  const [greeting, setGreeting] = useState<string | null>(null);
+  const computed = useRef(false);
+
+  useEffect(() => {
+    if (!displayName || computed.current) return;
+    computed.current = true;
+    const today = new Date().toISOString().slice(0, 10);
+    const isReturnVisit = localStorage.getItem(LAST_GREETED_DATE_KEY) === today;
+    localStorage.setItem(LAST_GREETED_DATE_KEY, today);
+    setGreeting(formatGreeting(displayName, new Date().getHours(), isReturnVisit));
+  }, [displayName]);
+
+  return greeting;
+}
+
+/** Links to the same Profile section Change Password already lives on (ChangePasswordPage.tsx)
+ *  — the one discoverable place a signed-in user manages their own account, per that
+ *  page's own comment on why the route stays named /change-password. */
+function Greeting() {
+  const { user } = useAuth();
+  const greeting = useGreeting(user?.displayName);
+  if (!greeting) return null;
+  return (
+    <Link to="/change-password" className="text-sm font-medium text-white hover:underline" title="Manage your profile">
+      {greeting}
+    </Link>
+  );
+}
+
 function AsAtControl() {
   const { settings, setAsAt, loading, notConfigured, error } = useSettings();
   const { showToast } = useToast();
@@ -130,6 +202,7 @@ export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+  const [registerAssetCount, setRegisterAssetCount] = useState<number | null>(null);
   const isVisible = (item: NavItem) =>
     item.anyOf ? item.anyOf.some((a) => hasPermission(user, item.module, a)) : hasPermission(user, item.module, item.action!);
   const navItems = [...NAV_ITEMS, ADMIN_NAV_ITEM].filter(isVisible);
@@ -196,21 +269,30 @@ export function Layout() {
           </button>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col print:block">
-        <OfflineBanner />
-        <header className="flex shrink-0 items-center justify-end bg-ink px-6 py-3 print:hidden">
-          {/* mr-auto on a wrapper (not InstallAppButton's own root, which is null most of
-              the time) — pushes it to the far left when it renders, while an empty
-              wrapper still keeps AsAtControl pinned right via justify-end otherwise. */}
-          <div className="mr-auto">
-            <InstallAppButton />
-          </div>
-          <AsAtControl />
-        </header>
-        <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">
-          <Outlet />
-        </main>
-      </div>
+      <RegisterAssetCountContext.Provider value={setRegisterAssetCount}>
+        <div className="flex min-w-0 flex-1 flex-col print:block">
+          <OfflineBanner />
+          <header className="flex shrink-0 items-center justify-end gap-4 bg-ink px-6 py-3 print:hidden">
+            {/* mr-auto on a wrapper (not InstallAppButton's own root, which is null most of
+                the time) — pushes everything in it to the far left, while an empty
+                wrapper still keeps everything else pinned right via justify-end otherwise. */}
+            <div className="mr-auto flex items-center gap-4">
+              <Greeting />
+              <InstallAppButton />
+            </div>
+            {registerAssetCount !== null && (
+              <span className="text-sm text-white/80">
+                <span className="font-semibold text-white">{formatCompactIndianCount(registerAssetCount)}</span> assets loaded
+              </span>
+            )}
+            <AsAtControl />
+            <NotificationsBell />
+          </header>
+          <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">
+            <Outlet />
+          </main>
+        </div>
+      </RegisterAssetCountContext.Provider>
       <IosInstallHint />
     </div>
   );

@@ -89,6 +89,64 @@ describe("Admin: user management", () => {
     expect(Number(rows[0].target_user_id)).toBe(created.id);
   });
 
+  it("creates a user with a display name, and falls back to the email prefix when left blank", async () => {
+    const withName = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: {
+        username: "named-hire",
+        email: "named-hire@example.com",
+        password: "temp-password-123",
+        role: "editor",
+        displayName: "Priya Sharma"
+      }
+    });
+    expect(withName.statusCode).toBe(200);
+    expect(withName.json().displayName).toBe("Priya Sharma");
+
+    const withoutName = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: { username: "unnamed-hire", email: "unnamed-hire@example.com", password: "temp-password-123", role: "editor" }
+    });
+    expect(withoutName.statusCode).toBe(200);
+    expect(withoutName.json().displayName).toBe("unnamed-hire");
+  });
+
+  it("updates a user's display name and logs it, distinctly from a blank clearing it back to the fallback", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: adminCookie },
+      payload: {
+        username: "rename-me",
+        email: "rename-me@example.com",
+        password: "temp-password-123",
+        role: "editor",
+        displayName: "Old Name"
+      }
+    });
+    const id = created.json().id;
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${id}`,
+      headers: { cookie: adminCookie },
+      payload: { displayName: "New Name" }
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().displayName).toBe("New Name");
+
+    const db = await getPool();
+    const { rows } = await db.query(`SELECT details FROM user_audit_log WHERE action = 'display_name_change' AND target_user_id = $1`, [
+      id
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].details).toEqual({ from: "Old Name", to: "New Name" });
+  });
+
   it("seeds the new user's permissions from their role's template, atomically with creation", async () => {
     const res = await app.inject({
       method: "POST",

@@ -190,6 +190,92 @@ describe("Auth: login/logout/me/change-password", () => {
     expect(res.json().user.username).toBe("frank");
   });
 
+  it("login and /me fall back to the email prefix when display_name is unset, and use it once set", async () => {
+    await createTestUser({ username: "no-name-ivy", email: "ivy.no-name@example.com", password: "correct-password-123" });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "no-name-ivy", password: "correct-password-123" }
+    });
+    expect(login.json().user.displayName).toBe("ivy.no-name");
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: extractCookie(login) } });
+    expect(me.json().user.displayName).toBe("ivy.no-name");
+
+    await createTestUser({ username: "has-name-jane", password: "correct-password-123", displayName: "Jane Doe" });
+    const login2 = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "has-name-jane", password: "correct-password-123" }
+    });
+    expect(login2.json().user.displayName).toBe("Jane Doe");
+  });
+
+  it("PATCH /api/auth/profile updates the caller's own display name, self-scoped, no admin permission needed", async () => {
+    await createTestUser({ username: "profile-kim", password: "correct-password-123" });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "profile-kim", password: "correct-password-123" }
+    });
+    const cookieHeader = extractCookie(login);
+
+    const patch = await app.inject({
+      method: "PATCH",
+      url: "/api/auth/profile",
+      headers: { cookie: cookieHeader },
+      payload: { displayName: "Kim Lee" }
+    });
+    expect(patch.statusCode).toBe(200);
+
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: cookieHeader } });
+    expect(me.json().user.displayName).toBe("Kim Lee");
+  });
+
+  it("PATCH /api/auth/profile rejects an empty or over-long display name", async () => {
+    await createTestUser({ username: "profile-liam", password: "correct-password-123" });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "profile-liam", password: "correct-password-123" }
+    });
+    const cookieHeader = extractCookie(login);
+
+    const empty = await app.inject({
+      method: "PATCH",
+      url: "/api/auth/profile",
+      headers: { cookie: cookieHeader },
+      payload: { displayName: "   " }
+    });
+    expect(empty.statusCode).toBe(400);
+
+    const tooLong = await app.inject({
+      method: "PATCH",
+      url: "/api/auth/profile",
+      headers: { cookie: cookieHeader },
+      payload: { displayName: "x".repeat(81) }
+    });
+    expect(tooLong.statusCode).toBe(400);
+  });
+
+  it("PATCH /api/auth/profile requires a session, and is blocked for a must-change-password session same as any other route", async () => {
+    const noSession = await app.inject({ method: "PATCH", url: "/api/auth/profile", payload: { displayName: "X" } });
+    expect(noSession.statusCode).toBe(401);
+
+    await createTestUser({ username: "temp-pw-mia", password: "temp-password-123", mustChangePassword: true });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "temp-pw-mia", password: "temp-password-123" }
+    });
+    const blocked = await app.inject({
+      method: "PATCH",
+      url: "/api/auth/profile",
+      headers: { cookie: extractCookie(login) },
+      payload: { displayName: "X" }
+    });
+    expect(blocked.statusCode).toBe(403);
+  });
+
   it("logout clears the session — a subsequent /me is 401 again", async () => {
     await createTestUser({ username: "grace", password: "correct-password-123" });
     const login = await app.inject({

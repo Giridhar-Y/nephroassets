@@ -506,8 +506,12 @@ export function scopedSubClassificationNames(
   conditions: ColumnCondition[]
 ): string[] | null {
   if (multiSelect && multiSelect.length > 0) return multiSelect;
-  const eq = conditions.find((c) => c.columnId === "subClassification" && c.op === "equals" && !!c.value);
-  return eq ? [eq.value!] : null;
+  // "equals" never actually produces an array value (only "in" does) — the typeof guard
+  // here is just proving that to the type checker, not a real runtime case.
+  const eq = conditions.find(
+    (c): c is ColumnCondition & { value: string } => c.columnId === "subClassification" && c.op === "equals" && typeof c.value === "string" && c.value !== ""
+  );
+  return eq ? [eq.value] : null;
 }
 
 /** Whether every Sub Classification a view is currently scoped to is C1-only — the

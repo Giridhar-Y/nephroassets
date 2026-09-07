@@ -4,7 +4,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { hashPassword } from "../auth/password.js";
-import { requirePermission, type Role } from "../auth/middleware.js";
+import { requirePermission, resolveDisplayName, type Role } from "../auth/middleware.js";
 import { allPermissions, fetchUserPermissions, isValidPermission, replaceUserPermissions, seedPermissionsFromRole } from "../auth/permissions.js";
 import type { Permission } from "../auth/permissions.js";
 import { fetchUserCenterAccess, replaceUserCenterAccess, resolveCenters } from "../auth/centerScope.js";
@@ -29,6 +29,8 @@ export interface AdminUserRow {
   id: number;
   username: string;
   email: string;
+  /** Always a real, non-empty string — see auth/middleware.ts's resolveDisplayName. */
+  displayName: string;
   role: Role;
   status: string;
   mustChangePassword: boolean;
@@ -40,6 +42,7 @@ function mapUserRow(r: {
   id: string; // BIGSERIAL — node-postgres returns it as a string, not a number
   username: string;
   email: string;
+  display_name: string | null;
   role: Role;
   status: string;
   must_change_password: boolean;
@@ -50,6 +53,7 @@ function mapUserRow(r: {
     id: Number(r.id),
     username: r.username,
     email: r.email,
+    displayName: resolveDisplayName(r.display_name, r.email),
     role: r.role,
     status: r.status,
     mustChangePassword: r.must_change_password,
@@ -81,7 +85,7 @@ function generateTempPassword(): string {
 
 export async function fetchUsers(db: pg.Pool): Promise<AdminUserRow[]> {
   const { rows } = await db.query(
-    `SELECT id, username, email, role, status, must_change_password, created_at, last_login_at
+    `SELECT id, username, email, display_name, role, status, must_change_password, created_at, last_login_at
      FROM users ORDER BY username`
   );
   return rows.map(mapUserRow);
@@ -101,7 +105,7 @@ async function resolveActiveRole(db: Pick<pg.Pool | pg.PoolClient, "query">, rol
 export async function createUser(
   db: pg.Pool,
   actorUserId: number,
-  data: { username: string; email: string; password: string; role: Role }
+  data: { username: string; email: string; password: string; role: Role; displayName?: string }
 ): Promise<AdminUserRow> {
   const canonicalRole = await resolveActiveRole(db, data.role);
   if (!canonicalRole) throw new UserError(400, `Role "${data.role}" not recognized — see Masters for valid values.`);
@@ -110,10 +114,10 @@ export async function createUser(
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `INSERT INTO users (username, email, password_hash, role, must_change_password)
-       VALUES ($1, $2, $3, $4, TRUE)
-       RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
-      [data.username, data.email, passwordHash, canonicalRole]
+      `INSERT INTO users (username, email, password_hash, role, must_change_password, display_name)
+       VALUES ($1, $2, $3, $4, TRUE, $5)
+       RETURNING id, username, email, display_name, role, status, must_change_password, created_at, last_login_at`,
+      [data.username, data.email, passwordHash, canonicalRole, data.displayName?.trim() || null]
     );
     const user = mapUserRow(rows[0]);
     // Same-transaction as the INSERT above — a new user should never exist even
@@ -136,9 +140,9 @@ export async function updateUser(
   db: pg.Pool,
   actorUserId: number,
   targetId: number,
-  patch: { email?: string; role?: Role; status?: "active" | "disabled" }
+  patch: { email?: string; role?: Role; status?: "active" | "disabled"; displayName?: string }
 ): Promise<AdminUserRow> {
-  const { rows: existingRows } = await db.query(`SELECT email, role, status FROM users WHERE id = $1`, [targetId]);
+  const { rows: existingRows } = await db.query(`SELECT email, role, status, display_name FROM users WHERE id = $1`, [targetId]);
   const existing = existingRows[0];
   if (!existing) throw new UserError(404, "No user found with that id.");
   if (targetId === actorUserId && existing.role === "admin" && patch.role !== undefined && patch.role !== "admin") {
@@ -167,6 +171,10 @@ export async function updateUser(
     values.push(patch.status);
     sets.push(`status = $${values.length}`);
   }
+  if (patch.displayName !== undefined) {
+    values.push(patch.displayName.trim() || null);
+    sets.push(`display_name = $${values.length}`);
+  }
   if (sets.length === 0) throw new UserError(400, "Nothing to update.");
   values.push(targetId);
 
@@ -174,7 +182,7 @@ export async function updateUser(
   try {
     ({ rows } = await db.query(
       `UPDATE users SET ${sets.join(", ")} WHERE id = $${values.length}
-       RETURNING id, username, email, role, status, must_change_password, created_at, last_login_at`,
+       RETURNING id, username, email, display_name, role, status, must_change_password, created_at, last_login_at`,
       values
     ));
   } catch (err) {
@@ -195,6 +203,12 @@ export async function updateUser(
   }
   if (patch.email !== undefined && patch.email !== existing.email) {
     await logAudit(db, actorUserId, "email_change", targetId, { from: existing.email, to: patch.email });
+  }
+  if (patch.displayName !== undefined) {
+    const newDisplayName = patch.displayName.trim() || null;
+    if (newDisplayName !== existing.display_name) {
+      await logAudit(db, actorUserId, "display_name_change", targetId, { from: existing.display_name, to: newDisplayName });
+    }
   }
 
   return mapUserRow(rows[0]);
@@ -294,16 +308,23 @@ export async function replaceCenterAccess(
 // role name is a valid string here; actually checked against the roles table by
 // resolveActiveRole in createUser/updateUser above.
 const roleSchema = z.string().min(1);
+// Same 80-char cap as PATCH /api/auth/profile's own schema — one person, one limit,
+// whichever side sets it.
+const displayNameSchema = z.string().trim().min(1).max(80);
 const createUserSchema = z.object({
   username: z.string().min(3),
   email: z.string().email(),
   password: z.string().min(8),
-  role: roleSchema.optional().default("viewer")
+  role: roleSchema.optional().default("viewer"),
+  // Optional on create — falls back to the email-prefix rule (resolveDisplayName) when
+  // left blank, same as never having set one at all.
+  displayName: displayNameSchema.optional()
 });
 const patchUserSchema = z.object({
   email: z.string().email().optional(),
   role: roleSchema.optional(),
-  status: z.enum(["active", "disabled"]).optional()
+  status: z.enum(["active", "disabled"]).optional(),
+  displayName: displayNameSchema.optional()
 });
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
 const permissionsSchema = z.object({

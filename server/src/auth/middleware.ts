@@ -13,10 +13,20 @@ import { fetchCenterScope } from "./centerScope.js";
  *  `roles` table (routes/adminUsers.ts), not at the type level. */
 export type Role = string;
 
+/** Falls back to the part of `email` before "@" wherever `display_name` is null — every
+ *  caller that reads a user's display name (login, /me, admin's user list) goes through
+ *  this one function so the fallback rule can't drift between them. */
+export function resolveDisplayName(displayName: string | null, email: string): string {
+  return displayName ?? email.split("@")[0]!;
+}
+
 export interface AuthedUser {
   id: number;
   username: string;
   email: string;
+  /** Always a real, non-empty string — see resolveDisplayName's own comment for the
+   *  fallback that guarantees this even when the user has never set one. */
+  displayName: string;
   role: Role;
   mustChangePassword: boolean;
   /** `"module:action"` strings — see auth/permissions.ts's Permission type. A plain
@@ -80,10 +90,11 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     id: string;
     username: string;
     email: string;
+    display_name: string | null;
     role: Role;
     status: string;
     must_change_password: boolean;
-  }>(`SELECT id, username, email, role, status, must_change_password FROM users WHERE id = $1`, [payload.sub]);
+  }>(`SELECT id, username, email, display_name, role, status, must_change_password FROM users WHERE id = $1`, [payload.sub]);
   const row = rows[0];
   if (!row || row.status !== "active") return null;
 
@@ -102,6 +113,7 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     id: Number(row.id),
     username: row.username,
     email: row.email,
+    displayName: resolveDisplayName(row.display_name, row.email),
     role: row.role,
     mustChangePassword: row.must_change_password,
     permissions: new Set(permRows.map((p) => `${p.module}:${p.action}`)),

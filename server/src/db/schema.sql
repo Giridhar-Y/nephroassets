@@ -185,7 +185,12 @@ CREATE TABLE users (
   status                 TEXT NOT NULL DEFAULT 'active',
   must_change_password   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_login_at          TIMESTAMPTZ
+  last_login_at          TIMESTAMPTZ,
+  -- What the app actually greets/shows the user as — optional, an admin can set it at
+  -- creation or the user can set/change it themselves (PATCH /api/auth/profile). NULL
+  -- falls back to the part of `email` before "@" wherever it's displayed (see
+  -- auth/middleware.ts's resolveDisplayName), never shown as a raw blank.
+  display_name           TEXT
 );
 CREATE UNIQUE INDEX idx_users_username_ci ON users (LOWER(username));
 CREATE UNIQUE INDEX idx_users_email_ci ON users (LOWER(email));
