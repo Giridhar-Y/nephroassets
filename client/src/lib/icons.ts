@@ -54,5 +54,6 @@ export {
   AlertOnRegular as BellIcon,
   SaveRegular as SaveIcon,
   SaveCopyRegular as SaveAsNewIcon,
-  PersonRegular as PersonIcon
+  PersonRegular as PersonIcon,
+  MailRegular as MailIcon
 } from "@fluentui/react-icons";

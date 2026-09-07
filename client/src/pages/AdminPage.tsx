@@ -20,6 +20,7 @@ import { PermissionMatrix } from "../components/PermissionMatrix.js";
 import { AdminIcon, KeyIcon, LockIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Badge } from "../components/ui/Badge.js";
+import { RoleBadge, roleDisplayName } from "../components/ui/RoleBadge.js";
 import { useToast } from "../components/Toast.js";
 
 const INPUT_CLASS =
@@ -27,31 +28,8 @@ const INPUT_CLASS =
 const TH_CLASS = "px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600";
 const TD_CLASS = "px-3 py-2 text-sm text-ink";
 
-// The three built-in roles keep their existing distinct colors; any custom role (Roles
-// master, MastersPage.tsx) gets one consistent neutral badge — simpler than inventing a
-// color per custom role, and still visually distinguishes "one of the original three"
-// from "something someone defined".
-const BUILT_IN_ROLE_BADGE_CLASS: Record<string, string> = {
-  viewer: "bg-gray-100 text-gray-600",
-  editor: "bg-blue-100 text-blue-800",
-  admin: "bg-ink text-white"
-};
-const CUSTOM_ROLE_BADGE_CLASS = "bg-purple-100 text-purple-800";
-
-// Built-in role names are stored lowercase (matching every pre-existing user's `role`
-// column, from before Roles became a Master) — capitalized only for display. A custom
-// role keeps whatever casing its creator typed.
-function roleDisplayName(name: string): string {
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
 function StatusBadge({ status }: { status: AdminUser["status"] }) {
   return <Badge tone={status === "active" ? "success" : "neutral"}>{status === "active" ? "Active" : "Disabled"}</Badge>;
-}
-
-function RoleBadge({ role }: { role: Role }) {
-  const cls = BUILT_IN_ROLE_BADGE_CLASS[role.toLowerCase()] ?? CUSTOM_ROLE_BADGE_CLASS;
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{roleDisplayName(role)}</span>;
 }
 
 function RoleSelect({

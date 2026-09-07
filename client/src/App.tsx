@@ -9,7 +9,7 @@ import { DepreciationPostingPage } from "./pages/DepreciationPostingPage.js";
 import { TransferDepreciationReportPage } from "./pages/TransferDepreciationReportPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
-import { ChangePasswordPage } from "./pages/ChangePasswordPage.js";
+import { AccountPage } from "./pages/AccountPage.js";
 import { AdminPage } from "./pages/AdminPage.js";
 import { ActivityLogPage } from "./pages/ActivityLogPage.js";
 import { TransfersPage } from "./pages/TransfersPage.js";
@@ -40,7 +40,12 @@ export default function App() {
           <HashRouter>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/change-password" element={<ChangePasswordPage />} />
+              <Route path="/account" element={<AccountPage />} />
+              {/* /account was renamed from /change-password — this alias keeps the forced
+                  first-login flow (RequireAuth.tsx/LoginPage.tsx both still Navigate
+                  here for a mustChangePassword session) and any existing bookmarks
+                  working without touching those two files. */}
+              <Route path="/change-password" element={<Navigate to="/account" replace />} />
               <Route
                 element={
                   <RequireAuth>

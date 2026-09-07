@@ -1083,6 +1083,10 @@ export interface AuthUser {
   displayName: string;
   role: Role;
   mustChangePassword: boolean;
+  /** ISO timestamps, for the Account page's identity card. lastLoginAt is null for a
+   *  user who's never actually logged in yet (e.g. a freshly admin-created account). */
+  createdAt: string;
+  lastLoginAt: string | null;
   /** `"module:action"` strings — see server/src/auth/permissions.ts's PERMISSION_REGISTRY.
    *  The single source of truth for what this user can actually do; `role` above is a
    *  creation-time label only. Use lib/permissions.ts's `hasPermission` to check it. */
