@@ -14,7 +14,21 @@ let appReady: ReturnType<typeof buildApp> | undefined;
 
 async function getApp() {
   if (!appReady) {
-    appReady = (async () => {
+    // Real incident (2026-09-07): a schema migration threw on cold start (root cause
+    // still unconfirmed — a manual re-run of the exact same statement succeeded, which
+    // points at a transient issue in this specific execution context: concurrent-
+    // cold-start lock contention, per applySchema's own comment on a prior deadlock
+    // incident, rather than the SQL itself being wrong). Because `appReady` was cached
+    // unconditionally, that one failure permanently poisoned every warm instance that
+    // hit it — EVERY route, including /api/health, 500'd for as long as that instance
+    // stayed warm, turning a plausibly-transient hiccup into a sustained total outage
+    // that needed a manual Vercel rollback to clear. Catching here and resetting
+    // `appReady` to undefined on failure means the *next* request gets a fresh retry
+    // instead of reusing a dead promise — a transient failure now self-heals within a
+    // request or two; a genuinely persistent one still surfaces the same error (just
+    // repeatedly, not permanently cached), which is exactly the tradeoff you want for
+    // something DB-connectivity/migration-shaped.
+    const buildPromise = (async () => {
       const app = await buildApp();
       await applySchema();
       // Unlike the local/Render entry (index.ts), this defaults to NOT seeding — a
@@ -32,6 +46,10 @@ async function getApp() {
       await app.ready();
       return app;
     })();
+    buildPromise.catch(() => {
+      if (appReady === buildPromise) appReady = undefined;
+    });
+    appReady = buildPromise;
   }
   return appReady;
 }
