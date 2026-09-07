@@ -6,6 +6,7 @@ import { hasPermission, type Module } from "../lib/permissions.js";
 import { formatCompactIndianCount, formatDate } from "../lib/format.js";
 import { useToast } from "./Toast.js";
 import { NotificationsBell } from "./NotificationsBell.js";
+import { UserMenu } from "./UserMenu.js";
 import { LogoSymbol, Wordmark } from "./Logo.js";
 import { InstallAppButton } from "./InstallAppButton.js";
 import { IosInstallHint } from "./IosInstallHint.js";
@@ -127,15 +128,14 @@ function useGreeting(displayName: string | undefined): string | null {
   return greeting;
 }
 
-/** Links to the same Profile section Change Password already lives on (ChangePasswordPage.tsx)
- *  — the one discoverable place a signed-in user manages their own account, per that
- *  page's own comment on why the route stays named /change-password. */
+/** Links to /account (AccountPage.tsx) — same destination as the header's UserMenu
+ *  avatar dropdown, just a second, friendlier entry point to it. */
 function Greeting() {
   const { user } = useAuth();
   const greeting = useGreeting(user?.displayName);
   if (!greeting) return null;
   return (
-    <Link to="/change-password" className="text-sm font-medium text-white hover:underline" title="Manage your profile">
+    <Link to="/account" className="text-sm font-medium text-white hover:underline" title="Manage your account">
       {greeting}
     </Link>
   );
@@ -287,6 +287,7 @@ export function Layout() {
             )}
             <AsAtControl />
             <NotificationsBell />
+            <UserMenu />
           </header>
           <main className="min-h-0 flex-1 overflow-hidden print:h-auto print:overflow-visible">
             <Outlet />

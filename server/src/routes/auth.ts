@@ -47,8 +47,11 @@ export default async function authRoutes(app: FastifyInstance) {
       role: Role;
       must_change_password: boolean;
       status: string;
+      created_at: Date | string;
+      last_login_at: Date | string | null;
     }>(
-      `SELECT id, username, email, display_name, password_hash, role, must_change_password, status FROM users WHERE LOWER(username) = LOWER($1)`,
+      `SELECT id, username, email, display_name, password_hash, role, must_change_password, status, created_at, last_login_at
+       FROM users WHERE LOWER(username) = LOWER($1)`,
       [username]
     );
     const row = rows[0];
@@ -88,6 +91,11 @@ export default async function authRoutes(app: FastifyInstance) {
         email: row!.email,
         displayName: resolveDisplayName(row!.display_name, row!.email),
         role: row!.role,
+        createdAt: new Date(row!.created_at).toISOString(),
+        // Read before this request's own UPDATE above — reflects the *previous* login,
+        // which is what "Last login" should show right after signing in (the value
+        // once this session's own login has landed comes back on the next /me refresh).
+        lastLoginAt: row!.last_login_at ? new Date(row!.last_login_at).toISOString() : null,
         mustChangePassword: row!.must_change_password,
         permissions: permRows.map((p) => `${p.module}:${p.action}`),
         centerAccess: centerScope === null ? null : Array.from(centerScope)

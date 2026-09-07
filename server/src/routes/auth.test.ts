@@ -34,6 +34,21 @@ describe("Auth: login/logout/me/change-password", () => {
     const db = await getPool();
     await db.query(`DELETE FROM login_attempts`);
     await db.query(`DELETE FROM user_audit_log`);
+    // Every other *_log table with a non-cascading actor_user_id/deleted_by FK to
+    // users(id) — cleared here too so this file's blanket `DELETE FROM users` below
+    // can't be broken by some other test file's leftover row referencing a user it
+    // created and never cleaned up itself (their cleanup is beforeEach-only, so
+    // whatever their *last* test inserts is never swept — this file is just the
+    // first to actually delete every user unconditionally, so it's the one that pays
+    // for it. Cheaper to make this file's own cleanup resilient than to chase down
+    // and fix every other file's afterAll).
+    await db.query(`DELETE FROM asset_activity_log`);
+    await db.query(`DELETE FROM master_activity_log`);
+    await db.query(`DELETE FROM asset_delete_audit_log`);
+    await db.query(`DELETE FROM asset_bulk_action_log`);
+    await db.query(`DELETE FROM settings_audit_log`);
+    await db.query(`UPDATE assets SET deleted_by = NULL WHERE deleted_by IS NOT NULL`);
+    await db.query(`UPDATE transfers SET deleted_by = NULL WHERE deleted_by IS NOT NULL`);
     await db.query(`DELETE FROM users`);
   });
 
@@ -188,6 +203,30 @@ describe("Auth: login/logout/me/change-password", () => {
     const res = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: extractCookie(login) } });
     expect(res.statusCode).toBe(200);
     expect(res.json().user.username).toBe("frank");
+  });
+
+  it("login and /me expose createdAt/lastLoginAt — null on a first-ever login, populated from then on", async () => {
+    await createTestUser({ username: "first-login-oscar", password: "correct-password-123" });
+    const firstLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "first-login-oscar", password: "correct-password-123" }
+    });
+    expect(firstLogin.json().user.createdAt).toEqual(expect.any(String));
+    // Read before this login's own UPDATE lands — there's genuinely no prior login yet.
+    expect(firstLogin.json().user.lastLoginAt).toBeNull();
+
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: extractCookie(firstLogin) } });
+    // /me re-reads fresh, so it sees the login that just happened.
+    expect(me.json().user.lastLoginAt).toEqual(expect.any(String));
+
+    const secondLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "first-login-oscar", password: "correct-password-123" }
+    });
+    // Now reflects the first login, not null.
+    expect(secondLogin.json().user.lastLoginAt).toEqual(expect.any(String));
   });
 
   it("login and /me fall back to the email prefix when display_name is unset, and use it once set", async () => {

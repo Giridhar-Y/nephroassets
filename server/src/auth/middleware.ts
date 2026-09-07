@@ -29,6 +29,14 @@ export interface AuthedUser {
   displayName: string;
   role: Role;
   mustChangePassword: boolean;
+  /** ISO timestamps — surfaced for the Account page's identity card ("Member since",
+   *  "Last login"), the same transparency instinct as everywhere else in this app: a
+   *  user can see at a glance who the system thinks they are and when they last got
+   *  in, which doubles as a security cue if a login time looks wrong. lastLoginAt is
+   *  null for a user who's never actually logged in yet (e.g. a freshly admin-created
+   *  account, temp password unused). */
+  createdAt: string;
+  lastLoginAt: string | null;
   /** `"module:action"` strings — see auth/permissions.ts's Permission type. A plain
    *  Set for O(1) `requirePermission` lookups; the `/api/auth/me` response serializes
    *  it back out as an array for the client. */
@@ -94,7 +102,13 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     role: Role;
     status: string;
     must_change_password: boolean;
-  }>(`SELECT id, username, email, display_name, role, status, must_change_password FROM users WHERE id = $1`, [payload.sub]);
+    created_at: Date | string;
+    last_login_at: Date | string | null;
+  }>(
+    `SELECT id, username, email, display_name, role, status, must_change_password, created_at, last_login_at
+     FROM users WHERE id = $1`,
+    [payload.sub]
+  );
   const row = rows[0];
   if (!row || row.status !== "active") return null;
 
@@ -115,6 +129,8 @@ export async function resolveUser(req: FastifyRequest): Promise<AuthedUser | nul
     email: row.email,
     displayName: resolveDisplayName(row.display_name, row.email),
     role: row.role,
+    createdAt: new Date(row.created_at).toISOString(),
+    lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null,
     mustChangePassword: row.must_change_password,
     permissions: new Set(permRows.map((p) => `${p.module}:${p.action}`)),
     centerScope
