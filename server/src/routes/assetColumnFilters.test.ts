@@ -52,6 +52,21 @@ describe("buildConditionSql: text operators", () => {
     const built = buildConditionSql({ columnId: "farId", op: "gt", value: "1" }, [], FY);
     expect(built).toHaveProperty("error");
   });
+
+  // D365-style "is any of" — the paste-multiple-values feature. value is an array only
+  // for this op; every other op above still sends (and still gets tested with) a plain
+  // string, so this is additive.
+  it("in binds an array param for = ANY(...)", () => {
+    const params: unknown[] = [];
+    const built = buildConditionSql({ columnId: "farId", op: "in", value: ["FAR-1", "FAR-2", "FAR-3"] }, params, FY);
+    expect(built).toEqual({ sql: "far_id = ANY($1)" });
+    expect(params).toEqual([["FAR-1", "FAR-2", "FAR-3"]]);
+  });
+
+  it("in rejects an empty or missing list rather than matching everything", () => {
+    expect(buildConditionSql({ columnId: "farId", op: "in", value: [] }, [], FY)).toHaveProperty("error");
+    expect(buildConditionSql({ columnId: "farId", op: "in" }, [], FY)).toHaveProperty("error");
+  });
 });
 
 describe("buildConditionSql: number operators", () => {
@@ -78,6 +93,18 @@ describe("buildConditionSql: number operators", () => {
     expect(buildConditionSql({ columnId: "qty", op: "gte", value: "5" }, [], FY)).toEqual({ sql: "qty >= $1" });
     expect(buildConditionSql({ columnId: "qty", op: "lt", value: "5" }, [], FY)).toEqual({ sql: "qty < $1" });
     expect(buildConditionSql({ columnId: "qty", op: "lte", value: "5" }, [], FY)).toEqual({ sql: "qty <= $1" });
+  });
+
+  it("in coerces every list entry to a number and binds the array", () => {
+    const params: unknown[] = [];
+    const built = buildConditionSql({ columnId: "qty", op: "in", value: [1, "2", 3] }, params, FY);
+    expect(built).toEqual({ sql: "qty = ANY($1)" });
+    expect(params).toEqual([[1, 2, 3]]);
+  });
+
+  it("in rejects a list with a non-numeric entry", () => {
+    const built = buildConditionSql({ columnId: "qty", op: "in", value: ["1", "not-a-number"] }, [], FY);
+    expect(built).toHaveProperty("error");
   });
 });
 
@@ -167,6 +194,27 @@ describe("conditionsQuerySchema", () => {
     const result = conditionsQuerySchema.safeParse(JSON.stringify({ columnId: "farId" }));
     expect(result.success).toBe(false);
   });
+
+  // Regression coverage for the "in" op's schema change: value went from string|number
+  // to string|number|(string|number)[] — an OLD saved link/condition with a plain scalar
+  // value (every op except "in") must still parse exactly as before.
+  it("still parses a plain scalar value (a saved link from before the 'in' op existed)", () => {
+    const result = conditionsQuerySchema.safeParse(JSON.stringify([{ columnId: "c1Nbv", op: "gt", value: 500000 }]));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toEqual([{ columnId: "c1Nbv", op: "gt", value: 500000 }]);
+  });
+
+  it("parses an array value for the 'in' op", () => {
+    const result = conditionsQuerySchema.safeParse(JSON.stringify([{ columnId: "farId", op: "in", value: ["FAR-1", "FAR-2"] }]));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toEqual([{ columnId: "farId", op: "in", value: ["FAR-1", "FAR-2"] }]);
+  });
+
+  it("rejects an 'in' list past the 500-value cap", () => {
+    const tooMany = Array.from({ length: 501 }, (_, i) => `FAR-${i}`);
+    const result = conditionsQuerySchema.safeParse(JSON.stringify([{ columnId: "farId", op: "in", value: tooMany }]));
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("describeCondition: plain-language filter descriptions for the export note", () => {
@@ -185,6 +233,20 @@ describe("describeCondition: plain-language filter descriptions for the export n
   it("text: blank/notBlank need no quoted value", () => {
     expect(describeCondition({ columnId: "serialNo", op: "blank" })).toBe("Serial No: is blank");
     expect(describeCondition({ columnId: "serialNo", op: "notBlank" })).toBe("Serial No: is not blank");
+  });
+
+  it("text: in lists every value when short, truncates with a count when long", () => {
+    expect(describeCondition({ columnId: "farId", op: "in", value: ["FAR-1", "FAR-2"] })).toBe("FAR ID: is any of FAR-1, FAR-2");
+    const many = Array.from({ length: 6 }, (_, i) => `FAR-${i}`);
+    expect(describeCondition({ columnId: "farId", op: "in", value: many })).toBe(
+      "FAR ID: is any of FAR-0, FAR-1, FAR-2, FAR-3 and 2 more"
+    );
+  });
+
+  it("number: in formats every value like a single equals would", () => {
+    expect(describeCondition({ columnId: "c1Nbv", op: "in", value: [100000, 200000] })).toBe(
+      "C1 NBV: is any of ₹1,00,000, ₹2,00,000"
+    );
   });
 
   it("number: money columns format as Indian-grouped rupees", () => {

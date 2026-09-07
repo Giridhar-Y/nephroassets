@@ -28,10 +28,12 @@ import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
 import { RequirePermission } from "./components/RequirePermission.js";
 import { ToastProvider } from "./components/Toast.js";
+import { NotificationsProvider } from "./lib/NotificationsContext.js";
 
 export default function App() {
   return (
     <ToastProvider>
+    <NotificationsProvider>
     <AuthProvider>
       <SettingsProvider>
         <FiltersProvider>
@@ -238,6 +240,7 @@ export default function App() {
         </FiltersProvider>
       </SettingsProvider>
     </AuthProvider>
+    </NotificationsProvider>
     </ToastProvider>
   );
 }

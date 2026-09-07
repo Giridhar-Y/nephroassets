@@ -1,6 +1,8 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { FilterIcon } from "../lib/icons.js";
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { DismissIcon, FilterIcon } from "../lib/icons.js";
 import {
+  MAX_IN_VALUES,
+  MULTI_VALUE_OPS,
   NO_VALUE_OPS,
   OPERATORS_BY_TYPE,
   TWO_VALUE_OPS,
@@ -8,6 +10,16 @@ import {
   type ColumnCondition,
   type ColumnFilterType
 } from "../lib/columnFilters.js";
+
+// Splits a paste on newlines/tabs (an Excel column or row copies as either, depending on
+// how many cells were selected) into trimmed, non-empty tokens — 2+ tokens is what
+// triggers the "is any of" auto-switch; a single-line paste behaves exactly like typing.
+function parsePastedList(text: string): string[] {
+  return text
+    .split(/[\r\n\t]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 /** Excel-style filter: a small icon button in a column header that toggles a popover
  *  holding the actual control. `active` highlights the icon so users can see at a glance
@@ -256,15 +268,51 @@ export function ConditionFilterPanel({
   );
   const needsValue = !NO_VALUE_OPS.has(draft.op);
   const needsSecondValue = TWO_VALUE_OPS.has(draft.op);
+  const isMulti = MULTI_VALUE_OPS.has(draft.op);
   const inputType = type === "date" ? "date" : type === "number" ? "number" : "text";
   const opId = useId();
   const valueId = useId();
+  const [chipDraft, setChipDraft] = useState("");
+  const [pasteError, setPasteError] = useState<string | null>(null);
 
   function commit(patch: Partial<Pick<ColumnCondition, "op" | "value" | "valueTo">>) {
     const next: ColumnCondition = { ...draft, ...patch };
     setDraft(next);
     onChange(isConditionComplete(next) ? next : undefined);
   }
+
+  // Numbers only keep tokens that actually parse — a stray non-numeric line in a pasted
+  // list is silently dropped rather than blocking the whole paste (an empty token was
+  // already filtered out by parsePastedList); text columns keep every token as-is.
+  function cleanTokens(tokens: string[]): string[] {
+    return type === "number" ? tokens.filter((t) => Number.isFinite(Number(t))) : tokens;
+  }
+
+  function addValues(newValues: string[]) {
+    const existing = Array.isArray(draft.value) ? draft.value : [];
+    const merged = Array.from(new Set([...existing, ...cleanTokens(newValues)]));
+    if (merged.length === 0) return;
+    if (merged.length > MAX_IN_VALUES) {
+      setPasteError(`That's ${merged.length} values — the limit is ${MAX_IN_VALUES}. Trim the list and try again.`);
+      return;
+    }
+    setPasteError(null);
+    commit({ op: "in", value: merged });
+  }
+
+  // Pasting 2+ newline/tab-separated values into ANY value field (not just once already
+  // in "is any of" mode) auto-detects the list and switches modes — this is the "paste a
+  // column copied from Excel" entry point the plain single-value input doesn't otherwise
+  // have a reason to special-case.
+  function handlePaste(e: ClipboardEvent<HTMLInputElement>) {
+    const tokens = parsePastedList(e.clipboardData.getData("text"));
+    if (tokens.length < 2) return;
+    e.preventDefault();
+    addValues(tokens);
+  }
+
+  const multiValues = isMulti && Array.isArray(draft.value) ? draft.value : [];
+  const isDirty = isMulti ? multiValues.length > 0 : Boolean(draft.value) || Boolean(draft.valueTo) || draft.op !== operators[0]!.value;
 
   return (
     <div className="flex flex-col gap-2">
@@ -276,7 +324,10 @@ export function ConditionFilterPanel({
           id={opId}
           className={FIELD_INPUT_CLASS}
           value={draft.op}
-          onChange={(e) => commit({ op: e.target.value as ColumnCondition["op"], value: undefined, valueTo: undefined })}
+          onChange={(e) => {
+            setPasteError(null);
+            commit({ op: e.target.value as ColumnCondition["op"], value: undefined, valueTo: undefined });
+          }}
         >
           {operators.map((o) => (
             <option key={o.value} value={o.value}>
@@ -285,15 +336,52 @@ export function ConditionFilterPanel({
           ))}
         </select>
       </div>
-      {needsValue && (
+      {needsValue && isMulti && (
+        <div className="flex flex-col gap-1">
+          <div className="flex min-h-[2rem] flex-wrap gap-1 rounded-md border border-gray-300 p-1.5 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent">
+            {multiValues.map((v) => (
+              <span key={v} className="flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-ink">
+                {v}
+                <button
+                  type="button"
+                  aria-label={`Remove ${v}`}
+                  className="text-gray-400 hover:text-ink"
+                  onClick={() => commit({ op: "in", value: multiValues.filter((x) => x !== v) })}
+                >
+                  <DismissIcon fontSize={10} />
+                </button>
+              </span>
+            ))}
+            <input
+              type="text"
+              aria-label={`${label} value`}
+              autoFocus
+              className="min-w-[100px] flex-1 border-none p-0 text-xs outline-none focus:ring-0"
+              placeholder={multiValues.length === 0 ? "Paste or type values…" : "Add another…"}
+              value={chipDraft}
+              onChange={(e) => setChipDraft(e.target.value)}
+              onPaste={handlePaste}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || !chipDraft.trim()) return;
+                e.preventDefault();
+                addValues([chipDraft.trim()]);
+                setChipDraft("");
+              }}
+            />
+          </div>
+          {pasteError && <p className="text-[10px] font-medium text-accent-hover">{pasteError}</p>}
+        </div>
+      )}
+      {needsValue && !isMulti && (
         <input
           id={valueId}
           type={inputType}
           aria-label={`${label} value`}
           autoFocus
           className={FIELD_INPUT_CLASS}
-          value={draft.value ?? ""}
+          value={typeof draft.value === "string" ? draft.value : ""}
           onChange={(e) => commit({ value: e.target.value })}
+          onPaste={handlePaste}
         />
       )}
       {needsSecondValue && (
@@ -306,11 +394,13 @@ export function ConditionFilterPanel({
           onChange={(e) => commit({ valueTo: e.target.value })}
         />
       )}
-      {(draft.value || draft.valueTo || draft.op !== operators[0]!.value) && (
+      {isDirty && (
         <ClearButton
           onClick={() => {
             const cleared: ColumnCondition = { columnId, type, op: operators[0]!.value, value: undefined, valueTo: undefined };
             setDraft(cleared);
+            setChipDraft("");
+            setPasteError(null);
             onChange(undefined);
           }}
         />

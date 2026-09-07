@@ -269,6 +269,7 @@ const TEXT_OP_PHRASES: Record<string, string> = {
   notContains: "does not contain",
   beginsWith: "begins with",
   endsWith: "ends with",
+  in: "is any of",
   blank: "is blank",
   notBlank: "is not blank"
 };
@@ -280,9 +281,17 @@ const NUMBER_OP_PHRASES: Record<string, string> = {
   gte: "greater than or equal to",
   lt: "less than",
   lte: "less than or equal to",
+  in: "is any of",
   blank: "is blank",
   notBlank: "is not blank"
 };
+
+// "A, B, C" for a short list, "A, B, C and 4 more" once it'd otherwise make the summary
+// line unreadable — shared by describeCondition's text/number "in" branches below.
+function joinValueList(values: string[]): string {
+  if (values.length <= 4) return values.join(", ");
+  return `${values.slice(0, 4).join(", ")} and ${values.length - 4} more`;
+}
 
 const DATE_OP_PHRASES: Record<string, string> = {
   equals: "on",
@@ -309,11 +318,15 @@ export function describeCondition(cond: RawCondition): string {
   if (type === "text") {
     const phrase = TEXT_OP_PHRASES[cond.op] ?? cond.op;
     if (cond.op === "blank" || cond.op === "notBlank") return `${label}: ${phrase}`;
+    if (Array.isArray(cond.value)) return `${label}: ${phrase} ${joinValueList(cond.value.map(String))}`;
     return `${label}: ${phrase} "${cond.value ?? ""}"`;
   }
   if (type === "number") {
     const phrase = NUMBER_OP_PHRASES[cond.op];
     if (cond.op === "blank" || cond.op === "notBlank") return `${label}: ${phrase}`;
+    if (Array.isArray(cond.value)) {
+      return `${label}: ${phrase} ${joinValueList(cond.value.map((v) => formatFilterNumber(cond.columnId, v)))}`;
+    }
     if (cond.op === "between") {
       return `${label}: between ${formatFilterNumber(cond.columnId, cond.value)} and ${formatFilterNumber(cond.columnId, cond.valueTo)}`;
     }

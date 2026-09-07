@@ -10,10 +10,21 @@ import { z } from "zod";
 // bug in one, still present in the other).
 export type ColumnFilterType = "text" | "number" | "date";
 
+// A D365-style "is any of" list filter (paste a column of values copied from Excel) —
+// `value` becomes an ARRAY only for the "in" op; every other op still sends a plain
+// scalar, so this is additive, not a breaking change to the shape. `.max(500)` here is
+// the server-side half of the cap (the client's own paste handler is the primary,
+// UX-facing one — this is defense in depth against a hand-crafted request bypassing
+// it), enforced as a clean validation error via makeConditionsQuerySchema's existing
+// catch-all, not a silent truncation.
+const conditionValueSchema = z.union([z.string(), z.number(), z.array(z.union([z.string(), z.number()])).min(1).max(500)]);
+
 const rawConditionSchema = z.object({
   columnId: z.string(),
   op: z.string(),
-  value: z.union([z.string(), z.number()]).optional(),
+  value: conditionValueSchema.optional(),
+  // valueTo is never an array — no operator takes a value list AND a second bound at
+  // once (an "in" op has no "to"; "between" takes two plain scalars).
   valueTo: z.union([z.string(), z.number()]).optional()
 });
 export type RawCondition = z.infer<typeof rawConditionSchema>;
@@ -67,6 +78,14 @@ export function buildConditionSqlCore(
   if (cond.op === "notBlank") return { sql: type === "text" ? `(${sql} IS NOT NULL AND ${sql} <> '')` : `${sql} IS NOT NULL` };
 
   if (type === "text") {
+    // "in" is the one op whose value is an array, not a scalar — handled up front so
+    // every other case below can keep treating cond.value as a plain string like before.
+    if (cond.op === "in") {
+      if (!Array.isArray(cond.value) || cond.value.length === 0) {
+        return { error: `"is any of" needs at least one value for column "${cond.columnId}".` };
+      }
+      return { sql: `${sql} = ANY(${pushParam(params, cond.value.map(String))})` };
+    }
     const v = String(cond.value ?? "");
     switch (cond.op) {
       case "equals":
@@ -87,6 +106,14 @@ export function buildConditionSqlCore(
   }
 
   if (type === "number") {
+    if (cond.op === "in") {
+      if (!Array.isArray(cond.value) || cond.value.length === 0) {
+        return { error: `"is any of" needs at least one value for column "${cond.columnId}".` };
+      }
+      const nums = cond.value.map(Number);
+      if (nums.some((x) => !Number.isFinite(x))) return { error: `Invalid numeric value in the list for column "${cond.columnId}".` };
+      return { sql: `${sql} = ANY(${pushParam(params, nums)})` };
+    }
     const n = Number(cond.value);
     if (!Number.isFinite(n)) return { error: `Invalid numeric value for column "${cond.columnId}".` };
     switch (cond.op) {

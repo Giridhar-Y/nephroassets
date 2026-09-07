@@ -3,9 +3,14 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useExport } from "./useExport.js";
 import { ToastProvider } from "../components/Toast.js";
+import { NotificationsProvider } from "../lib/NotificationsContext.js";
 
 function wrapper({ children }: { children: ReactNode }) {
-  return <ToastProvider>{children}</ToastProvider>;
+  return (
+    <ToastProvider>
+      <NotificationsProvider>{children}</NotificationsProvider>
+    </ToastProvider>
+  );
 }
 
 function okResponse(filename: string): Response {
