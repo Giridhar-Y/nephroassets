@@ -39,6 +39,17 @@ export function SettingsPage() {
     else if (notConfigured) setForm(BLANK_FORM);
   }, [settings, notConfigured, form]);
 
+  // The header's own "Figures as of" control (AsAtControl in Layout.tsx) reads/writes
+  // this same asAt straight from SettingsContext, so it updates the instant it changes
+  // there. This page's `form` above is a local draft (fyStart/fyEnd/daysInFy edits stay
+  // unsaved until "Save Settings"), seeded from `settings` only once — without this
+  // effect, a header-driven asAt change while this page is already mounted would never
+  // reach `form`, leaving the two controls showing different dates. Only asAt is synced
+  // here so an in-progress, unsaved edit to fyStart/fyEnd isn't discarded by it.
+  useEffect(() => {
+    if (settings) setForm((prev) => (prev ? { ...prev, asAt: settings.asAt } : prev));
+  }, [settings?.asAt]);
+
   if (loading || !form) {
     return (
       <div className="flex h-full items-center justify-center bg-white">
