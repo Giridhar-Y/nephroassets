@@ -892,7 +892,23 @@ export default async function assetsRoutes(app: FastifyInstance) {
       values.push(input.parentFarId);
     }
     values.push(farId);
-    await db.query(`UPDATE assets SET ${setClauses.join(", ")} WHERE far_id = $${values.length}`, values);
+    // Re-guards the same "no existing addition, not disposed" condition already checked
+    // above, at write time — the read above and this write aren't in one transaction, so
+    // two concurrent requests for the same FAR ID could otherwise both pass that check
+    // before either writes, and the second UPDATE would silently overwrite the first's
+    // addition instead of being rejected. Same conditional-UPDATE pattern
+    // disposalWriteOff.ts's applyFullDisposal already uses for the identical race.
+    const { rows: updated } = await db.query<{ far_id: string }>(
+      `UPDATE assets SET ${setClauses.join(", ")}
+       WHERE far_id = $${values.length} AND date_of_disposal IS NULL
+         AND additions_c1 = 0 AND additions_c2 = 0 AND date_of_addition IS NULL
+       RETURNING far_id`,
+      values
+    );
+    if (updated.length === 0) {
+      reply.code(409);
+      return { error: `Asset "${farId}" already has an addition recorded, or was disposed, since this request started — reload and try again.` };
+    }
     await logAssetActivity(db, {
       actorUserId: req.user!.id,
       action: "addition_create",

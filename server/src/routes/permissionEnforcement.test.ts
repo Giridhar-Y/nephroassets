@@ -33,8 +33,7 @@ interface RouteCase {
 // route it gates. Deliberately excludes capitalization/additions/disposals/assetHistory's
 // own `view` actions (approved as client-nav-visibility-only — see this phase's own
 // investigation: those pages all read through the same GET /api/assets that
-// register:view already gates, so there's no second server boundary to test) and
-// PATCH /api/settings/as-at (deliberately ungated, every authenticated role uses it).
+// register:view already gates, so there's no second server boundary to test).
 //
 // Path params point at ids/FAR IDs that don't exist and bodies are empty/minimal —
 // irrelevant to what's being proven here: requirePermission's preHandler runs before
@@ -104,7 +103,13 @@ const GATED: Record<string, RouteCase[]> = {
     { method: "POST", url: "/api/masters/sub-classifications/bulk-upload", multipart: true },
     { method: "POST", url: "/api/masters/statuses/bulk-upload", multipart: true }
   ],
-  "settings:view": [{ method: "GET", url: "/api/settings" }],
+  // as-at was deliberately ungated until this session's security review found it writes
+  // a single SHARED settings row (no per-user scoping — see settings.ts's own comment on
+  // this route) that other requests fall back to when they omit their own asAt; gated on
+  // settings:view now, the same base permission GET /api/settings already requires and
+  // every built-in role template already grants, so it changes nothing for the
+  // viewer/editor/admin templates.
+  "settings:view": [{ method: "GET", url: "/api/settings" }, { method: "PATCH", url: "/api/settings/as-at", payload: { asAt: "2020-01-01" } }],
   "settings:edit": [
     { method: "PUT", url: "/api/settings" },
     { method: "PATCH", url: "/api/settings/days-in-fy" },
@@ -120,11 +125,6 @@ const GATED: Record<string, RouteCase[]> = {
     { method: "PUT", url: "/api/admin/users/999999/permissions", payload: { grants: [] } }
   ]
 };
-
-// Every route in this app that requires SOME session but isn't part of the module/action
-// permission model at all — see auth/permissions.ts's own comment on why. Any
-// authenticated user, regardless of permissions, must reach these.
-const DELIBERATELY_UNGATED: RouteCase[] = [{ method: "PATCH", url: "/api/settings/as-at", payload: { asAt: "2020-01-01" } }];
 
 describe("Permission enforcement — every (module, action) pair, at the API level", () => {
   let app: FastifyInstance;
@@ -208,18 +208,6 @@ describe("Permission enforcement — every (module, action) pair, at the API lev
       );
     });
   }
-
-  describe("deliberately ungated routes", () => {
-    it.each(DELIBERATELY_UNGATED.map((r) => [`${r.method} ${r.url}`, r] as const))(
-      "any authenticated user, even with zero permissions, reaches %s",
-      async (_label, route) => {
-        const bare = await userWithNoPermissions();
-        const res = await inject(bare, route);
-        expect(res.statusCode).not.toBe(401);
-        expect(res.statusCode).not.toBe(403);
-      }
-    );
-  });
 
   // The specific, previously-real gap this phase closes: Masters writes had NO server
   // gate at all before this phase (see Phase 2's own investigation) — only the client UI

@@ -60,8 +60,16 @@ export default async function settingsRoutes(app: FastifyInstance) {
 
   // Lightweight AS_AT-only change — the header's "Figures as of" picker (every role,
   // used constantly), split out from the now-admin-only PUT above so gating FY Start/End
-  // doesn't also lock non-admins out of the app's single most-used control.
-  app.patch("/api/settings/as-at", async (req, reply) => {
+  // doesn't also lock non-admins out of the app's single most-used control. Gated on
+  // settings:view (not settings:edit) — the same base permission GET /api/settings
+  // already requires, and one every built-in role template already grants, so this
+  // changes nothing for viewer/editor/admin. It matters for a custom role built via the
+  // Roles Master with no settings access at all: this writes a single SHARED row
+  // (`settings.as_at`, no per-user scoping — see schema.sql), not a personal session
+  // preference, despite reading like one from the UI; every request that omits its own
+  // asAt (assets.ts's `GET /api/assets`, reports, exports) falls back to this row, so it
+  // must not be reachable by literally anyone with a valid cookie and nothing else.
+  app.patch("/api/settings/as-at", { preHandler: requirePermission("settings", "view") }, async (req, reply) => {
     const parsed = z.object({ asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);

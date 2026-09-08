@@ -33,11 +33,30 @@ export async function buildApp(): Promise<FastifyInstance> {
   // credentials:true is what makes the browser actually send/accept the session cookie
   // on cross-origin requests — needed in local dev, where Vite's client dev server
   // (5173) and this API (4000) are different origins even though Vite's own /api proxy
-  // makes most requests same-origin in practice; harmless in production, where Vercel's
-  // rewrites put both behind one origin anyway.
-  await app.register(cors, { origin: true, credentials: true });
+  // makes most requests same-origin in practice. origin:true (reflect any Origin) is
+  // scoped to non-production only — reflecting every origin with credentials:true is a
+  // real CORS misconfiguration (any site's fetch("...", {credentials:"include"}) would
+  // get a CORS-readable response, only partially mitigated by the cookie's own
+  // sameSite:"lax", see session.ts). Production never needs it at all — Vercel's
+  // rewrites put the API and client behind one origin, so origin:false (no CORS headers)
+  // is both safer and functionally identical there, since same-origin requests aren't
+  // subject to CORS in the first place.
+  await app.register(cors, { origin: process.env.NODE_ENV === "production" ? false : true, credentials: true });
   await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
+
+  // Baseline security headers on every response — no dependency needed for a handful of
+  // static values (a full helmet install would also default-enable a Content-Security-
+  // Policy, which needs per-app tuning against actual script/style sources to avoid
+  // breaking the client, not a blind enable here). HSTS is harmless to send over plain
+  // HTTP too (browsers only honor it on HTTPS responses), so it isn't gated on NODE_ENV.
+  app.addHook("onSend", async (_req, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    return payload;
+  });
 
   // Populated by authGateHook below for every authenticated request; stays null for the
   // handful of public paths (login, health) that never reach a valid session.
