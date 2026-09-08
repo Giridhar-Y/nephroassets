@@ -2,7 +2,15 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { mapAssetRow, mapSettingsRow, type AssetRow, type SettingsRow } from "../db/mappers.js";
-import { bulkDate, isoToDDMMYYYY, loadWorksheet, mergePreviewRows, parseWorksheetRows, stringifyRowData } from "./bulkParse.js";
+import {
+  bulkDate,
+  isoToDDMMYYYY,
+  loadWorksheet,
+  MAX_BULK_UPLOAD_FILE_SIZE_BYTES,
+  mergePreviewRows,
+  parseWorksheetRows,
+  stringifyRowData
+} from "./bulkParse.js";
 import { computeWdvAtDisposal, disposeWithChildren } from "./disposalWriteOff.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
@@ -20,7 +28,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
   // (deletions = the asset's entire capitalized cost, status forced to Disposed),
   // applied to every row in a CSV/XLSX instead of one asset at a time.
   app.post("/api/assets/bulk-dispose", { preHandler: requirePermission("bulkUpload", "disposals") }, async (req, reply) => {
-    const file = await req.file();
+    const file = await req.file({ limits: { fileSize: MAX_BULK_UPLOAD_FILE_SIZE_BYTES } });
     if (!file) {
       reply.code(400);
       return { error: "No file was uploaded." };

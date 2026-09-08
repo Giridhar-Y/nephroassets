@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { DismissIcon, FilterIcon } from "../lib/icons.js";
+import { SEARCH_DEBOUNCE_MS } from "../hooks/useDebouncedValue.js";
 import {
   MAX_IN_VALUES,
   MULTI_VALUE_OPS,
@@ -274,11 +275,28 @@ export function ConditionFilterPanel({
   const valueId = useId();
   const [chipDraft, setChipDraft] = useState("");
   const [pasteError, setPasteError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => clearTimeout(debounceRef.current ?? undefined), []);
 
   function commit(patch: Partial<Pick<ColumnCondition, "op" | "value" | "valueTo">>) {
+    clearTimeout(debounceRef.current ?? undefined);
     const next: ColumnCondition = { ...draft, ...patch };
     setDraft(next);
     onChange(isConditionComplete(next) ? next : undefined);
+  }
+
+  // Same as commit() above, but debounced — draft (what the input displays) still
+  // updates immediately, so typing never lags; only onChange (which flows to
+  // RegisterPage's setCondition -> setFilter -> useAssetList's fetch) waits for typing to
+  // pause, so a 10-character value doesn't fire 10 rapid-fire queries against a 220k-row
+  // table. Used only by the two raw-text/number value inputs below — every other commit()
+  // call site (the operator dropdown, "is any of" chip add/remove) is a single, deliberate
+  // action that should still apply instantly, not lag behind an artificial delay.
+  function commitValueDebounced(patch: Partial<Pick<ColumnCondition, "value" | "valueTo">>) {
+    const next: ColumnCondition = { ...draft, ...patch };
+    setDraft(next);
+    clearTimeout(debounceRef.current ?? undefined);
+    debounceRef.current = setTimeout(() => onChange(isConditionComplete(next) ? next : undefined), SEARCH_DEBOUNCE_MS);
   }
 
   // Numbers only keep tokens that actually parse — a stray non-numeric line in a pasted
@@ -380,7 +398,7 @@ export function ConditionFilterPanel({
           autoFocus
           className={FIELD_INPUT_CLASS}
           value={typeof draft.value === "string" ? draft.value : ""}
-          onChange={(e) => commit({ value: e.target.value })}
+          onChange={(e) => commitValueDebounced({ value: e.target.value })}
           onPaste={handlePaste}
         />
       )}
@@ -391,7 +409,7 @@ export function ConditionFilterPanel({
           placeholder="and…"
           className={FIELD_INPUT_CLASS}
           value={draft.valueTo ?? ""}
-          onChange={(e) => commit({ valueTo: e.target.value })}
+          onChange={(e) => commitValueDebounced({ valueTo: e.target.value })}
         />
       )}
       {isDirty && (

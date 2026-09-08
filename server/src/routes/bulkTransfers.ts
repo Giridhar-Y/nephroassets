@@ -8,6 +8,7 @@ import {
   loadActiveMasterMaps,
   loadWorksheet,
   lookupCanonical,
+  MAX_BULK_UPLOAD_FILE_SIZE_BYTES,
   mergePreviewRows,
   parseWorksheetRows,
   stringifyRowData,
@@ -77,7 +78,7 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
   // denormalized location update per asset), but each row can move to a different
   // center/date — the single endpoint only supports one shared destination per batch.
   app.post("/api/transfers/bulk-upload", { preHandler: requirePermission("bulkUpload", "transfers") }, async (req, reply) => {
-    const file = await req.file();
+    const file = await req.file({ limits: { fileSize: MAX_BULK_UPLOAD_FILE_SIZE_BYTES } });
     if (!file) {
       reply.code(400);
       return { error: "No file was uploaded." };

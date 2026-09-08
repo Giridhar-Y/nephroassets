@@ -18,6 +18,7 @@ import {
 } from "./assetColumnFilters.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { buildExceptionPredicate, EXCEPTION_KEYS, EXCEPTION_LABELS } from "./exceptionPredicates.js";
+import { acquireExportSlot, releaseExportSlot } from "./exportConcurrency.js";
 
 // Every Component 2 export column key — mirrors client/src/lib/columns.ts's
 // C2_COLUMN_IDS (minus expiryDateC1/C2, which are Register-screen-only, never
@@ -582,6 +583,18 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     const q = parsed.data;
     const db = await getPool();
 
+    // Concurrent-export guard — see exportConcurrency.ts for the full reasoning. Checked
+    // before any real work starts (the settings lookup just below is cheap, but the
+    // row-count/totals queries a few lines further down are exactly the CPU-heavy
+    // far_calc_component() passes this guard exists to bound the number of at once).
+    // Everything else in this handler is wrapped in the try/finally a few lines down so
+    // the slot is released however the request ends — success, a thrown error, or the
+    // client disconnecting mid-stream.
+    if (!(await acquireExportSlot(db))) {
+      reply.code(429);
+      return { error: "An export is already running. Please try again shortly." };
+    }
+    try {
     const { rows: settingsRows } = await db.query<SettingsRow>(
       `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
     );
@@ -1013,6 +1026,9 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     } catch (err) {
       app.log.error(err, "Register export failed mid-stream");
       stream.destroy(err instanceof Error ? err : new Error("Export failed"));
+    }
+    } finally {
+      await releaseExportSlot(db);
     }
   });
 }

@@ -399,6 +399,18 @@ CREATE TABLE ai_search_log (
 );
 CREATE INDEX idx_ai_search_log_user_created ON ai_search_log (user_id, created_at DESC);
 
+-- Cross-instance concurrent-export guard — see routes/exportConcurrency.ts for the full
+-- reasoning (a plain in-memory counter can't coordinate across Vercel's separate
+-- serverless instances; this row is the one thing every instance actually shares). A
+-- boolean singleton PK, same convention as the settings table above (id = TRUE is the
+-- only row that will ever exist).
+CREATE TABLE export_concurrency (
+  id             BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+  active_count   INTEGER NOT NULL DEFAULT 0,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO export_concurrency (id) VALUES (TRUE);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

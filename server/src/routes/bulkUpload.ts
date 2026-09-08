@@ -5,6 +5,7 @@ import {
   loadActiveMasterMaps,
   loadWorksheet,
   lookupCanonical,
+  MAX_BULK_UPLOAD_FILE_SIZE_BYTES,
   mergePreviewRows,
   parseWorksheetRows,
   stringifyRowData,
@@ -278,7 +279,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
   // upsert by FAR ID so the same file can both import new assets and correct existing
   // ones. Rows that fail validation are reported but don't block the valid rows.
   app.post("/api/assets/bulk-upload", { preHandler: requirePermission("bulkUpload", "capitalization") }, async (req, reply) => {
-    const file = await req.file();
+    const file = await req.file({ limits: { fileSize: MAX_BULK_UPLOAD_FILE_SIZE_BYTES } });
     if (!file) {
       reply.code(400);
       return { error: "No file was uploaded." };

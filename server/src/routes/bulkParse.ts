@@ -3,6 +3,20 @@ import ExcelJS from "exceljs";
 import { z } from "zod";
 import type pg from "pg";
 
+// Every bulk-upload route (assets, transfers, disposals, masters, merge) buffers the
+// whole file into memory (file.toBuffer()) before ExcelJS parses it — none of them
+// stream. app.ts's global @fastify/multipart limit (20MB) is a hard ceiling shared by
+// every multipart route in the app, sized generously enough to never be the wrong call
+// for some future use; it was never meant to define what a REALISTIC bulk-upload file
+// looks like. The client already chunks every bulk upload to ~300 rows per request (see
+// each route's own commit loop), and a 300-row .xlsx — even a wide one — is nowhere near
+// this large; this cap only exists to bound how much memory a request that skips that
+// chunking (a direct API call, not this app's own UI) can force the server to allocate
+// for one upload, without touching the shared global default other multipart routes may
+// still legitimately need. Passed as a per-call override to req.file(), not by changing
+// app.ts's registration.
+export const MAX_BULK_UPLOAD_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+
 // Cells come back from ExcelJS as plain values, Dates, or rich objects (formula results,
 // hyperlinks, rich text runs) depending on the source file — normalize all of them to the
 // plain strings the shared zod schemas expect. A real Date-typed cell always becomes ISO

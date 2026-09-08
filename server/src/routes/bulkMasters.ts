@@ -3,7 +3,15 @@ import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
-import { bulkActive, loadWorksheet, mergePreviewRows, parseWorksheetRows, stringifyRowData, type RowError } from "./bulkParse.js";
+import {
+  bulkActive,
+  loadWorksheet,
+  MAX_BULK_UPLOAD_FILE_SIZE_BYTES,
+  mergePreviewRows,
+  parseWorksheetRows,
+  stringifyRowData,
+  type RowError
+} from "./bulkParse.js";
 import {
   MasterError,
   createCenter,
@@ -65,7 +73,7 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
   reply: FastifyReply,
   config: MasterBulkConfig<Data, Row>
 ) {
-  const file = await req.file();
+  const file = await req.file({ limits: { fileSize: MAX_BULK_UPLOAD_FILE_SIZE_BYTES } });
   if (!file) {
     reply.code(400);
     return { error: "No file was uploaded." };

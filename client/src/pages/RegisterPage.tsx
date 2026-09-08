@@ -16,6 +16,7 @@ import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
 import { SearchIcon, WarningIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from "../hooks/useDebouncedValue.js";
 import { useExport } from "../hooks/useExport.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
@@ -116,6 +117,24 @@ export function RegisterPage() {
   const { filters, setFilter, clearFilter, clearAll, replaceFilters } = useFilters();
   const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" }, filters, replaceFilters, user!.id);
   const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
+
+  // Debounced so typing a search term doesn't fire one network request per keystroke
+  // against 220k+ rows — searchDraft is what the input displays (updates instantly, so
+  // typing never lags); only the actual filter dispatch below (which drives
+  // useAssetList's fetch) waits for typing to pause. Re-synced from filters.globalSearch
+  // whenever IT changes, not just written to it — so this stays correct when the search
+  // is cleared or set from somewhere other than typing here (Clear all filters, a
+  // removed filter chip, AI Register Search applying a result).
+  const [searchDraft, setSearchDraft] = useState(filters.globalSearch ?? "");
+  useEffect(() => {
+    setSearchDraft(filters.globalSearch ?? "");
+  }, [filters.globalSearch]);
+  const debouncedSearch = useDebouncedValue(searchDraft, SEARCH_DEBOUNCE_MS);
+  useEffect(() => {
+    if (debouncedSearch) setFilter("globalSearch", debouncedSearch);
+    else clearFilter("globalSearch");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch]);
 
   // Finance FAR Dashboard drill-through: a tile links here with ?exception=<key>&asAt=...
   // — read straight from the URL, deliberately kept OUT of FiltersContext (that's
@@ -375,8 +394,8 @@ export function RegisterPage() {
             type="text"
             placeholder="Search assets…"
             className="w-full rounded-md border border-gray-300 py-1.5 pl-8 pr-7 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-            value={filters.globalSearch ?? ""}
-            onChange={(e) => (e.target.value ? setFilter("globalSearch", e.target.value) : clearFilter("globalSearch"))}
+            value={searchDraft}
+            onChange={(e) => setSearchDraft(e.target.value)}
           />
           <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
             <Tooltip text="Searches FAR ID, Description, Sub Classification, Status, and Location." placement="bottom">

@@ -437,6 +437,20 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     -- reasoning. IF NOT EXISTS makes this a no-op on every boot after the first, and on
     -- a brand-new database where schema.sql already created the column directly.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+    -- Cross-instance concurrent-export guard — see routes/exportConcurrency.ts for the
+    -- full reasoning (a plain in-memory counter can't coordinate across Vercel's
+    -- separate serverless instances; this row is the one thing every instance actually
+    -- shares). A boolean singleton PK, same convention as the settings table above (id =
+    -- TRUE is the only row that will ever exist). IF NOT EXISTS makes both a no-op on
+    -- every boot after the first.
+    CREATE TABLE IF NOT EXISTS export_concurrency (
+      id             BOOLEAN PRIMARY KEY DEFAULT TRUE,
+      active_count   INTEGER NOT NULL DEFAULT 0,
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT export_concurrency_single_row CHECK (id)
+    );
+    INSERT INTO export_concurrency (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

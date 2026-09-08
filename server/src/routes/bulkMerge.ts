@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type pg from "pg";
 import { getPool } from "../db/pool.js";
-import { loadWorksheet, parseWorksheetRows, type RowError } from "./bulkParse.js";
+import { loadWorksheet, MAX_BULK_UPLOAD_FILE_SIZE_BYTES, parseWorksheetRows, type RowError } from "./bulkParse.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 
@@ -187,7 +187,7 @@ export default async function bulkMergeRoutes(app: FastifyInstance) {
   // route: ?preview=true classifies every row without writing anything; a plain POST
   // applies only the rows that (re-)validate cleanly and reports the rest as skipped.
   app.post("/api/assets/bulk-merge", { preHandler: requirePermission("bulkUpload", "merge") }, async (req, reply) => {
-    const file = await req.file();
+    const file = await req.file({ limits: { fileSize: MAX_BULK_UPLOAD_FILE_SIZE_BYTES } });
     if (!file) {
       reply.code(400);
       return { error: "No file was uploaded." };
