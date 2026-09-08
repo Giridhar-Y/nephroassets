@@ -3,8 +3,22 @@ import { ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS, resolveColumns, type ColumnGroupI
 import type { AssetFilters } from "./types.js";
 
 const OLD_STORAGE_KEY = "nephroassets.register.myView";
-const STORAGE_KEY = "nephroassets.register.views";
+// Pre-per-user-scoping format: every user on a given browser read/wrote this SAME key.
+const LEGACY_UNSCOPED_VIEWS_KEY = "nephroassets.register.views";
+// Durable, per-user Saved Views live under this prefix (never the bare key above) —
+// exported so persistedUiState.ts's logout sweep can recognize and skip it. A NAMED,
+// explicitly-"Save as View"-d preference is meaningfully different from the ephemeral
+// per-session UI state (live filters, sidebar-collapsed) that sweep exists to reset on a
+// shared/kiosk browser: scoping by user id means a different user logging into the same
+// browser never sees it (loads their own, different key), so it's safe to leave in place
+// across logout rather than destroying it every time, which is what was silently
+// deleting every user's saved views on every logout before this fix.
+export const SAVED_VIEWS_KEY_PREFIX = "nephroassets.register.views.";
 const MIN_COLUMN_WIDTH = 60;
+
+function viewsStorageKey(userId: number): string {
+  return `${SAVED_VIEWS_KEY_PREFIX}${userId}`;
+}
 
 export interface ColumnLayout {
   order: string[];
@@ -47,40 +61,68 @@ function normalizeLayout(raw: Partial<ColumnLayout>): ColumnLayout {
   };
 }
 
+function parseViewsState(rawText: string): ViewsState {
+  const parsed = JSON.parse(rawText) as Partial<ViewsState>;
+  const views = (parsed.views ?? []).map((v) => ({ ...normalizeLayout(v), id: v.id, name: v.name, filters: v.filters ?? {} }));
+  const activeViewId = parsed.activeViewId && views.some((v) => v.id === parsed.activeViewId) ? parsed.activeViewId : null;
+  return { views, activeViewId };
+}
+
 // One-time migration from the old single-"My View" format (a bare ColumnLayout with no
 // name/filters/id at all) into the new array-of-named-views shape, so nobody who already
-// had a saved layout silently loses it on this upgrade. Runs only when the new key has
-// never been written yet — once a user has any real views array (even a deliberately
-// emptied one), the old key is never consulted again.
+// had a saved layout silently loses it on this upgrade. Runs only when this user's own
+// scoped key has never been written yet. Removes the old key once migrated so it's never
+// read again (by this user or, since it long predates per-user scoping, a different one).
 function migrateOldSingleView(): ViewsState | null {
   try {
     const rawText = localStorage.getItem(OLD_STORAGE_KEY);
     if (!rawText) return null;
     const layout = normalizeLayout(JSON.parse(rawText) as Partial<ColumnLayout>);
     const view: SavedView = { id: crypto.randomUUID(), name: "My View", filters: {}, ...layout };
+    localStorage.removeItem(OLD_STORAGE_KEY);
     return { views: [view], activeViewId: view.id };
   } catch {
     return null;
   }
 }
 
-function loadViewsState(): ViewsState {
+// One-time migration from the pre-per-user-scoping shared key (see
+// LEGACY_UNSCOPED_VIEWS_KEY's own comment — every user on a browser used to read/write
+// the SAME key) into this user's own scoped key, so nobody who already had Saved Views
+// from before this fix loses them on their very next load. Removed once migrated, same
+// reasoning as migrateOldSingleView above.
+function migrateLegacyUnscopedViews(): ViewsState | null {
   try {
-    const rawText = localStorage.getItem(STORAGE_KEY);
-    if (rawText) {
-      const parsed = JSON.parse(rawText) as Partial<ViewsState>;
-      const views = (parsed.views ?? []).map((v) => ({ ...normalizeLayout(v), id: v.id, name: v.name, filters: v.filters ?? {} }));
-      const activeViewId = parsed.activeViewId && views.some((v) => v.id === parsed.activeViewId) ? parsed.activeViewId : null;
-      return { views, activeViewId };
-    }
+    const rawText = localStorage.getItem(LEGACY_UNSCOPED_VIEWS_KEY);
+    if (!rawText) return null;
+    const state = parseViewsState(rawText);
+    localStorage.removeItem(LEGACY_UNSCOPED_VIEWS_KEY);
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function loadViewsState(userId: number): ViewsState {
+  try {
+    const rawText = localStorage.getItem(viewsStorageKey(userId));
+    if (rawText) return parseViewsState(rawText);
   } catch {
     // fall through to migration/default below
   }
-  return migrateOldSingleView() ?? { views: [], activeViewId: null };
+  const migrated = migrateLegacyUnscopedViews() ?? migrateOldSingleView();
+  if (!migrated) return { views: [], activeViewId: null };
+  // Written immediately, not left to the next persist() call — both migration functions
+  // above already removed the OLD key as part of migrating, so a session that migrates
+  // but never itself changes anything (no toggle/save/etc., just opens Register and
+  // leaves) must not lose the data anyway: the old key is gone and gone is the only other
+  // place it lived.
+  persist(userId, migrated);
+  return migrated;
 }
 
-function persist(state: ViewsState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+function persist(userId: number, state: ViewsState): void {
+  localStorage.setItem(viewsStorageKey(userId), JSON.stringify(state));
 }
 
 /** Register's column configuration AND filters, combined: a live "draft" (whatever's
@@ -91,22 +133,31 @@ function persist(state: ViewsState): void {
  *  was).
  *
  *  localStorage, not a server table: every other Register UI preference this app has
- *  (the old single "My View", session filters, sidebar-collapsed state) already lives
- *  client-side and is swept on logout (persistedUiState.ts) — this follows the same,
- *  already-established convention rather than introducing the first server-persisted UI
- *  preference in the app. The real tradeoff is no cross-device/browser sync; if that
- *  becomes a real ask, promoting this to a small `register_views` table + CRUD route
- *  later is a contained change (this hook's return shape wouldn't need to change, only
- *  loadViewsState/persist's insides). */
-export function useColumnPrefs(ctx: LabelContext, filters: AssetFilters, replaceFilters: (next: AssetFilters) => void) {
-  const [{ views, activeViewId }, setViewsState] = useState<ViewsState>(loadViewsState);
+ *  (session filters, sidebar-collapsed state) already lives client-side, following the
+ *  same convention rather than introducing the first server-persisted UI preference in
+ *  the app. Unlike THOSE (genuinely ephemeral, reset every logout on purpose — see
+ *  persistedUiState.ts), Saved Views are keyed per-user (SAVED_VIEWS_KEY_PREFIX above)
+ *  and deliberately excluded from that sweep: a name the user typed and explicitly chose
+ *  to save is a durable preference, not per-session state, and scoping by user id already
+ *  prevents a different person logging into the same browser from ever seeing it. The
+ *  real tradeoff is no cross-device/browser sync; if that becomes a real ask, promoting
+ *  this to a small `register_views` table + CRUD route later is a contained change (this
+ *  hook's return shape wouldn't need to change, only loadViewsState/persist's insides).
+ *  `userId` identifies whose scoped key to read/write — RegisterPage (this hook's only
+ *  caller) only ever mounts inside RequireAuth, so a real signed-in user's id is always
+ *  available by the time this runs. */
+export function useColumnPrefs(ctx: LabelContext, filters: AssetFilters, replaceFilters: (next: AssetFilters) => void, userId: number) {
+  const [{ views, activeViewId }, setViewsState] = useState<ViewsState>(() => loadViewsState(userId));
   const activeView = views.find((v) => v.id === activeViewId) ?? null;
   const [draft, setDraft] = useState<ColumnLayout>(() => activeView ?? defaultLayout());
 
-  const setState = useCallback((next: ViewsState) => {
-    persist(next);
-    setViewsState(next);
-  }, []);
+  const setState = useCallback(
+    (next: ViewsState) => {
+      persist(userId, next);
+      setViewsState(next);
+    },
+    [userId]
+  );
 
   // Compare against just the layout fields of activeView (it also carries id/name/
   // filters, which would never match draft's bare {order,visible,widths} shape).

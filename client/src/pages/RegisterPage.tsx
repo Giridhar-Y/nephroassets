@@ -114,7 +114,7 @@ export function RegisterPage() {
   const { user } = useAuth();
   const { settings } = useSettings();
   const { filters, setFilter, clearFilter, clearAll, replaceFilters } = useFilters();
-  const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" }, filters, replaceFilters);
+  const columnPrefs = useColumnPrefs({ asAt: settings?.asAt ?? "", fyStart: settings?.fyStart ?? "" }, filters, replaceFilters, user!.id);
   const { columns, setColumnWidth, moveColumnTo } = columnPrefs;
 
   // Finance FAR Dashboard drill-through: a tile links here with ?exception=<key>&asAt=...

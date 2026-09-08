@@ -9,7 +9,19 @@ export default defineConfig({
       // devOptions.enabled defaults to false — the service worker is never registered
       // under `vite dev`, so it can't affect e2e/dev testing at all; left unset
       // deliberately rather than toggled, so that stays true regardless of test mode.
-      registerType: "autoUpdate",
+      //
+      // "prompt", not "autoUpdate": autoUpdate calls skipWaiting()+clientsClaim() the
+      // instant a new deployment's service worker is found, on every open tab, with no
+      // warning — swapping the running app out from under someone mid-task. "prompt"
+      // instead installs the new worker and WAITS; useServiceWorkerUpdate.ts
+      // (lib/useServiceWorkerUpdate.ts) surfaces that as a dismissable-only-by-acting
+      // banner (UpdateBanner.tsx), and only reloads once the user clicks Update Now.
+      // injectRegister:null pairs with this — it stops the plugin auto-injecting its own
+      // (fire-and-forget, no update-callback) registration script into index.html, since
+      // useServiceWorkerUpdate.ts registers the service worker itself via the
+      // `virtual:pwa-register` module instead, specifically so it can hook onNeedRefresh.
+      registerType: "prompt",
+      injectRegister: null,
       includeAssets: ["favicon.svg", "icons/favicon-32x32.png"],
       manifest: {
         name: "NephroAssets — FAR",

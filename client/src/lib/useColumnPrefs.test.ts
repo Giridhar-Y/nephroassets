@@ -8,13 +8,14 @@ afterEach(() => {
 });
 
 const CTX = { asAt: "2026-04-01", fyStart: "2026-04-01" };
+const USER_ID = 1;
 
 // useColumnPrefs takes `filters`/`replaceFilters` as plain params rather than reading
 // FiltersContext itself (so it works as a hook without forcing every caller through a
 // provider) — a bare renderHook with a no-op or capturing replaceFilters exercises it
 // fully without needing a real FiltersProvider.
-function setup(initialFilters: AssetFilters = {}, onReplaceFilters: (next: AssetFilters) => void = () => {}) {
-  return renderHook(({ filters }: { filters: AssetFilters }) => useColumnPrefs(CTX, filters, onReplaceFilters), {
+function setup(initialFilters: AssetFilters = {}, onReplaceFilters: (next: AssetFilters) => void = () => {}, userId = USER_ID) {
+  return renderHook(({ filters }: { filters: AssetFilters }) => useColumnPrefs(CTX, filters, onReplaceFilters, userId), {
     initialProps: { filters: initialFilters }
   });
 }
@@ -44,10 +45,19 @@ describe("useColumnPrefs: Saved Views", () => {
     expect(result.current.activeView?.name).toBe("My Filtered View");
     expect(result.current.isDirty).toBe(false);
 
-    // Persisted, not just in memory.
-    const stored = JSON.parse(localStorage.getItem("nephroassets.register.views")!);
+    // Persisted, not just in memory — under THIS user's own scoped key.
+    const stored = JSON.parse(localStorage.getItem(`nephroassets.register.views.${USER_ID}`)!);
     expect(stored.views).toHaveLength(1);
     expect(stored.activeViewId).toBe(result.current.activeView!.id);
+  });
+
+  it("keys Saved Views per user — a different user id starts with none of the first user's views", () => {
+    const { result: userA } = setup({}, () => {}, 1);
+    act(() => userA.current.saveNewView("User A's View"));
+    expect(userA.current.views).toHaveLength(1);
+
+    const { result: userB } = setup({}, () => {}, 2);
+    expect(userB.current.views).toEqual([]);
   });
 
   it("saveNewView ignores a blank/whitespace-only name", () => {
@@ -154,10 +164,29 @@ describe("useColumnPrefs: Saved Views", () => {
     expect(result.current.activeView?.name).toBe("My View");
   });
 
-  it("ignores the old format once the new views array has already been written, even if empty", () => {
-    localStorage.setItem("nephroassets.register.views", JSON.stringify({ views: [], activeViewId: null }));
+  it("ignores the old single-view format once this user's own scoped views array already exists, even if empty", () => {
+    localStorage.setItem(`nephroassets.register.views.${USER_ID}`, JSON.stringify({ views: [], activeViewId: null }));
     localStorage.setItem("nephroassets.register.myView", JSON.stringify({ order: [], visible: [], widths: {} }));
     const { result } = setup();
     expect(result.current.views).toEqual([]);
+  });
+
+  // The actual bug this fix closes: real, named Saved Views written under the
+  // pre-per-user-scoping shared key (from before this session's fix shipped) must not
+  // silently vanish for a user whose browser still has them sitting there.
+  it("migrates real Saved Views from the pre-per-user-scoping shared key into this user's own scoped key", () => {
+    const legacyState = {
+      views: [{ id: "v1", name: "Dialysis Machines View", order: ["farId"], visible: ["farId"], widths: {}, filters: {} }],
+      activeViewId: "v1"
+    };
+    localStorage.setItem("nephroassets.register.views", JSON.stringify(legacyState));
+    const { result } = setup();
+    expect(result.current.views).toHaveLength(1);
+    expect(result.current.views[0]!.name).toBe("Dialysis Machines View");
+    expect(result.current.activeView?.name).toBe("Dialysis Machines View");
+
+    // Migrated into the new key, and the old shared key is gone so it's never re-read.
+    expect(localStorage.getItem(`nephroassets.register.views.${USER_ID}`)).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.register.views")).toBeNull();
   });
 });

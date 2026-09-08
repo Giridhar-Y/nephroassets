@@ -108,11 +108,17 @@ describe("AuthContext: session dies mid-use (no page reload)", () => {
 // same "nephroassets."-prefixed naming convention) must not survive a logout on a shared/
 // kiosk browser — otherwise the next person to sign in sees the previous user's filters.
 // Seeds both storages with a mix of prefixed and unrelated keys so these tests also prove
-// the sweep doesn't overreach.
+// the sweep doesn't overreach. Also seeds a Register Saved Views key (per-user-scoped,
+// useColumnPrefs.ts) — the one deliberate exception: it must survive logout, since it's a
+// durable, user-scoped preference rather than the per-session state this sweep exists to
+// reset. This is the previously-real bug (a user's "Save as View" silently vanishing on
+// their very next login) covered end-to-end, through the real logout path, not just a
+// unit test of the sweep function in isolation.
 describe("AuthContext: clears persisted client UI state on logout", () => {
   function seedStorage() {
     localStorage.setItem("nephroassets.register.myView", "{}");
     localStorage.setItem("nephroassets.sidebarCollapsed", "true");
+    localStorage.setItem("nephroassets.register.views.1", '{"views":[{"id":"v1","name":"My View"}],"activeViewId":"v1"}');
     sessionStorage.setItem("nephroassets.filters", '{"search":"FAR-1"}');
     // Unrelated keys some other library/browser feature might set — must survive.
     localStorage.setItem("some-other-lib.setting", "keep-me");
@@ -158,6 +164,8 @@ describe("AuthContext: clears persisted client UI state on logout", () => {
     expect(sessionStorage.getItem("nephroassets.filters")).toBeNull();
     expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
     expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
+    // The fix: Saved Views survive the same logout that just wiped everything else.
+    expect(localStorage.getItem("nephroassets.register.views.1")).not.toBeNull();
   });
 
   it("also sweeps on a forced logout (session dies mid-use)", async () => {
@@ -195,5 +203,6 @@ describe("AuthContext: clears persisted client UI state on logout", () => {
     expect(sessionStorage.getItem("nephroassets.filters")).toBeNull();
     expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
     expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
+    expect(localStorage.getItem("nephroassets.register.views.1")).not.toBeNull();
   });
 });
