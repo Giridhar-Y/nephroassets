@@ -1,4 +1,14 @@
-import { SAVED_VIEWS_KEY_PREFIX } from "./useColumnPrefs.js";
+// Imported from this dedicated leaf module, not directly from useColumnPrefs.ts/
+// useDensity.ts/Layout.tsx — those files import useAuth() from AuthContext.tsx, which
+// itself imports clearPersistedUiState from this file, so importing their prefix
+// constants directly here would close a circular import (see durablePreferenceKeys.ts's
+// own comment for the full account, including the crash it caused before this fix).
+import {
+  DENSITY_KEY_PREFIX,
+  IOS_INSTALL_HINT_DISMISSED_KEY,
+  SAVED_VIEWS_KEY_PREFIX,
+  SIDEBAR_COLLAPSED_KEY_PREFIX
+} from "./durablePreferenceKeys.js";
 
 // Every client-only UI preference this app persists (filters, column layout, sidebar
 // collapsed state, and anything added later) is namespaced under this prefix by
@@ -7,15 +17,19 @@ import { SAVED_VIEWS_KEY_PREFIX } from "./useColumnPrefs.js";
 // be taught about it by name.
 const NAMESPACE_PREFIX = "nephroassets.";
 
-// The one deliberate exception to "clear everything under the namespace on logout":
-// Register's Saved Views (useColumnPrefs.ts) are a durable, per-user preference — a name
-// the user typed and explicitly chose to save — not ephemeral per-session UI state like
-// the live filters or sidebar-collapsed flag this sweep exists to reset for the next
-// person on a shared/kiosk browser. Its key is already scoped by user id (see
-// SAVED_VIEWS_KEY_PREFIX's own comment), so a different person logging into the same
-// browser never sees it — sweeping it too would only cost the SAME user their own saved
-// views on every one of their own logouts, which is what was happening before this
-// exception existed.
+// The deliberate exceptions to "clear everything under the namespace on logout": each of
+// these is a durable choice the user (or, for IOS_INSTALL_HINT_DISMISSED_KEY, the device)
+// made on purpose — a saved view, a display density, a sidebar state, "don't show me the
+// install hint again" — not ephemeral per-session UI state like the live filters this
+// sweep exists to reset for the next person on a shared/kiosk browser. The first three
+// are scoped by user id (see each *_KEY_PREFIX constant's own comment), so a different
+// person logging into the same browser never sees them; the install-hint one is scoped by
+// device instead (there's nothing user-specific about it), so it's exempted as a bare key
+// rather than a prefix. Sweeping any of these would only cost the SAME user/device its own
+// preference on every logout, which is what was happening before these exceptions
+// existed. Add a new durable preference's own exported constant to this list rather than
+// special-casing clearPersistedUiState() itself.
+const DURABLE_PREFIXES = [SAVED_VIEWS_KEY_PREFIX, DENSITY_KEY_PREFIX, SIDEBAR_COLLAPSED_KEY_PREFIX, IOS_INSTALL_HINT_DISMISSED_KEY];
 
 /** Fired after clearPersistedUiState() runs. Only needed by a React context whose state
  *  was seeded from storage on mount and which doesn't unmount across logout/login (i.e.
@@ -30,11 +44,13 @@ export const PERSISTED_UI_STATE_CLEARED_EVENT = "nephroassets:persisted-ui-state
  *  session expiry) so a shared/kiosk browser starts the next sign-in on a clean UI
  *  instead of the previous user's filters/columns/etc. Never touches server-side data —
  *  this is client-only display state, scoped by convention, not by account. Skips
- *  SAVED_VIEWS_KEY_PREFIX — see this file's own comment on that exception above. */
+ *  DURABLE_PREFIXES — see this file's own comment on that exception above. */
 export function clearPersistedUiState(): void {
   for (const storage of [localStorage, sessionStorage]) {
     for (const key of Object.keys(storage)) {
-      if (key.startsWith(NAMESPACE_PREFIX) && !key.startsWith(SAVED_VIEWS_KEY_PREFIX)) storage.removeItem(key);
+      if (key.startsWith(NAMESPACE_PREFIX) && !DURABLE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+        storage.removeItem(key);
+      }
     }
   }
   window.dispatchEvent(new Event(PERSISTED_UI_STATE_CLEARED_EVENT));

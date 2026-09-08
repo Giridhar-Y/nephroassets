@@ -104,21 +104,29 @@ describe("AuthContext: session dies mid-use (no page reload)", () => {
 });
 
 // Covers the fix in persistedUiState.ts + AuthContext.tsx: client-only UI state (Register
-// filters, column layout, sidebar collapsed, and anything added later that follows the
-// same "nephroassets."-prefixed naming convention) must not survive a logout on a shared/
-// kiosk browser — otherwise the next person to sign in sees the previous user's filters.
-// Seeds both storages with a mix of prefixed and unrelated keys so these tests also prove
-// the sweep doesn't overreach. Also seeds a Register Saved Views key (per-user-scoped,
-// useColumnPrefs.ts) — the one deliberate exception: it must survive logout, since it's a
-// durable, user-scoped preference rather than the per-session state this sweep exists to
-// reset. This is the previously-real bug (a user's "Save as View" silently vanishing on
-// their very next login) covered end-to-end, through the real logout path, not just a
-// unit test of the sweep function in isolation.
+// filters, and anything added later that follows the same "nephroassets."-prefixed
+// naming convention) must not survive a logout on a shared/kiosk browser — otherwise the
+// next person to sign in sees the previous user's filters. Seeds both storages with a mix
+// of prefixed and unrelated keys so these tests also prove the sweep doesn't overreach.
+// Also seeds one key for each DURABLE_PREFIXES exception (persistedUiState.ts) — Register
+// Saved Views (useColumnPrefs.ts), row density (useDensity.ts), and sidebar-collapsed
+// (Layout.tsx), all per-user-scoped, plus the iOS install-hint dismissal (IosInstallHint.tsx),
+// device-scoped rather than per-user — each of which must survive logout, being a durable
+// preference rather than the per-session state this sweep exists to reset. Also seeds the
+// OLD, pre-per-user-scoping unscoped sidebarCollapsed key, to prove the exemption is
+// specific to the new dotted-userId format and doesn't accidentally swallow the legacy
+// bare key too. This is the previously-real bug (a user's "Save as View", density, or
+// sidebar preference, or a device's install-hint dismissal, silently vanishing on the very
+// next login) covered end-to-end, through the real logout path, not just a unit test of
+// the sweep function in isolation.
 describe("AuthContext: clears persisted client UI state on logout", () => {
   function seedStorage() {
     localStorage.setItem("nephroassets.register.myView", "{}");
     localStorage.setItem("nephroassets.sidebarCollapsed", "true");
     localStorage.setItem("nephroassets.register.views.1", '{"views":[{"id":"v1","name":"My View"}],"activeViewId":"v1"}');
+    localStorage.setItem("nephroassets.density.1", "compact");
+    localStorage.setItem("nephroassets.sidebarCollapsed.1", "true");
+    localStorage.setItem("nephroassets.iosInstallHintDismissed", "true");
     sessionStorage.setItem("nephroassets.filters", '{"search":"FAR-1"}');
     // Unrelated keys some other library/browser feature might set — must survive.
     localStorage.setItem("some-other-lib.setting", "keep-me");
@@ -160,12 +168,18 @@ describe("AuthContext: clears persisted client UI state on logout", () => {
     await vi.waitFor(() => expect(localStorage.getItem("nephroassets.register.myView")).toBeNull());
 
     expect(localStorage.getItem("nephroassets.register.myView")).toBeNull();
+    // The bare, pre-per-user-scoping key is still swept — only the new dotted-userId
+    // format below is exempt.
     expect(localStorage.getItem("nephroassets.sidebarCollapsed")).toBeNull();
     expect(sessionStorage.getItem("nephroassets.filters")).toBeNull();
     expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
     expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
-    // The fix: Saved Views survive the same logout that just wiped everything else.
+    // The fix: durable per-user (and, for the install hint, per-device) preferences
+    // survive the same logout that just wiped everything else.
     expect(localStorage.getItem("nephroassets.register.views.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.density.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.sidebarCollapsed.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.iosInstallHintDismissed")).not.toBeNull();
   });
 
   it("also sweeps on a forced logout (session dies mid-use)", async () => {
@@ -204,5 +218,8 @@ describe("AuthContext: clears persisted client UI state on logout", () => {
     expect(localStorage.getItem("some-other-lib.setting")).toBe("keep-me");
     expect(sessionStorage.getItem("unrelated")).toBe("keep-me-too");
     expect(localStorage.getItem("nephroassets.register.views.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.density.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.sidebarCollapsed.1")).not.toBeNull();
+    expect(localStorage.getItem("nephroassets.iosInstallHintDismissed")).not.toBeNull();
   });
 });

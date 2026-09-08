@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { isStandalone } from "../hooks/usePwaInstall.js";
 import { DismissIcon, ShareIcon } from "../lib/icons.js";
-
-const DISMISSED_KEY = "nephroassets.iosInstallHintDismissed";
+import { IOS_INSTALL_HINT_DISMISSED_KEY as DISMISSED_KEY } from "../lib/durablePreferenceKeys.js";
 
 // iOS Safari has no beforeinstallprompt (or any install-prompt API at all) — "Add to
 // Home Screen" only exists inside Safari's own Share sheet, so the best this app can do

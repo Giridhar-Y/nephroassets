@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ComponentT
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission, type Module } from "../lib/permissions.js";
+import { SIDEBAR_COLLAPSED_KEY_PREFIX } from "../lib/durablePreferenceKeys.js";
 import { formatCompactIndianCount, formatDate } from "../lib/format.js";
 import { useToast } from "./Toast.js";
 import { NotificationsBell } from "./NotificationsBell.js";
@@ -32,7 +33,33 @@ import {
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 
-const SIDEBAR_COLLAPSED_KEY = "nephroassets.sidebarCollapsed";
+// Per-user scoped, same reasoning and pattern as useColumnPrefs.ts's Saved Views and
+// useDensity.ts: a personal display preference the user would expect to keep across
+// logins, not per-session state — persistedUiState.ts's logout sweep recognizes and
+// skips SIDEBAR_COLLAPSED_KEY_PREFIX (imported from durablePreferenceKeys.ts, not from
+// this file directly, to avoid a circular import — this file imports useAuth() from
+// AuthContext.tsx, which itself imports clearPersistedUiState from persistedUiState.ts;
+// see durablePreferenceKeys.ts's own comment).
+const LEGACY_UNSCOPED_SIDEBAR_COLLAPSED_KEY = "nephroassets.sidebarCollapsed";
+
+function sidebarCollapsedKey(userId: number): string {
+  return `${SIDEBAR_COLLAPSED_KEY_PREFIX}${userId}`;
+}
+
+// One-time migration from the pre-per-user-scoping shared key into this user's own
+// scoped key, so nobody who already had this preference set loses it on their next load
+// after this fix ships — same convention useColumnPrefs.ts's migration follows.
+function loadSidebarCollapsed(userId: number): boolean {
+  const scoped = localStorage.getItem(sidebarCollapsedKey(userId));
+  if (scoped !== null) return scoped === "true";
+  const legacy = localStorage.getItem(LEGACY_UNSCOPED_SIDEBAR_COLLAPSED_KEY);
+  if (legacy !== null) {
+    localStorage.removeItem(LEGACY_UNSCOPED_SIDEBAR_COLLAPSED_KEY);
+    localStorage.setItem(sidebarCollapsedKey(userId), legacy);
+    return legacy === "true";
+  }
+  return false;
+}
 
 interface NavItem {
   to: string;
@@ -201,15 +228,16 @@ function AsAtControl() {
 export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+  // Layout only ever renders inside RequireAuth (App.tsx), so user is always real here.
+  const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed(user!.id));
   const [registerAssetCount, setRegisterAssetCount] = useState<number | null>(null);
   const isVisible = (item: NavItem) =>
     item.anyOf ? item.anyOf.some((a) => hasPermission(user, item.module, a)) : hasPermission(user, item.module, item.action!);
   const navItems = [...NAV_ITEMS, ADMIN_NAV_ITEM].filter(isVisible);
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
-  }, [collapsed]);
+    localStorage.setItem(sidebarCollapsedKey(user!.id), String(collapsed));
+  }, [collapsed, user]);
 
   return (
     <div className="flex h-full print:block print:h-auto">

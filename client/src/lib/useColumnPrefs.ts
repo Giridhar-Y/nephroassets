@@ -1,19 +1,23 @@
 import { useCallback, useState } from "react";
 import { ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS, resolveColumns, type ColumnGroupId, type LabelContext, type RawColumnDef } from "./columns.js";
+import { SAVED_VIEWS_KEY_PREFIX } from "./durablePreferenceKeys.js";
 import type { AssetFilters } from "./types.js";
 
 const OLD_STORAGE_KEY = "nephroassets.register.myView";
 // Pre-per-user-scoping format: every user on a given browser read/wrote this SAME key.
 const LEGACY_UNSCOPED_VIEWS_KEY = "nephroassets.register.views";
-// Durable, per-user Saved Views live under this prefix (never the bare key above) —
-// exported so persistedUiState.ts's logout sweep can recognize and skip it. A NAMED,
-// explicitly-"Save as View"-d preference is meaningfully different from the ephemeral
-// per-session UI state (live filters, sidebar-collapsed) that sweep exists to reset on a
-// shared/kiosk browser: scoping by user id means a different user logging into the same
-// browser never sees it (loads their own, different key), so it's safe to leave in place
-// across logout rather than destroying it every time, which is what was silently
-// deleting every user's saved views on every logout before this fix.
-export const SAVED_VIEWS_KEY_PREFIX = "nephroassets.register.views.";
+// Durable, per-user Saved Views live under SAVED_VIEWS_KEY_PREFIX (never the bare key
+// above), re-exported here for callers that already import it from this file —
+// persistedUiState.ts's logout sweep imports it (and its siblings) directly from
+// durablePreferenceKeys.ts instead, to avoid a circular import (see that file's own
+// comment for why). A NAMED, explicitly-"Save as View"-d preference is meaningfully
+// different from the ephemeral per-session UI state (live filters, sidebar-collapsed)
+// that sweep exists to reset on a shared/kiosk browser: scoping by user id means a
+// different user logging into the same browser never sees it (loads their own, different
+// key), so it's safe to leave in place across logout rather than destroying it every
+// time, which is what was silently deleting every user's saved views on every logout
+// before this fix.
+export { SAVED_VIEWS_KEY_PREFIX };
 const MIN_COLUMN_WIDTH = 60;
 
 function viewsStorageKey(userId: number): string {

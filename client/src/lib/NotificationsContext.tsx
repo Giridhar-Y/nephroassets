@@ -44,8 +44,15 @@ const NotificationsContext = createContext<NotificationsContextValue | null>(nul
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>(load);
 
+  // No notifications stores no key at all, rather than an empty `[]` — otherwise the
+  // logout sweep below (persistedUiState.ts) removing this key would be immediately
+  // undone by this same effect re-running for the very state change (setNotifications([]))
+  // the sweep's own PERSISTED_UI_STATE_CLEARED_EVENT listener causes, leaving a
+  // harmless-but-misleading key behind right after a clear that's supposed to remove it —
+  // same reasoning FiltersContext.tsx's identical empty-check already follows.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    if (notifications.length === 0) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
   }, [notifications]);
 
   // Same logout-sweep participation as FiltersContext — persistedUiState.ts clears the
