@@ -42,7 +42,7 @@ export function Tooltip({
       {open && (
         <span
           role="tooltip"
-          className={`absolute left-1/2 z-20 w-56 -translate-x-1/2 rounded-lg bg-ink px-3 py-2 text-xs font-normal normal-case leading-snug text-white shadow-lg ${
+          className={`pointer-events-none absolute left-1/2 z-50 w-56 -translate-x-1/2 rounded-lg bg-ink px-3 py-2 text-xs font-normal normal-case leading-snug text-white shadow-lg ${
             placement === "bottom" ? "top-full mt-2" : "bottom-full mb-2"
           }`}
         >

@@ -24,7 +24,7 @@ export default defineConfig({
       injectRegister: null,
       includeAssets: ["favicon.svg", "icons/favicon-32x32.png"],
       manifest: {
-        name: "NephroAssets — FAR",
+        name: "NephroAssets - FAR",
         short_name: "NephroAssets",
         description: "Fixed Asset Register for NephroPlus.",
         theme_color: "#01486F",
