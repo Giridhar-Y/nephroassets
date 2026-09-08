@@ -33,6 +33,14 @@ type UploadType = "assets" | "disposals" | "transfers" | "merge" | "masters";
 type MasterListType = "centers" | "subClassifications" | "statuses";
 type Step = "select" | "preview" | "result";
 
+/** One bulleted business-rule callout in the "Validation & Business Rules" section below
+ *  the dropzone — icon + short label + the rule itself, e.g. 🏢 Master Dependencies: ... */
+interface GuidanceNote {
+  icon: string;
+  label: string;
+  text: string;
+}
+
 interface UploadConfig {
   label: string;
   description: string;
@@ -41,7 +49,7 @@ interface UploadConfig {
   keyColumnLabel: string;
   path: string;
   templateName: string;
-  note?: string;
+  notes?: GuidanceNote[];
 }
 
 const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
@@ -77,7 +85,23 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "FAR ID",
     path: BULK_UPLOAD_PATHS.assets,
     templateName: "assets",
-    note: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a value that doesn't will show as an Error row above. A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification that doesn't have Component 2 is also rejected as an Error row — leave those columns at 0 or blank for that row. dateOfDisposal/deletionsC1/deletionsC2/saleValue are only accepted on a brand-new FAR ID, for importing an asset that was already disposed before it entered this system — to dispose an existing asset, use Bulk Disposals or the single-item Disposal action instead; a row setting these on an existing FAR ID is rejected as an Error row."
+    notes: [
+      {
+        icon: "🏢",
+        label: "Master Dependencies",
+        text: "Sub Classification, Status, and Location must match an active entry in Masters (case-insensitive) — a mismatch shows as an Error row."
+      },
+      {
+        icon: "⚙️",
+        label: "Component 2 (C2) Integrity",
+        text: "A row with any non-zero C2 figure (cost, additions, deletions, or opening acc. dep.) against a Sub Classification without Component 2 is rejected — leave those columns at 0 or blank."
+      },
+      {
+        icon: "🗑️",
+        label: "Historical Disposals Only",
+        text: "dateOfDisposal/deletionsC1/deletionsC2/saleValue are only accepted on a brand-new FAR ID, for importing an asset already disposed before it entered this system. To dispose an existing asset, use Bulk Disposals or the single-item Disposal action instead — a row setting these on an existing FAR ID is rejected as an Error row."
+      }
+    ]
   },
   disposals: {
     label: "Disposals",
@@ -97,7 +121,13 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "FAR ID",
     path: BULK_UPLOAD_PATHS.transfers,
     templateName: "transfers",
-    note: "Location must match an active Center in Masters (case-insensitive) — a value that doesn't will show as an Error row above."
+    notes: [
+      {
+        icon: "🏢",
+        label: "Master Dependencies",
+        text: "Location must match an active Center in Masters (case-insensitive) — a mismatch shows as an Error row."
+      }
+    ]
   },
   merge: {
     label: "Merge",
@@ -108,7 +138,18 @@ const TYPE_CONFIG: Record<Exclude<UploadType, "masters">, UploadConfig> = {
     keyColumnLabel: "Parent ← Child",
     path: BULK_UPLOAD_PATHS.merge,
     templateName: "merge",
-    note: "A child that already has a different parent is rejected, not silently re-parented — re-requesting its existing parent is treated as a no-op. A Location or Sub Classification mismatch between parent and child is shown as a warning, not an error."
+    notes: [
+      {
+        icon: "🔗",
+        label: "Existing Parent Links",
+        text: "A child that already has a different parent is rejected, not silently re-parented — re-requesting its existing parent is treated as a no-op."
+      },
+      {
+        icon: "⚠️",
+        label: "Mismatch Warnings",
+        text: "A Location or Sub Classification mismatch between parent and child is shown as a warning, not an error."
+      }
+    ]
   }
 };
 
@@ -122,7 +163,13 @@ const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: str
     keyColumnLabel: "Code",
     path: MASTERS_BULK_UPLOAD_PATHS.centers,
     templateName: "centers",
-    note: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new centers to Active and leave existing ones unchanged."
+    notes: [
+      {
+        icon: "⚙️",
+        label: "Active Field",
+        text: "active accepts true/false or Active/Inactive (case-insensitive) — omit it to default new centers to Active and leave existing ones unchanged."
+      }
+    ]
   },
   subClassifications: {
     label: "Sub Classifications",
@@ -133,7 +180,23 @@ const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: str
     keyColumnLabel: "Name",
     path: MASTERS_BULK_UPLOAD_PATHS.subClassifications,
     templateName: "sub-classifications",
-    note: "active and hasComponent2 both accept true/false or yes/no (case-insensitive) — omit either to default new entries to true and leave existing ones unchanged. Leave defaultUsefulLifeC1Years/C2Years blank to leave them unset (new entries) or unchanged (existing ones). Turning hasComponent2 off for an entry that already has assets with real C2 data is rejected, same as doing it from the Sub Classifications screen."
+    notes: [
+      {
+        icon: "⚙️",
+        label: "Active & Component 2 Flags",
+        text: "active and hasComponent2 both accept true/false or yes/no (case-insensitive) — omit either to default new entries to true and leave existing ones unchanged."
+      },
+      {
+        icon: "📏",
+        label: "Useful Life Defaults",
+        text: "Leave defaultUsefulLifeC1Years/C2Years blank to leave them unset (new entries) or unchanged (existing ones)."
+      },
+      {
+        icon: "🚫",
+        label: "Component 2 Removal Guard",
+        text: "Turning hasComponent2 off for an entry that already has assets with real C2 data is rejected, same as doing it from the Sub Classifications screen."
+      }
+    ]
   },
   statuses: {
     label: "Statuses",
@@ -144,7 +207,18 @@ const MASTER_LIST_CONFIG: Record<MasterListType, UploadConfig & { pillLabel: str
     keyColumnLabel: "Name",
     path: MASTERS_BULK_UPLOAD_PATHS.statuses,
     templateName: "statuses",
-    note: "active accepts true/false or Active/Inactive (case-insensitive). A system-managed status (e.g. Disposed) cannot be modified via Bulk Upload."
+    notes: [
+      {
+        icon: "⚙️",
+        label: "Active Field",
+        text: "active accepts true/false or Active/Inactive (case-insensitive)."
+      },
+      {
+        icon: "🔒",
+        label: "System-Managed Statuses",
+        text: "A system-managed status (e.g. Disposed) cannot be modified via Bulk Upload."
+      }
+    ]
   }
 };
 
@@ -326,6 +400,83 @@ function ChunkProgressBar({ progress, verb, startedAt }: { progress: ChunkProgre
         <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
       </div>
       {remainingSec !== null && <p className="mt-0.5 text-[11px] text-gray-400">~{formatRemaining(remainingSec)} remaining</p>}
+    </div>
+  );
+}
+
+// Replaces what used to be one dense run-on paragraph below the dropzone — same
+// information (every required/optional field, every business rule this tab enforces),
+// just organized into scannable badge groups and bulleted callouts instead of prose.
+// Shared by all 5 tabs (Assets, Disposals, Transfers, Merge, Masters) since they all
+// already funnel through the one `UploadConfig` shape.
+function BulkUploadGuidanceCard({ config, type }: { config: UploadConfig; type: UploadType }) {
+  const dateNote: GuidanceNote | null =
+    type !== "masters"
+      ? { icon: "📅", label: "Date Format", text: "Every date column must be formatted as DD-MM-YYYY (e.g. 15-08-2026)." }
+      : null;
+  const notes = [...(dateNote ? [dateNote] : []), ...(config.notes ?? [])];
+
+  return (
+    <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/50 p-6">
+      <h2 className="flex items-center gap-2 text-sm font-semibold text-ink">
+        <span aria-hidden="true">📋</span> Expected Columns
+      </h2>
+      <p className="mt-1 text-xs text-gray-500">The first row of your file must be a header naming these exact fields.</p>
+
+      <div className="mt-3 grid gap-4 sm:grid-cols-2">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Required Columns</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {config.required.map((field) => (
+              <span key={field} className="rounded border border-rose-200 bg-rose-50 px-2 py-1 font-mono text-xs text-rose-700">
+                {field}
+              </span>
+            ))}
+          </div>
+        </div>
+        {config.optional.length > 0 && (
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Optional Columns</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {config.optional.map((field) => (
+                <span key={field} className="rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-xs text-slate-700">
+                  {field}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {notes.length > 0 && (
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <span aria-hidden="true">⚠️</span> Validation &amp; Business Rules
+          </h3>
+          <ul className="mt-2 space-y-2">
+            {notes.map((n, i) => (
+              <li key={i} className="flex gap-2 text-xs text-gray-700">
+                <span aria-hidden="true" className="shrink-0">
+                  {n.icon}
+                </span>
+                <span>
+                  <span className="font-semibold">{n.label}:</span> {n.text}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-5 flex gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+        <span aria-hidden="true" className="shrink-0">
+          💡
+        </span>
+        <span>
+          <span className="font-semibold">Tip:</span> Not sure of the format? Click <span className="font-semibold">Download Template</span>{" "}
+          above for a pre-formatted spreadsheet with all header columns.
+        </span>
+      </div>
     </div>
   );
 }
@@ -1012,23 +1163,7 @@ export function BulkUploadPage() {
             document.body
           )}
 
-        <div className="mt-6 border-t border-gray-100 pt-4">
-          <h2 className="text-sm font-semibold text-ink">Expected Columns</h2>
-          <p className="mt-1 text-xs text-gray-500">
-            The first row must be a header naming these fields{type !== "masters" ? " (dates as DD-MM-YYYY)" : ""}:
-          </p>
-          <p className="mt-2 text-xs text-gray-700">
-            <span className="font-semibold">Required: </span>
-            {config.required.join(", ")}
-          </p>
-          {config.optional.length > 0 && (
-            <p className="mt-1 text-xs text-gray-500">
-              <span className="font-semibold">Optional: </span>
-              {config.optional.join(", ")}
-            </p>
-          )}
-          {config.note && <p className="mt-2 text-xs text-gray-500">{config.note}</p>}
-        </div>
+        <BulkUploadGuidanceCard config={config} type={type} />
       </div>
     </div>
   );
