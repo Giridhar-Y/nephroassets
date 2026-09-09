@@ -191,8 +191,9 @@ describe("Background Register export: advanceExportJob", () => {
     const body = storage.completed.get(job.object_key)!;
     const lines = body.split("\r\n").filter((l) => l.length > 0);
     expect(lines[0]).toContain("Filters applied:");
-    expect(lines[1]).toContain("FAR ID");
-    const farIdsInBody = lines.slice(2).map((l) => l.split(",")[0]);
+    expect(lines[1]).toContain("Asset Identification"); // group-band row
+    expect(lines[2]).toContain("FAR ID");
+    const farIdsInBody = lines.slice(3).map((l) => l.split(",")[0]);
     expect(farIdsInBody).toEqual(["JOBTEST-001", "JOBTEST-002", "JOBTEST-003"]);
   });
 
@@ -210,7 +211,7 @@ describe("Background Register export: advanceExportJob", () => {
     const farIdsInBody = body
       .split("\r\n")
       .filter((l) => l.length > 0)
-      .slice(2)
+      .slice(3)
       .map((l) => l.split(",")[0]);
     expect(farIdsInBody).not.toContain("JOBDISP-PRIOR-FY");
     expect(farIdsInBody).toContain("JOBDISP-ON-FY-START");
@@ -239,7 +240,7 @@ describe("Background Register export: advanceExportJob", () => {
 
     const body = storage.completed.get(job.object_key)!;
     const lines = body.split("\r\n").filter((l) => l.length > 0);
-    expect(lines.length).toBe(ROW_COUNT + 2); // + filter-summary row + header row
+    expect(lines.length).toBe(ROW_COUNT + 3); // + filter-summary row + group-band row + header row
   }, 30_000);
 
   it("resumes across multiple hops without losing or duplicating rows", async () => {
@@ -266,7 +267,7 @@ describe("Background Register export: advanceExportJob", () => {
     const farIdsInBody = body
       .split("\r\n")
       .filter((l) => l.length > 0)
-      .slice(2)
+      .slice(3)
       .map((l) => l.split(",")[0]);
     expect(farIdsInBody).toEqual(["JOBRESUME-A", "JOBRESUME-B", "JOBRESUME-C", "JOBRESUME-D", "JOBRESUME-E"]);
     // Only one multipart upload was ever created for this job — the near-zero-budget hop

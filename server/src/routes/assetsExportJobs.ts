@@ -12,7 +12,17 @@ import { computeAsset } from "../calc/engine.js";
 import { buildCalcCteExtras, buildConditionSql, buildFilterSummaryText, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 import { buildExceptionPredicate, EXCEPTION_LABELS } from "./exceptionPredicates.js";
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
-import { C2_EXPORT_KEYS, EXPORT_COLUMNS, csvLine, ddmmyyyy, exportQuerySchema, resolveLabel, type LabelContext } from "./assetsExport.js";
+import {
+  C2_EXPORT_KEYS,
+  EXPORT_COLUMNS,
+  GROUP_INFO,
+  csvLine,
+  ddmmyyyy,
+  exportQuerySchema,
+  groupRuns,
+  resolveLabel,
+  type LabelContext
+} from "./assetsExport.js";
 import { isObjectStorageConfigured, s3ObjectStorage, type ObjectStorage, type UploadPart } from "../storage/objectStorage.js";
 
 type ExportQuery = z.infer<typeof exportQuerySchema>;
@@ -259,13 +269,21 @@ export async function advanceExportJob(
     if (!uploadId) {
       uploadId = await storage.createMultipartUpload(objectKey, "text/csv");
       // Row 1: filter-summary note, same convention as the synchronous export's own —
-      // what this file represents, not just a raw column dump. Row 2: column names. No
-      // totals/group-band rows here — a deliberate simplification for this new code path
-      // (Register Summary already covers grouped totals for anyone who wants them); the
-      // per-asset rows below are byte-identical in shape to the synchronous export's own.
+      // what this file represents, not just a raw column dump. Row 2: group header band
+      // (same GROUP_INFO/groupRuns the synchronous CSV export's own group-band row uses —
+      // group name at the start of each group's span, blank for the rest of that run,
+      // since a real merged cell doesn't exist in CSV). Row 3: column names. No totals
+      // row here — a deliberate simplification for this new code path (Register Summary
+      // already covers grouped totals for anyone who wants them); the per-asset rows
+      // below are byte-identical in shape to the synchronous export's own.
       const filterSummaryText =
         buildFilterSummaryText(q, q.conditions) + (q.exception ? `; Dashboard Exception: ${EXCEPTION_LABELS[q.exception]}` : "");
       appendText(csvLine([`Filters applied: ${filterSummaryText}`]) + "\r\n");
+      const groupRowValues = exportColumns.map<string>(() => "");
+      for (const run of groupRuns(exportColumns)) {
+        groupRowValues[run.startCol - 1] = GROUP_INFO[run.groupKey]!.label;
+      }
+      appendText(csvLine(groupRowValues) + "\r\n");
       appendText(csvLine(exportColumns.map((c) => resolveLabel(c, ctx))) + "\r\n");
       // Persisted immediately, not deferred to the first flush below — if this hop's time
       // budget runs out before any batch even completes (a real possibility: the budget is

@@ -79,17 +79,19 @@ const CONDITION_COLUMNS: Array<{ id: string; label: string; type: ColumnFilterTy
   { id: "c2Nbv", label: "C2 NBV", type: "number" }
 ];
 
-// Mirrors server/src/routes/assetsExport.ts's EXPORT_ROW_LIMIT exactly — kept as a
+// Mirrors server/src/routes/assetsExport.ts's XLSX_EXPORT_ROW_LIMIT exactly — kept as a
 // parallel constant rather than a shared import since client and server are separate TS
 // builds with no shared package boundary here (same convention as that file's own
-// GROUP_INFO). This is a client-side heads-up only: it warns before the user clicks
-// Export using the row count Register's own filtered view already loaded (no extra
-// fetch), but the server's own count at export time is what's actually authoritative —
-// clicking through anyway still gets a clean, correctly-worded rejection (useExport
-// already surfaces any non-2xx JSON `error` as a toast), just without the advance
-// warning. TEMPORARY, same as the server-side constant — remove both together once this
-// deployment moves off Vercel Hobby's 60s function-timeout ceiling.
-const EXPORT_ROW_LIMIT = 70_000;
+// GROUP_INFO). Governs which of the two export paths Export uses: at or under this many
+// rows, the synchronous route returns a styled .xlsx (format=xlsx below); above it, a
+// background CSV export via Cloudflare R2 (useBackgroundExport.ts) — a styled workbook
+// can't be produced across that path's resumable multi-hop uploads (see
+// XLSX_EXPORT_ROW_LIMIT's own comment for why). This is a client-side heads-up only: it
+// decides which request to make using the row count Register's own filtered view already
+// loaded (no extra fetch), but the server's own count at export time is what's actually
+// authoritative — a mismatch just gets a clean, correctly-worded rejection (useExport
+// already surfaces any non-2xx JSON `error` as a toast).
+const EXPORT_ROW_LIMIT = 15_000;
 
 // Column labels for the filter-chips row (item 8) — CONDITION_COLUMNS above, plus the
 // four checklist filters (Sub Classification/Status/the two Locations) that are wired up
@@ -164,7 +166,7 @@ export function RegisterPage() {
     () => (exceptionKey ? { ...filters, exception: exceptionKey } : filters),
     [filters, exceptionKey]
   );
-  const exportUrl = asAt ? getExportUrl({ asAt, ...assetListFilters }) : undefined;
+  const exportUrl = asAt ? getExportUrl({ asAt, ...assetListFilters }, "xlsx") : undefined;
   // Lifted up here (rather than left inside ExportButton) so the Ctrl+Shift+E shortcut
   // below and the toolbar button share one `exporting` state — see ExportButton's own
   // exporting/onExport props for why two independent copies would be a race.

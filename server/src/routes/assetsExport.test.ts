@@ -1,7 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
+import ExcelJS from "exceljs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import assetsExportRoutes, { EXPORT_ROW_LIMIT } from "./assetsExport.js";
+import assetsExportRoutes, { EXPORT_ROW_LIMIT, XLSX_EXPORT_ROW_LIMIT } from "./assetsExport.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
@@ -79,6 +80,16 @@ function readCsv(payload: Buffer): string[][] {
   const text = payload.toString("utf-8");
   const lines = text.split("\r\n").filter((l) => l.length > 0);
   return lines.map(splitCsvFields);
+}
+
+/** Parses the export's .xlsx response back into a Workbook for assertions. The `as never`
+ *  cast works around exceljs@4's bundled .d.ts predating @types/node 22's generic
+ *  `Buffer<TArrayBuffer>` — a real byte buffer round-trips through ExcelJS fine at
+ *  runtime, this is purely two type declarations disagreeing on Buffer's own shape. */
+async function readXlsx(payload: Buffer): Promise<ExcelJS.Workbook> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(payload as never);
+  return workbook;
 }
 
 function readRow(rows: string[][], rowNumber: number): string[] {
@@ -672,6 +683,139 @@ describe("Register Export: GET /api/assets/export", () => {
         spy.mockRestore();
         errorLogSpy.mockRestore();
       }
+    });
+  });
+});
+
+describe("Register Export: GET /api/assets/export?format=xlsx (styled, two-tier header)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(assetsExportRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("returns a real .xlsx workbook with merged group headers over row 1 and column names on row 2", async () => {
+    await insertAsset("XLS-1");
+    await insertAsset("XLS-2");
+
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?format=xlsx" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("spreadsheetml.sheet");
+    expect(res.headers["content-disposition"]).toContain(".xlsx");
+
+    const workbook = await readXlsx(res.rawPayload);
+    const sheet = workbook.getWorksheet(1)!;
+
+    // Row 1: group band, merged — "Asset Identification" spans FAR ID through Useful
+    // Life C2 (the first group's columns), same GROUP_INFO label the CSV export's own
+    // group-band row already uses.
+    expect(sheet.getCell(1, 1).value).toBe("Asset Identification");
+    expect(sheet.model.merges).toContain("A1:M1"); // g1 spans 13 columns (see EXPORT_COLUMNS)
+    // Row 2: column names.
+    expect(sheet.getCell(2, 1).value).toBe("FAR ID");
+    // Frozen top 2 rows (ExcelJS fills in its own defaults for the rest on round-trip).
+    expect(sheet.views[0]).toMatchObject({ state: "frozen", ySplit: 2 });
+    // Data starts row 3.
+    const farIds = [sheet.getCell(3, 1).value, sheet.getCell(4, 1).value];
+    expect(farIds.sort()).toEqual(["XLS-1", "XLS-2"]);
+  });
+
+  it("writes real numeric values (never the text '-') with the accounting numFmt on financial columns", async () => {
+    // deletionsC1 defaults to 0 (never disposed) and c1Wdv/profitLoss are null (not
+    // disposed) — exactly the two "blank/zero" shapes formulas must be able to compute
+    // with directly, not the CSV/pre-migration ExcelJS output's literal text "-".
+    await insertAsset("XLS-ZERO");
+
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?format=xlsx" });
+    const workbook = await readXlsx(res.rawPayload);
+    const sheet = workbook.getWorksheet(1)!;
+    const headerRow = sheet.getRow(2).values as unknown[];
+    const deletionsC1Col = headerRow.indexOf("Deletions C1 (Cost)");
+    const wdvC1Col = headerRow.indexOf("WDV at Disposal C1");
+
+    const deletionsCell = sheet.getCell(3, deletionsC1Col);
+    expect(deletionsCell.value).toBe(0);
+    expect(typeof deletionsCell.value).toBe("number");
+    expect(deletionsCell.numFmt).toContain("#,##0.00");
+
+    const wdvCell = sheet.getCell(3, wdvC1Col);
+    expect(wdvCell.value == null).toBe(true); // genuinely inapplicable, not a text placeholder
+  });
+
+  it("excludes an asset disposed before FY Start, same as the CSV format", async () => {
+    await insertAsset("XLS-DISPOSED-PRIOR-FY", { status: "Disposed", date_of_disposal: "2025-12-15" });
+    await insertAsset("XLS-KEPT");
+
+    const res = await authedInject(app, { method: "GET", url: `/api/assets/export?format=xlsx&asAt=${AS_AT}` });
+    const workbook = await readXlsx(res.rawPayload);
+    const sheet = workbook.getWorksheet(1)!;
+    const farIds: unknown[] = [];
+    for (let r = 3; r <= sheet.rowCount; r++) farIds.push(sheet.getCell(r, 1).value);
+    expect(farIds).not.toContain("XLS-DISPOSED-PRIOR-FY");
+    expect(farIds).toContain("XLS-KEPT");
+  });
+
+  describe("row-count safety limit (much lower than CSV's — see XLSX_EXPORT_ROW_LIMIT's own comment)", () => {
+    async function withMockedRowCount(rowCount: number, run: () => Promise<void>) {
+      await insertAsset("XLS-ROWLIMIT-1");
+      const db = await getPool();
+      const originalQuery = db.query.bind(db);
+      const spy = vi.spyOn(db, "query").mockImplementation(async (...args: unknown[]) => {
+        const sql = args[0];
+        const result = (await (originalQuery as (...a: unknown[]) => Promise<unknown>)(...args)) as {
+          rows: Array<Record<string, unknown>>;
+        };
+        if (typeof sql === "string" && sql.includes("COUNT(*) AS count FROM assets") && result.rows[0]) {
+          result.rows[0]!.count = String(rowCount);
+        }
+        return result;
+      });
+      try {
+        await run();
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it(`rejects with a clean 400 when the filtered count exceeds XLSX_EXPORT_ROW_LIMIT (${XLSX_EXPORT_ROW_LIMIT.toLocaleString()})`, async () => {
+      await withMockedRowCount(XLSX_EXPORT_ROW_LIMIT + 1, async () => {
+        const res = await authedInject(app, { method: "GET", url: "/api/assets/export?format=xlsx" });
+        expect(res.statusCode).toBe(400);
+        expect(res.headers["content-type"]).not.toContain("spreadsheetml");
+        const body = res.json();
+        expect(body.error).toContain(`${(XLSX_EXPORT_ROW_LIMIT + 1).toLocaleString()} rows`);
+        expect(body.error).toMatch(/background/i);
+      });
+    });
+
+    it("accepts a filtered count right at XLSX_EXPORT_ROW_LIMIT itself (the check is exclusive on the high side)", async () => {
+      await withMockedRowCount(XLSX_EXPORT_ROW_LIMIT, async () => {
+        const res = await authedInject(app, { method: "GET", url: "/api/assets/export?format=xlsx" });
+        expect(res.statusCode).toBe(200);
+        expect(res.headers["content-type"]).toContain("spreadsheetml.sheet");
+      });
     });
   });
 });

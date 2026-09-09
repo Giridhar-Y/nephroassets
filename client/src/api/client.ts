@@ -228,13 +228,18 @@ export function createTransfer(payload: {
 // other file download link. `conditions` (the Excel-style column-header custom filters)
 // is included via the same array-of-objects JSON serialization fetchAssets uses — the
 // export route now parses and applies it exactly like GET /api/assets does.
-export function getExportUrl(params: { asAt: string } & AssetFilters): string {
+// `format` defaults server-side to "csv" (assetsExport.ts's exportQuerySchema) — pass
+// "xlsx" for the styled, two-tier-merged-header workbook (small/filtered exports only,
+// see XLSX_EXPORT_ROW_LIMIT; RegisterPage.tsx routes to the background CSV export above
+// that size instead of calling this route with format=xlsx).
+export function getExportUrl(params: { asAt: string } & AssetFilters, format?: "csv" | "xlsx"): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== "") {
       setFilterParam(search, key, value);
     }
   }
+  if (format) search.set("format", format);
   return `/api/assets/export?${search.toString()}`;
 }
 

@@ -2,13 +2,14 @@ import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
+import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow, mapSettingsRow } from "../db/mappers.js";
 import type { AssetRow, TransferRow, SettingsRow } from "../db/mappers.js";
 import { computeAsset } from "../calc/engine.js";
-import type { AssetCalculationResult, AssetInput } from "../calc/types.js";
+import type { AssetCalculationResult, AssetInput, FySettings } from "../calc/types.js";
 import {
   buildCalcCteExtras,
   buildConditionSql,
@@ -103,6 +104,23 @@ const EXPORT_BATCH_SIZE = 20_000;
 // render.yaml).
 export const EXPORT_ROW_LIMIT = 400_000;
 
+// Separate, much lower cap for the styled .xlsx format (format=xlsx) — a per-cell
+// styled/merged workbook is far heavier per row than flat CSV text (the pre-2026-09-04
+// ExcelJS-styled export measured 93-123s at 250,000 rows, ~40% of that in per-cell
+// styling alone; see EXPORT_BATCH_SIZE's own comment), and unlike the CSV/background-R2
+// path, a single ZIP/xlsx buffer can't be produced across multiple resumable hops (its
+// central directory and DEFLATE compression both require one continuous write from first
+// row to last). Anything larger than this is expected to go through the background R2
+// export instead (client/src/pages/RegisterPage.tsx routes on this same threshold before
+// ever calling this route with format=xlsx) — this is the defensive server-side backstop.
+export const XLSX_EXPORT_ROW_LIMIT = 15_000;
+
+// Accounting format: positive;negative;zero — a real numeric 0 or blank cell displays as
+// "-" (a normal Excel display convention), but the underlying value stays a true number
+// (or null for a genuinely inapplicable field like WDV on a non-disposed asset), so
+// formulas like =A2-B2 or =SUM(...) never see text and never throw #VALUE!.
+const MONEY_FMT = '#,##0.00;(#,##0.00);"-"';
+
 // Comma-separated multi-value filters — see the identical helper in assets.ts (the
 // non-export list route), which this route's filters intentionally mirror.
 const multiValue = z
@@ -131,7 +149,12 @@ export const exportQuerySchema = z.object({
   conditions: conditionsQuerySchema,
   // Finance FAR Dashboard drill-through — same shared predicate as GET /api/assets, so
   // "Export to Excel" from a drill-through view exports exactly those rows.
-  exception: z.enum(EXCEPTION_KEYS).optional()
+  exception: z.enum(EXCEPTION_KEYS).optional(),
+  // "csv" (default, unchanged) keeps every existing caller/test working as-is. "xlsx" is
+  // the new styled, two-tier-merged-header format for small/filtered exports (see
+  // XLSX_EXPORT_ROW_LIMIT) — irrelevant to the background job route, which always writes
+  // CSV regardless of what's stored in its persisted `filters`.
+  format: z.enum(["csv", "xlsx"]).optional().default("csv")
 });
 
 export interface LabelContext {
@@ -171,7 +194,7 @@ export function csvLine(values: Array<string | number | null>): string {
 // (typography + borders only, no color — see AssetGrid.tsx), the export keeps a distinct
 // muted fill per group; a spreadsheet has no sticky/collapsible affordances to lean on
 // for orientation the way the live table does, so color still earns its place here.
-const GROUP_INFO: Record<string, { label: string; fill: string }> = {
+export const GROUP_INFO: Record<string, { label: string; fill: string }> = {
   g1: { label: "Asset Identification", fill: "FFF1F5F9" }, // slate-100
   g2: { label: "Gross Block (Cost)", fill: "FFEFF6FF" }, // blue-50
   g3: { label: "Addition Date", fill: "FFECFEFF" }, // cyan-50
@@ -461,7 +484,7 @@ export function resolveLabel(col: ExportColumn, ctx: LabelContext): string {
 // Contiguous runs of the same groupKey, for the group-band row's merged cells — same
 // approach as the client's buildBandSegments, minus the pinned-column concept (nothing
 // is pinned in a spreadsheet).
-function groupRuns(columns: ExportColumn[]): Array<{ groupKey: string; startCol: number; endCol: number }> {
+export function groupRuns(columns: ExportColumn[]): Array<{ groupKey: string; startCol: number; endCol: number }> {
   const runs: Array<{ groupKey: string; startCol: number; endCol: number }> = [];
   columns.forEach((col, i) => {
     const colNumber = i + 1;
@@ -565,6 +588,114 @@ async function countMatchingRows(
     countParams
   );
   return Number(rows[0]!.count);
+}
+
+// Brand navy — the same fill the Audit Reconciliation export's title row already uses
+// (reports.ts's buildReconciliationWorkbook), reused here for the group-header band
+// rather than inventing a second "brand color" for this file's own two-tier header.
+const GROUP_HEADER_FILL = "FF1F4E79";
+const COLUMN_HEADER_FILL = "FFE2E8F0"; // slate-200 — a lighter, neutral tier under the navy group band
+
+/** Builds the styled, two-tier-header .xlsx for a small/filtered export (format=xlsx,
+ *  capped at XLSX_EXPORT_ROW_LIMIT — see its own comment for why this can't scale to the
+ *  220k-row background export the way CSV does). A single in-memory ExcelJS.Workbook,
+ *  not the streaming WorkbookWriter reports.ts's Transfer & Depreciation Schedule export
+ *  uses — at this row cap the whole file comfortably fits in memory in one shot, so the
+ *  simpler non-streaming API is all this needs. Row 1: group band (merged across each
+ *  group's columns, per GROUP_INFO). Row 2: column names. Row 3+: one row per asset, with
+ *  real numeric cell values (never a formatted string) and MONEY_FMT applied to every
+ *  numeric column, so Excel formulas (=A2-B2, =SUM(...)) work directly. No filter-summary
+ *  note or totals row here — this format's whole point is a clean, formula-ready table
+ *  starting at row 1, not a report layout. */
+async function buildXlsxExport(
+  db: pg.Pool,
+  args: {
+    whereClause: string;
+    params: unknown[];
+    computedConditions: string[];
+    computedWhereClause: string;
+    exportColumns: ExportColumn[];
+    asAt: string;
+    fy: FySettings;
+    ctx: LabelContext;
+  }
+): Promise<ExcelJS.Buffer> {
+  const { whereClause, params, computedConditions, computedWhereClause, exportColumns, asAt, fy, ctx } = args;
+
+  let rows: AssetRow[];
+  if (computedConditions.length === 0) {
+    ({ rows } = await db.query<AssetRow>(`SELECT * FROM assets ${whereClause} ORDER BY far_id`, params));
+  } else {
+    const calcParams = [...params];
+    const calcExtras = buildCalcCteExtras(calcParams, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: fy.daysInFy });
+    ({ rows } = await db.query<AssetRow>(
+      `WITH calc_base AS (
+         SELECT assets.*, ${calcExtras}
+         FROM assets ${whereClause}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
+       )
+       SELECT * FROM calc ${computedWhereClause} ORDER BY far_id`,
+      calcParams
+    ));
+  }
+
+  const farIds = rows.map((r) => r.far_id);
+  const { rows: transferRows } = await db.query<TransferRow>(
+    `SELECT far_id, transaction_date, location FROM transfers
+     WHERE far_id = ANY($1) AND transaction_date <= $2 AND deleted_at IS NULL
+     ORDER BY far_id, transaction_date`,
+    [farIds, asAt]
+  );
+  const transfersByFarId = new Map<string, TransferRow[]>();
+  for (const t of transferRows) {
+    const list = transfersByFarId.get(t.far_id);
+    if (list) list.push(t);
+    else transfersByFarId.set(t.far_id, [t]);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Register");
+  sheet.columns = exportColumns.map((c) => ({ width: c.width }));
+  sheet.views = [{ state: "frozen", ySplit: 2 }];
+
+  const groupRow = sheet.getRow(1);
+  for (const run of groupRuns(exportColumns)) {
+    sheet.mergeCells(1, run.startCol, 1, run.endCol);
+    const cell = groupRow.getCell(run.startCol);
+    cell.value = GROUP_INFO[run.groupKey]!.label;
+    cell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GROUP_HEADER_FILL } };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+  }
+  groupRow.commit();
+
+  const headerRow = sheet.getRow(2);
+  exportColumns.forEach((c, i) => {
+    const cell = headerRow.getCell(i + 1);
+    cell.value = resolveLabel(c, ctx);
+    cell.font = { bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLUMN_HEADER_FILL } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+  headerRow.commit();
+
+  for (const row of rows) {
+    const asset = mapAssetRow(row);
+    const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
+    const result = computeAsset(asset, fy, relevantTransfers);
+    const values = exportColumns.map((c) => {
+      const v = c.value(asset, result);
+      return c.kind === "date" ? ddmmyyyy(v as string | null) : v;
+    });
+    const excelRow = sheet.addRow(values);
+    exportColumns.forEach((c, i) => {
+      if (c.kind === "number") excelRow.getCell(i + 1).numFmt = MONEY_FMT;
+    });
+  }
+
+  return workbook.xlsx.writeBuffer();
 }
 
 export default async function assetsExportRoutes(app: FastifyInstance) {
@@ -742,6 +873,40 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       };
     }
 
+    // Same "scoped to C1-only Sub Classification(s)" rule Register's own screen uses
+    // (client/src/lib/columns.ts's allScopedC1Only) — only the exact multi-select filter
+    // is checked here (not a custom-condition "equals", which the screen also honors),
+    // since that's what this export's own query params carry. An unfiltered or
+    // mixed-classification export always keeps every column. Computed here (ahead of the
+    // CSV-only totals query below) since the xlsx branch needs it too and skips that query
+    // entirely — it has no totals row.
+    let shouldHideC2 = false;
+    if (q.subClassification && q.subClassification.length > 0) {
+      const maps = await loadActiveMasterMaps(db);
+      shouldHideC2 = q.subClassification.every((name) => {
+        const canonical = lookupCanonical(maps.subClassifications, name);
+        return canonical !== undefined && maps.subClassificationHasComponent2.get(canonical) === false;
+      });
+    }
+    const exportColumns = shouldHideC2 ? EXPORT_COLUMNS.filter((c) => !C2_EXPORT_KEYS.has(c.key)) : EXPORT_COLUMNS;
+
+    if (q.format === "xlsx") {
+      // A much lower cap than CSV's (XLSX_EXPORT_ROW_LIMIT's own comment explains why a
+      // styled xlsx can't use the same batched-streaming approach at all) — the client
+      // routes larger requests to the background R2 export before ever getting here, this
+      // is the defensive backstop for a direct/miscalculated call.
+      if (rowCount > XLSX_EXPORT_ROW_LIMIT) {
+        reply.code(400);
+        return {
+          error: `This export would include ${rowCount.toLocaleString()} rows — the styled Excel format supports up to ${XLSX_EXPORT_ROW_LIMIT.toLocaleString()}. Narrow your filters, or use the regular Export button, which switches to a background CSV export automatically above this size.`
+        };
+      }
+      const buffer = await buildXlsxExport(db, { whereClause, params, computedConditions, computedWhereClause, exportColumns, asAt, fy, ctx });
+      reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      reply.header("Content-Disposition", `attachment; filename="far-register-${asAt}.xlsx"`);
+      return reply.send(buffer);
+    }
+
     // Totals row: one aggregate pass over every matching row (same filters, no cursor),
     // computed in Postgres via the same `far_calc_component` SQL port of the calc engine
     // the other reports already use — reading all 2,50,000+ rows into Node just to sum
@@ -827,21 +992,6 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       c1Nbv: num(t.c1_nbv),
       c2Nbv: num(t.c2_nbv)
     };
-
-    // Same "scoped to C1-only Sub Classification(s)" rule Register's own screen uses
-    // (client/src/lib/columns.ts's allScopedC1Only) — only the exact multi-select filter
-    // is checked here (not a custom-condition "equals", which the screen also honors),
-    // since that's what this export's own query params carry. An unfiltered or
-    // mixed-classification export always keeps every column.
-    let shouldHideC2 = false;
-    if (q.subClassification && q.subClassification.length > 0) {
-      const maps = await loadActiveMasterMaps(db);
-      shouldHideC2 = q.subClassification.every((name) => {
-        const canonical = lookupCanonical(maps.subClassifications, name);
-        return canonical !== undefined && maps.subClassificationHasComponent2.get(canonical) === false;
-      });
-    }
-    const exportColumns = shouldHideC2 ? EXPORT_COLUMNS.filter((c) => !C2_EXPORT_KEYS.has(c.key)) : EXPORT_COLUMNS;
 
     reply.header("Content-Type", "text/csv; charset=utf-8");
     reply.header("Content-Disposition", `attachment; filename="far-register-${asAt}.csv"`);
