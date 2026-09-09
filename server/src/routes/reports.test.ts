@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import ExcelJS from "exceljs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import reportsRoutes from "./reports.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
@@ -2324,5 +2324,210 @@ describe("Audit Reconciliation: deliberately still includes assets disposed befo
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.items.some((i: { subClassification: string }) => i.subClassification === "Test-ReconPriorFY")).toBe(true);
+  });
+});
+
+// Register Summary, Location Summary, and Depreciation Posting each cache their result
+// (see db/reportCache.ts) — a real cost at 220,000+ rows: Register Summary alone
+// measured ~32s unfiltered against this repo's own scale-test harness (scale.loadtest.ts).
+// Invalidation is wired up at the pool level (db/pool.ts's installReportCacheInvalidation),
+// not as an explicit call at every asset/transfer/settings-mutating route — these tests
+// prove that single choke point actually catches a real write, not just that the cache
+// returns a hit on a repeat request.
+describe("Report caching (Register Summary / Location Summary / Depreciation Posting)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("Register Summary: a second identical request is served from cache, without querying the database again", async () => {
+    await insertAsset({
+      far_id: "CACHE-RS-1",
+      sub_classification: "Test-Cache",
+      asset_description: "Cache test asset",
+      serial_no: "CRS1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-Cache"
+    });
+
+    const first = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json();
+
+    const db = await getPool();
+    const querySpy = vi.spyOn(db, "query");
+    const second = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(firstBody);
+    // The settings lookup at the very top of computeRegisterSummary always runs before
+    // the cache check — this asserts nothing PAST that (no grouped/grand-total query)
+    // ran a second time, not that db.query was never called at all.
+    const calSql = querySpy.mock.calls.map((c) => String(c[0]));
+    expect(calSql.some((sql) => sql.includes("GROUP BY sub_classification, status, effective_location"))).toBe(false);
+    querySpy.mockRestore();
+  });
+
+  it("Register Summary: creating a new asset busts the cache, so the very next request reflects it", async () => {
+    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    const beforeCount = before.json().grandTotal.assetCount;
+
+    await insertAsset({
+      far_id: "CACHE-RS-BUST",
+      sub_classification: "Test-Cache-Bust",
+      asset_description: "Busts the cache",
+      serial_no: "CRSB1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-CacheBust"
+    });
+
+    const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(after.json().grandTotal.assetCount).toBe(beforeCount + 1);
+    expect(after.json().groups.some((g: { location: string }) => g.location === "Center-CacheBust")).toBe(true);
+  });
+
+  it("Register Summary: a disposal (an UPDATE, not an INSERT) also busts the cache", async () => {
+    await insertAsset({
+      far_id: "CACHE-RS-DISPOSE",
+      sub_classification: "Test-Cache-Dispose",
+      asset_description: "Will be disposed",
+      serial_no: "CRSD1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      status: "Active",
+      location: "Center-CacheDispose"
+    });
+    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(
+      before.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Active")
+    ).toBe(true);
+
+    const db = await getPool();
+    await db.query(
+      `UPDATE assets SET status = 'Disposed', date_of_disposal = $1, deletions_c1 = c1_opening_cost WHERE far_id = 'CACHE-RS-DISPOSE'`,
+      [AS_AT]
+    );
+
+    const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(
+      after.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Disposed")
+    ).toBe(true);
+    expect(
+      after.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Active")
+    ).toBe(false);
+  });
+
+  it("Location Summary and Depreciation Posting are also cached and also invalidated by a write", async () => {
+    await insertAsset({
+      far_id: "CACHE-OTHER-1",
+      sub_classification: "Test-Cache-Other",
+      asset_description: "Location/Dep Posting cache test",
+      serial_no: "CO1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-CacheOther"
+    });
+
+    const locBefore = await authedInject(app, {
+      method: "GET",
+      url: "/api/reports/location-summary?location=Center-CacheOther"
+    });
+    expect(locBefore.json().assetCount).toBe(1);
+    const depBefore = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
+    const depBeforeTotal = depBefore.json().totalPeriodDepreciation;
+
+    await insertAsset({
+      far_id: "CACHE-OTHER-2",
+      sub_classification: "Test-Cache-Other",
+      asset_description: "A second asset, same location",
+      serial_no: "CO2",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 20000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-CacheOther"
+    });
+
+    const locAfter = await authedInject(app, {
+      method: "GET",
+      url: "/api/reports/location-summary?location=Center-CacheOther"
+    });
+    expect(locAfter.json().assetCount).toBe(2);
+    const depAfter = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
+    expect(depAfter.json().totalPeriodDepreciation).toBeGreaterThan(depBeforeTotal);
+  });
+
+  it("a Settings change (e.g. Figures As Of) busts the cache too", async () => {
+    await insertAsset({
+      far_id: "CACHE-SETTINGS-1",
+      sub_classification: "Test-Cache-Settings",
+      asset_description: "Settings-change cache test",
+      serial_no: "CS1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-CacheSettings"
+    });
+
+    // No explicit ?asAt= — resolved from the settings row, so the cached result should
+    // become stale (wrong echoed `asAt`) the moment that row changes, if invalidation
+    // didn't actually fire.
+    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    expect(before.json().asAt).toBe(AS_AT);
+
+    const db = await getPool();
+    const NEW_AS_AT = "2026-07-01";
+    await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [NEW_AS_AT]);
+    try {
+      const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      expect(after.json().asAt).toBe(NEW_AS_AT);
+    } finally {
+      await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [AS_AT]);
+    }
   });
 });

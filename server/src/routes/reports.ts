@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
+import { getCachedReport, reportCacheKey, setCachedReport } from "../db/reportCache.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
@@ -1500,6 +1501,17 @@ async function computeRegisterSummary(
   const fyStart = settingsRow.fy_start;
   const fy = { fyStart, fyEnd: settingsRow.fy_end, daysInFy: settingsRow.days_in_fy };
 
+  // See reportCache.ts's own comment for why this exists and how it's invalidated.
+  // Keyed on the RESOLVED asAt (not the raw, possibly-absent q.asAt) so a request that
+  // omits asAt and one that explicitly names today's settings.as_at share one entry.
+  const cacheKey = reportCacheKey("register-summary", {
+    q,
+    asAt,
+    centerScope: user.centerScope ? [...user.centerScope].sort() : null
+  });
+  const cached = getCachedReport<RegisterSummaryResult>(cacheKey);
+  if (cached) return { ok: true, result: cached };
+
   const conditions: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
   const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
@@ -1612,7 +1624,9 @@ async function computeRegisterSummary(
   const t = totalRows[0]!;
   const grandTotal = { assetCount: Number(t.asset_count), ...extractSummableTotals(t) };
 
-  return { ok: true, result: { asAt, fyStart, filterSummaryText, columns, groups, grandTotal } };
+  const result: RegisterSummaryResult = { asAt, fyStart, filterSummaryText, columns, groups, grandTotal };
+  setCachedReport(cacheKey, result);
+  return { ok: true, result };
 }
 
 export default async function reportsRoutes(app: FastifyInstance) {
@@ -1641,6 +1655,16 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
+    // See reportCache.ts's own comment for why this exists and how it's invalidated.
+    // Keyed by location + resolved asAt — a scoped user's own access to `location` was
+    // already checked above, so no separate centerScope key component is needed here
+    // (unlike Register Summary, which can return rows across many locations at once).
+    const locationCacheKey = reportCacheKey("location-summary", { location: parsed.data.location, asAt: fy.asAt });
+    const cachedLocation = getCachedReport<{ location: string; asAt: string; assetCount: number; totalC1GrossBlock: number }>(
+      locationCacheKey
+    );
+    if (cachedLocation) return cachedLocation;
+
     const { rows } = await db.query<{ asset_count: string; total_c1_gross_block: string | null }>(
       `SELECT
          COUNT(*) AS asset_count,
@@ -1657,12 +1681,14 @@ export default async function reportsRoutes(app: FastifyInstance) {
     );
 
     const row = rows[0]!;
-    return {
+    const locationResult = {
       location: parsed.data.location,
       asAt: fy.asAt,
       assetCount: Number(row.asset_count),
       totalC1GrossBlock: Number(row.total_c1_gross_block)
     };
+    setCachedReport(locationCacheKey, locationResult);
+    return locationResult;
   });
 
   app.get("/api/reports/audit-reconciliation", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
@@ -1726,6 +1752,18 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
+    // See reportCache.ts's own comment for why this exists and how it's invalidated.
+    const depPostingCacheKey = reportCacheKey("depreciation-posting", {
+      asAt: fy.asAt,
+      centerScope: req.user!.centerScope ? [...req.user!.centerScope].sort() : null
+    });
+    const cachedDepPosting = getCachedReport<{
+      asAt: string;
+      totalPeriodDepreciation: number;
+      breakdown: Array<{ subClassification: string; c1PeriodDep: number; c2PeriodDep: number; total: number }>;
+    }>(depPostingCacheKey);
+    if (cachedDepPosting) return cachedDepPosting;
+
     const depPostingParams: unknown[] = [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
     // Same reasoning as GET /api/assets and the Register Export: an asset disposed of
     // before the active FY began is prior-year history, not part of the current posting
@@ -1767,7 +1805,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
 
     const totalPeriodDepreciation = breakdown.reduce((sum, b) => sum + b.total, 0);
 
-    return { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
+    const depPostingResult = { asAt: fy.asAt, totalPeriodDepreciation, breakdown };
+    setCachedReport(depPostingCacheKey, depPostingResult);
+    return depPostingResult;
   });
 
   // Register Summary: the Register Export's own numeric columns, totaled by Sub

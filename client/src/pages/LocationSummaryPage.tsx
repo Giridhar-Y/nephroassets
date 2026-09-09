@@ -99,7 +99,7 @@ export function LocationSummaryPage() {
             <div className="rounded-xl bg-white px-5 py-4 shadow-sm">
               <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Assets at this Location</div>
               <div className="mt-1 text-2xl font-semibold text-ink">
-                {summaryLoading ? "…" : (summary?.assetCount ?? 0)}
+                {summaryLoading ? <div className="h-7 w-12 animate-pulse rounded bg-gray-100" /> : (summary?.assetCount ?? 0)}
               </div>
             </div>
             <div className="rounded-xl bg-white px-5 py-4 shadow-sm">
@@ -107,12 +107,18 @@ export function LocationSummaryPage() {
                 <Tooltip text={FIELD_INFO.grossBlock.tooltip}>Total C1 {FIELD_INFO.grossBlock.label}</Tooltip>
               </div>
               <div className="mt-1 text-2xl font-semibold text-ink">
-                {summaryLoading ? "…" : formatCurrency(summary?.totalC1GrossBlock ?? 0)}
+                {summaryLoading ? (
+                  <div className="h-7 w-28 animate-pulse rounded bg-gray-100" />
+                ) : (
+                  formatCurrency(summary?.totalC1GrossBlock ?? 0)
+                )}
               </div>
             </div>
             <div className="rounded-xl bg-white px-5 py-4 shadow-sm">
               <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">As Of</div>
-              <div className="mt-1 text-2xl font-semibold text-ink">{asAt ? formatDate(asAt) : "…"}</div>
+              <div className="mt-1 text-2xl font-semibold text-ink">
+                {asAt ? formatDate(asAt) : <div className="h-7 w-24 animate-pulse rounded bg-gray-100" />}
+              </div>
             </div>
           </div>
         )}
