@@ -27,7 +27,9 @@ All outputs recalculate instantly when AS_AT changes.
 Apply identically and independently to C1 and C2.
 
 1. **Effective End Date** = Disposal Date, if Disposal Date is on or before AS_AT; otherwise AS_AT.
-2. **Days Held (opening balance)** = Effective End Date minus FY Start, plus one.
+2. **Opening vs. Addition classification** — a cost tranche (Opening Cost @ Date Acquired, or Additions @ Date of Addition) is classified live against the *current* FY Start every time a figure is computed, not fixed at data-entry time: dated strictly before FY Start → part of Opening Gross Block; dated on or after FY Start (and on or before Effective End Date) → an Addition during the FY. This reclassification happens automatically as FY Start is advanced from year to year — no manual step is needed for the Gross Block side (contrast with Opening Acc Dep, which is still carried forward manually — see "Explicitly Out of Scope" below).
+   *(Changed 2026-09-09, per finance policy: a tranche dated **exactly on** FY Start now counts as an Addition, not Opening — previously "on or before FY Start" counted as Opening. This only moves an amount between the Opening/Additions Gross Block figures; it never changes Period Depreciation, Closing Acc Dep, or NBV totals.)*
+   **Days Held (opening balance)** = Effective End Date minus FY Start, plus one.
    **Days Held (additions)** = Effective End Date minus Date of Addition, plus one.
 3. **Depreciation on Opening** = Opening Cost divided by Useful Life, multiplied by (Days Held divided by Days in FY).
 4. **Depreciation on Additions** = Addition Cost divided by Useful Life, multiplied by (Days Held from Addition divided by Days in FY).
@@ -58,6 +60,6 @@ Apply identically and independently to C1 and C2.
 - Any depreciation method other than straight-line (SLM).
 - Multi-currency, revaluation, or impairment accounting.
 - More than two cost components per asset.
-- Automated financial-year rollover (rollover is a manual step: carry Closing NBV and Closing Acc Dep into next year's Opening fields).
+- Automated rollover of **Accumulated Depreciation** (Opening Acc Dep must still be carried forward manually into next year's Opening field). Gross Block itself — the Opening vs. Addition split — *does* now reclassify automatically as FY Start advances (see Calculation Logic step 2); that part of rollover is no longer a manual step.
 - User roles/permissions, approval workflows, or audit trails beyond the reconciliation check above.
 - Integrations with ERP/GL systems beyond producing the journal entry summary figure.
