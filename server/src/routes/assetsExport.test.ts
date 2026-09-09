@@ -175,6 +175,22 @@ describe("Register Export: GET /api/assets/export", () => {
     expect(dataRow).not.toContain("EXP-NEW");
   });
 
+  it("excludes an asset disposed before FY Start, but keeps one disposed on/after it", async () => {
+    await insertAsset("EXP-DISPOSED-PRIOR-FY", { status: "Disposed", date_of_disposal: "2025-12-15" });
+    await insertAsset("EXP-DISPOSED-ON-FY-START", { status: "Disposed", date_of_disposal: FY_START });
+    await insertAsset("EXP-DISPOSED-THIS-FY", { status: "Disposed", date_of_disposal: "2026-06-01" });
+    await insertAsset("EXP-NEVER-DISPOSED");
+
+    const res = await authedInject(app, { method: "GET", url: `/api/assets/export?asAt=${AS_AT}` });
+    const rows = readCsv(res.rawPayload);
+    const farIdCol = readRow(rows, HEADER_ROW).indexOf("FAR ID") + 1;
+    const exportedFarIds = rows.slice(FIRST_DATA_ROW - 1).map((r) => r[farIdCol - 1]);
+    expect(exportedFarIds).not.toContain("EXP-DISPOSED-PRIOR-FY");
+    expect(exportedFarIds).toContain("EXP-DISPOSED-ON-FY-START");
+    expect(exportedFarIds).toContain("EXP-DISPOSED-THIS-FY");
+    expect(exportedFarIds).toContain("EXP-NEVER-DISPOSED");
+  });
+
   it("applies filters (center) so only matching rows are exported", async () => {
     await insertAsset("EXP-4");
     await insertAsset("EXP-5", { location: "Center-Other" });

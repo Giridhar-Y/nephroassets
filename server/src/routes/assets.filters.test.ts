@@ -92,6 +92,71 @@ describe("GET /api/assets: an asset never appears before its own capitalization 
   });
 });
 
+describe("GET /api/assets: assets disposed before the active FY are excluded from the Register", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(assetsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+    await db.query(
+      `INSERT INTO assets (
+         far_id, sub_classification, asset_description, status, date_acquired, date_of_disposal, location,
+         useful_life_c1_years, useful_life_c2_years, c1_opening_cost
+       ) VALUES
+         ('DISPOSED-PRIOR-FY', 'Test-Sub', 'Disposed before FY Start', 'Disposed', '2020-01-01', '2025-12-15', 'Center-A', 5, 5, 100000),
+         ('DISPOSED-ON-FY-START', 'Test-Sub', 'Disposed exactly on FY Start', 'Disposed', '2020-01-01', $1, 'Center-A', 5, 5, 100000),
+         ('DISPOSED-THIS-FY', 'Test-Sub', 'Disposed within the FY', 'Disposed', '2020-01-01', '2026-06-01', 'Center-A', 5, 5, 100000)`,
+      [FY_START]
+    );
+    await insertAsset("ACTIVE-ASSET", "Never disposed");
+  });
+
+  function farIds(res: { json: () => { items: Array<{ asset: { farId: string } }> } }): string[] {
+    return res.json().items.map((i) => i.asset.farId);
+  }
+
+  it("excludes an asset disposed before FY Start", async () => {
+    const res = await authedInject(app, { method: "GET", url: `/api/assets?asAt=${AS_AT}` });
+    expect(farIds(res)).not.toContain("DISPOSED-PRIOR-FY");
+  });
+
+  it("keeps an asset disposed exactly on FY Start (boundary is inclusive, matching the Opening/Addition boundary policy)", async () => {
+    const res = await authedInject(app, { method: "GET", url: `/api/assets?asAt=${AS_AT}` });
+    expect(farIds(res)).toContain("DISPOSED-ON-FY-START");
+  });
+
+  it("keeps an asset disposed within the active FY", async () => {
+    const res = await authedInject(app, { method: "GET", url: `/api/assets?asAt=${AS_AT}` });
+    expect(farIds(res)).toContain("DISPOSED-THIS-FY");
+  });
+
+  it("keeps an asset that was never disposed", async () => {
+    const res = await authedInject(app, { method: "GET", url: `/api/assets?asAt=${AS_AT}` });
+    expect(farIds(res)).toContain("ACTIVE-ASSET");
+  });
+});
+
 describe("GET /api/assets: hasAddition filter (Additions Log)", () => {
   let app: FastifyInstance;
 

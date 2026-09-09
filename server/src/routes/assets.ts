@@ -236,6 +236,14 @@ export default async function assetsRoutes(app: FastifyInstance) {
     conditions.push(`deleted_at IS NULL`);
     params.push(asAt);
     conditions.push(`date_acquired <= $${params.length}`);
+    // An asset fully disposed of before the active financial year began is prior-year
+    // history, not part of the current Register — same reasoning as the date_acquired
+    // gate above, just at the other end of an asset's life. `>=` matches fy_start's own
+    // Opening/Addition boundary (2026-09-09 policy: the FY Start day itself belongs to
+    // the new year), so a disposal dated exactly on FY Start still counts as "this year"
+    // and stays visible.
+    params.push(fySettings.fy_start);
+    conditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);
       conditions.push(`date_acquired >= $${params.length}`);

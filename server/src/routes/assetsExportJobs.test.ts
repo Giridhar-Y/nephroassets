@@ -196,6 +196,27 @@ describe("Background Register export: advanceExportJob", () => {
     expect(farIdsInBody).toEqual(["JOBTEST-001", "JOBTEST-002", "JOBTEST-003"]);
   });
 
+  it("excludes an asset disposed before FY Start, but keeps one disposed on/after it", async () => {
+    await insertAsset("JOBDISP-PRIOR-FY", { status: "Disposed", date_of_disposal: "2025-12-15" });
+    await insertAsset("JOBDISP-ON-FY-START", { status: "Disposed", date_of_disposal: FY_START });
+    await insertAsset("JOBDISP-THIS-FY", { status: "Disposed", date_of_disposal: "2026-06-01" });
+    const storage = new FakeObjectStorage();
+    await insertJobRow("job-disposal-fy", userId, { filters: { search: "JOBDISP" } });
+
+    await advanceExportJob(await getPool(), "job-disposal-fy", storage, 60_000);
+
+    const job = await fetchJobRow("job-disposal-fy");
+    const body = storage.completed.get(job.object_key)!;
+    const farIdsInBody = body
+      .split("\r\n")
+      .filter((l) => l.length > 0)
+      .slice(2)
+      .map((l) => l.split(",")[0]);
+    expect(farIdsInBody).not.toContain("JOBDISP-PRIOR-FY");
+    expect(farIdsInBody).toContain("JOBDISP-ON-FY-START");
+    expect(farIdsInBody).toContain("JOBDISP-THIS-FY");
+  });
+
   // Regression test for a real production failure: Cloudflare R2 rejected
   // CompleteMultipartUpload with "All non-trailing parts must have the same length" the
   // first time this feature ran against a real bucket — R2 enforces that constraint,
@@ -297,6 +318,13 @@ describe("Background Register export: HTTP routes", () => {
     // route (permissionEnforcement.test.ts) doesn't inherit this file's fake.
     setObjectStorageForTests(s3ObjectStorage);
     await app.close();
+    // The last test in this describe leaves its own job row behind (beforeEach only
+    // clears BEFORE each test, not after the final one) — clean it up here so it doesn't
+    // outlive this file and block a later file's own `DELETE FROM users` on this file's
+    // test users via export_jobs' FK (a real collision found running this file next to
+    // roles.test.ts).
+    const db = await getPool();
+    await db.query(`DELETE FROM export_jobs`);
   });
 
   beforeEach(async () => {

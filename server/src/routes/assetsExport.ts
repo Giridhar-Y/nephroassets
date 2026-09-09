@@ -639,6 +639,10 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     // asset not yet capitalized as of that date — always applied.
     params.push(asAt);
     conditions.push(`date_acquired <= $${params.length}`);
+    // Same reasoning as GET /api/assets: an asset disposed of before the active FY
+    // began is prior-year history, not part of the current export.
+    params.push(fySettings.fy_start);
+    conditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
     if (q.dateAcquiredFrom) {
       params.push(q.dateAcquiredFrom);
       conditions.push(`date_acquired >= $${params.length}`);

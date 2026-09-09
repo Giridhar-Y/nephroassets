@@ -101,7 +101,7 @@ function jobToJson(job: JobRow) {
  *  response, this one resumes across many stateless invocations. `centerScope` is fetched
  *  fresh by the caller (fetchCenterScope) rather than taken from a live `req.user`, since
  *  a background hop has no request of its own — see advanceExportJob. */
-function buildJobFilterSql(q: ExportQuery, centerScope: Set<string> | null, asAt: string) {
+function buildJobFilterSql(q: ExportQuery, centerScope: Set<string> | null, asAt: string, fyStart: string) {
   const conditions: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
   const scopeSql = centerScopeSql({ centerScope }, "COALESCE(revised_location, location)", params);
@@ -124,6 +124,10 @@ function buildJobFilterSql(q: ExportQuery, centerScope: Set<string> | null, asAt
   }
   params.push(asAt);
   conditions.push(`date_acquired <= $${params.length}`);
+  // Same reasoning as GET /api/assets / GET /api/assets/export: an asset disposed of
+  // before the active FY began is prior-year history, not part of the current export.
+  params.push(fyStart);
+  conditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
   if (q.dateAcquiredFrom) {
     params.push(q.dateAcquiredFrom);
     conditions.push(`date_acquired >= $${params.length}`);
@@ -219,7 +223,7 @@ export async function advanceExportJob(
     const ctx: LabelContext = { asAt: fy.asAt, fyStart: fy.fyStart };
 
     const centerScope = await fetchCenterScope(db, Number(job.user_id));
-    const { whereClause, conditions, params } = buildJobFilterSql(q, centerScope, job.as_at);
+    const { whereClause, conditions, params } = buildJobFilterSql(q, centerScope, job.as_at, fy.fyStart);
     const { computedConditions, computedWhereClause } = buildComputedConditions(q, params, job.as_at, fy);
 
     let shouldHideC2 = false;
