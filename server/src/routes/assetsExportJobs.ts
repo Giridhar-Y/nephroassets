@@ -38,6 +38,26 @@ const PROCESS_TIME_BUDGET_MS = 45_000;
 
 const SIGNED_URL_EXPIRY_SECONDS = 24 * 60 * 60;
 
+/** far-register-DD-MM-YYYY_HH-mm.csv, in IST — same date convention (DD-MM-YYYY) and
+ *  timezone (Asia/Kolkata) as the synchronous export's own exportedAtText
+ *  (assetsExport.ts), just filesystem-safe (hyphens, not the colons a clock time normally
+ *  uses — Windows rejects those in a filename). Computed once, at job completion, and
+ *  stored as the presigned URL's response-content-disposition override — the object's own
+ *  key stays a plain UUID path, this is only what the browser sees as the saved filename. */
+function buildDownloadFilename(): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata"
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `far-register-${part("day")}-${part("month")}-${part("year")}_${part("hour")}-${part("minute")}.csv`;
+}
+
 interface JobRow {
   id: string;
   user_id: string;
@@ -385,7 +405,7 @@ export async function advanceExportJob(
       return;
     }
     await storage.completeMultipartUpload(objectKey, uploadId!, uploadParts);
-    const fileUrl = await storage.getSignedDownloadUrl(objectKey, SIGNED_URL_EXPIRY_SECONDS);
+    const fileUrl = await storage.getSignedDownloadUrl(objectKey, SIGNED_URL_EXPIRY_SECONDS, buildDownloadFilename());
     await db.query(
       `UPDATE export_jobs
        SET status = 'COMPLETED', file_url = $1, file_size_bytes = $2, total_rows = $3, processed_rows = $3,

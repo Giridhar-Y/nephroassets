@@ -25,7 +25,13 @@ export interface ObjectStorage {
   uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string>;
   completeMultipartUpload(key: string, uploadId: string, parts: UploadPart[]): Promise<{ sizeBytes: number }>;
   abortMultipartUpload(key: string, uploadId: string): Promise<void>;
-  getSignedDownloadUrl(key: string, expiresInSeconds: number): Promise<string>;
+  /** `downloadFilename`, when given, sets the filename a browser saves the file under —
+   *  the object's own key is a UUID-bearing path (exports/<userId>/<jobId>.csv), never
+   *  something a user should see as a downloaded filename. Set via the presigned URL's
+   *  own response-content-disposition override rather than the object's stored
+   *  Content-Disposition, since the friendly name is only known at job-completion time,
+   *  after the object was already fully uploaded. */
+  getSignedDownloadUrl(key: string, expiresInSeconds: number, downloadFilename?: string): Promise<string>;
 }
 
 export interface UploadPart {
@@ -103,8 +109,16 @@ export const s3ObjectStorage: ObjectStorage = {
     await client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }));
   },
 
-  async getSignedDownloadUrl(key, expiresInSeconds) {
+  async getSignedDownloadUrl(key, expiresInSeconds, downloadFilename) {
     const { client, bucket } = getClient();
-    return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: expiresInSeconds });
+    return getSignedUrl(
+      client,
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ResponseContentDisposition: downloadFilename ? `attachment; filename="${downloadFilename}"` : undefined
+      }),
+      { expiresIn: expiresInSeconds }
+    );
   }
 };

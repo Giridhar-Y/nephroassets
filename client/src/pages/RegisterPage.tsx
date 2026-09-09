@@ -14,7 +14,7 @@ import { EditAssetModal } from "../components/EditAssetModal.js";
 import { AssetGrid } from "../components/AssetGrid.js";
 import { RecordMovementControl } from "../components/RecordMovementControl.js";
 import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "../components/ColumnFilterPopover.js";
-import { SearchIcon, WarningIcon } from "../lib/icons.js";
+import { SearchIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from "../hooks/useDebouncedValue.js";
 import { useExport } from "../hooks/useExport.js";
@@ -458,25 +458,10 @@ export function RegisterPage() {
               onMerge={() => setMergeOpen(true)}
             />
           )}
-          {/* Proactive, not blocking — `total` is Register's own already-loaded filtered
-              count (same filters the export itself uses), so this costs nothing extra
-              to check. The server's own count at export time stays authoritative
-              (clicking through anyway still gets a clean rejection, not a stuck
-              spinner), so a stale `total` here can only ever produce an unnecessary
-              warning, never a false "all clear." */}
-          {overLimit && (
-            <span
-              className="flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
-              title={`This filtered view has ${total!.toLocaleString()} rows — more than a single Export request can generate right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). It'll run in the background instead and notify you when it's ready; narrowing your filters (Center, Sub Classification, Status, or Date Acquired) still gets you a faster, instant download.`}
-            >
-              <WarningIcon fontSize={14} />
-              Large export — runs in background
-            </span>
-          )}
           <ExportButton
             url={exportUrl}
-            label={overLimit ? "Export in Background" : "Export to Excel"}
-            shortcutHint={overLimit ? "Export in Background (Ctrl+Shift+E)" : "Export to Excel (Ctrl+Shift+E)"}
+            label="Export"
+            shortcutHint="Export (Ctrl+Shift+E)"
             exporting={overLimit ? backgroundExporting : exportingRegister}
             onExport={handleExportClick}
           />
