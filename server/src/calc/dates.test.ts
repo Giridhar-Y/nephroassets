@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysHeldInclusive, isAfter, isOnOrBefore, maxIsoDate, parseIsoDate } from "./dates.js";
+import { daysHeldInclusive, isAfter, isBefore, isOnOrBefore, maxIsoDate, parseIsoDate } from "./dates.js";
 
 describe("parseIsoDate", () => {
   it("parses a normal date", () => {
@@ -34,6 +34,17 @@ describe("isOnOrBefore / isAfter", () => {
   it("equal dates are on-or-before but not after (boundary)", () => {
     expect(isOnOrBefore("2025-04-01", "2025-04-01")).toBe(true);
     expect(isAfter("2025-04-01", "2025-04-01")).toBe(false);
+  });
+});
+
+describe("isBefore", () => {
+  it("normal ordering", () => {
+    expect(isBefore("2025-04-01", "2025-09-30")).toBe(true);
+    expect(isBefore("2025-09-30", "2025-04-01")).toBe(false);
+  });
+
+  it("equal dates are not before themselves (boundary) — used by the FY-Start opening/addition classification (engine.ts), where a tranche dated EXACTLY on FY Start must not count as Opening", () => {
+    expect(isBefore("2025-04-01", "2025-04-01")).toBe(false);
   });
 });
 

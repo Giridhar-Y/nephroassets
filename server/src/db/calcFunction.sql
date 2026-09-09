@@ -6,6 +6,20 @@
 -- comparison at two different AS_AT dates (2026-07-31 and 2026-08-28), matching to the
 -- last decimal. Tagged `calc-engine-verified-2026-08-28`.
 --
+-- 2026-09-09 FY-Start boundary policy change (explicit user/finance sign-off): a cost
+-- tranche (opening_cost@date_acquired or additions@date_of_addition) dated EXACTLY on
+-- FY Start now classifies as a current-year event (Additions side / current-year
+-- capitalization), not Opening — every p_date <= p_fy_start boundary check below moved
+-- to strictly p_date < p_fy_start. This reverses the 2026-08-28-verified convention's
+-- own boundary choice (that version reasoned an asset capitalized exactly on FY Start
+-- day "was on the books for the whole year, same as one acquired earlier"; finance's
+-- stated policy is the opposite — FY Start day itself is already inside the new year).
+-- Confirmed via a live before/after check that both boundary choices produce IDENTICAL
+-- period_depreciation for a same-day tranche — this only moves an amount between the
+-- Opening Gross Block and Additions Gross Block report columns, never changes any
+-- depreciation total. Applies uniformly to BOTH p_date_acquired and p_date_of_addition
+-- (finance's policy wasn't addition-specific; asked and confirmed explicitly).
+--
 -- Any change here requires: (a) a written formula justification, (b) updated
 -- engine.test.ts + sqlParity.test.ts coverage, (c) a fresh before/after impact
 -- comparison against production data, (d) explicit user approval before merge.
@@ -193,9 +207,11 @@ $$;
 -- Opening vs Addition is a *live* classification of two dated cost tranches — the
 -- acquisition cost (p_opening_cost @ p_date_acquired) and the one mid-life addition
 -- (p_additions @ p_date_of_addition) — against the current p_fy_start, not a fixed
--- label. A tranche dated on or before FY Start is Opening; strictly after FY Start
--- (and on/before the relevant view-end date) is an Addition "during FY"; after that
--- view-end date it hasn't happened yet and contributes nothing. See engine.ts's
+-- label. A tranche dated strictly before FY Start is Opening; on or after FY Start
+-- (and on/before the relevant view-end date) is an Addition "during FY" — a tranche
+-- dated EXACTLY on FY Start counts as a current-year event, not Opening (2026-09-09
+-- finance policy, see this file's header); after that view-end date it hasn't
+-- happened yet and contributes nothing. See engine.ts's
 -- `splitTranche` — this function is its exact SQL mirror, kept in lock-step by
 -- sqlParity.test.ts.
 CREATE OR REPLACE FUNCTION far_calc_component(
@@ -281,15 +297,15 @@ BEGIN
   effective_end_date := CASE WHEN disposal_effective THEN p_date_of_disposal ELSE p_as_at END;
 
   -- Opening Gross Block / NBV as at FY Start (fixed snapshot, no AS_AT/disposal dependency)
-  acq_is_opening := p_opening_cost <> 0 AND p_date_acquired IS NOT NULL AND p_date_acquired <= p_fy_start;
+  acq_is_opening := p_opening_cost <> 0 AND p_date_acquired IS NOT NULL AND p_date_acquired < p_fy_start;
   opening_gross_block := CASE WHEN acq_is_opening THEN p_opening_cost ELSE 0 END
-    + CASE WHEN p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition <= p_fy_start
+    + CASE WHEN p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition < p_fy_start
            THEN p_additions ELSE 0 END;
   opening_nbv := opening_gross_block - p_acc_dep_opening;
 
   -- Steps 2-4: per-tranche days held / depreciation, live-classified against FY Start
   -- as of effective_end_date.
-  acq_is_opening := p_date_acquired <= p_fy_start; -- p_date_acquired is always present, unlike additions
+  acq_is_opening := p_date_acquired < p_fy_start; -- p_date_acquired is always present, unlike additions
   days_held_opening := GREATEST(0, (effective_end_date - p_fy_start) + 1);
   IF p_date_acquired > effective_end_date THEN
     acq_opening_amount := 0; acq_addition_amount := 0; acq_opening_dep := 0; acq_addition_dep := 0;
@@ -307,7 +323,7 @@ BEGIN
   END IF;
 
   add_applies := p_additions <> 0 AND p_date_of_addition IS NOT NULL AND p_date_of_addition <= effective_end_date;
-  add_is_opening := add_applies AND p_date_of_addition <= p_fy_start;
+  add_is_opening := add_applies AND p_date_of_addition < p_fy_start;
   days_held_addition := 0;
   add_opening_amount := 0; add_addition_amount := 0; add_opening_dep := 0; add_addition_dep := 0;
   IF add_applies AND add_is_opening THEN

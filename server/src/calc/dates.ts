@@ -22,6 +22,10 @@ export function isOnOrBefore(a: IsoDate, b: IsoDate): boolean {
   return parseIsoDate(a) <= parseIsoDate(b);
 }
 
+export function isBefore(a: IsoDate, b: IsoDate): boolean {
+  return parseIsoDate(a) < parseIsoDate(b);
+}
+
 export function isAfter(a: IsoDate, b: IsoDate): boolean {
   return parseIsoDate(a) > parseIsoDate(b);
 }
