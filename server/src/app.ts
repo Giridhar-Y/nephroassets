@@ -17,6 +17,7 @@ import bulkUploadRoutes from "./routes/bulkUpload.js";
 import bulkDisposalsRoutes from "./routes/bulkDisposals.js";
 import bulkTransfersRoutes from "./routes/bulkTransfers.js";
 import assetsExportRoutes from "./routes/assetsExport.js";
+import assetsExportJobsRoutes from "./routes/assetsExportJobs.js";
 import mastersRoutes from "./routes/masters.js";
 import bulkMastersRoutes from "./routes/bulkMasters.js";
 import bulkMergeRoutes from "./routes/bulkMerge.js";
@@ -80,6 +81,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(bulkDisposalsRoutes);
   await app.register(bulkTransfersRoutes);
   await app.register(assetsExportRoutes);
+  await app.register(assetsExportJobsRoutes);
   await app.register(mastersRoutes);
   await app.register(bulkMastersRoutes);
   await app.register(bulkMergeRoutes);

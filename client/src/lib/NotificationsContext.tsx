@@ -13,6 +13,11 @@ export interface AppNotification {
   type: "success" | "error";
   createdAt: number;
   read: boolean;
+  /** A clickable follow-up action (e.g. a signed download URL for a completed background
+   *  export) — optional, and rendered as a small link by NotificationsBell.tsx below the
+   *  message. Most notifications have none. */
+  link?: string;
+  linkLabel?: string;
 }
 
 function load(): AppNotification[] {
@@ -31,7 +36,7 @@ interface NotificationsContextValue {
    *  that started it — see NotificationsBell.tsx's own comment for which operations
    *  qualify and why. Not a generic toast replacement: most user actions already get
    *  immediate on-screen feedback and don't belong here too. */
-  addNotification: (message: string, type?: "success" | "error") => void;
+  addNotification: (message: string, type?: "success" | "error", opts?: { link?: string; linkLabel?: string }) => void;
   markAllRead: () => void;
   clear: () => void;
 }
@@ -65,9 +70,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(PERSISTED_UI_STATE_CLEARED_EVENT, onCleared);
   }, []);
 
-  const addNotification: NotificationsContextValue["addNotification"] = (message, type = "success") => {
+  const addNotification: NotificationsContextValue["addNotification"] = (message, type = "success", opts) => {
     setNotifications((prev) =>
-      [{ id: crypto.randomUUID(), message, type, createdAt: Date.now(), read: false }, ...prev].slice(0, MAX_NOTIFICATIONS)
+      [
+        { id: crypto.randomUUID(), message, type, createdAt: Date.now(), read: false, link: opts?.link, linkLabel: opts?.linkLabel },
+        ...prev
+      ].slice(0, MAX_NOTIFICATIONS)
     );
   };
 

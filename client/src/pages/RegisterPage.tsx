@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.js";
 import { useFilters } from "../lib/FiltersContext.js";
@@ -18,6 +18,7 @@ import { SearchIcon, WarningIcon } from "../lib/icons.js";
 import { useDensity } from "../hooks/useDensity.js";
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from "../hooks/useDebouncedValue.js";
 import { useExport } from "../hooks/useExport.js";
+import { useBackgroundExport } from "../hooks/useBackgroundExport.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 import { GridViewControls } from "../components/ui/GridViewControls.js";
@@ -168,25 +169,7 @@ export function RegisterPage() {
   // below and the toolbar button share one `exporting` state — see ExportButton's own
   // exporting/onExport props for why two independent copies would be a race.
   const { exporting: exportingRegister, runExport: runRegisterExport } = useExport(exportUrl);
-
-  // FAR module keyboard shortcut: Ctrl+Shift+E (Cmd+Shift+E on Mac) triggers the same
-  // export the toolbar button does. Suppressed while focus is inside an editable field
-  // (typing "E" while filtering the FAR ID search box shouldn't trigger a download) and
-  // preventDefault'd unconditionally on match so it can't fall through to a browser/OS
-  // binding on the same combination. runRegisterExport itself already no-ops while an
-  // export is in flight (see useExport) or when there's no asAt yet to export against.
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key.toLowerCase() !== "e" || !e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
-      e.preventDefault();
-      runRegisterExport();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [runRegisterExport]);
+  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport();
 
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);
@@ -206,6 +189,40 @@ export function RegisterPage() {
   // comment. `total` already reflects the current filters/AS_AT (useAssetList's own
   // includeTotal fetch), so this needs no extra query of its own.
   useSetRegisterAssetCount(total);
+
+  // A filtered view too large for the synchronous export (EXPORT_ROW_LIMIT below) runs as
+  // a background job instead (useBackgroundExport.ts) — same toolbar button and shortcut,
+  // just a different path once the row count is known, decided here rather than in
+  // ExportButton itself (a shared component 3 other export screens also use, none of
+  // which need this).
+  const overLimit = total !== null && total > EXPORT_ROW_LIMIT;
+  const handleExportClick = useCallback(() => {
+    if (overLimit) {
+      if (asAt) void startBackgroundExport({ asAt, ...assetListFilters });
+    } else {
+      runRegisterExport();
+    }
+  }, [overLimit, asAt, assetListFilters, startBackgroundExport, runRegisterExport]);
+
+  // FAR module keyboard shortcut: Ctrl+Shift+E (Cmd+Shift+E on Mac) triggers the same
+  // export the toolbar button does. Suppressed while focus is inside an editable field
+  // (typing "E" while filtering the FAR ID search box shouldn't trigger a download) and
+  // preventDefault'd unconditionally on match so it can't fall through to a browser/OS
+  // binding on the same combination. handleExportClick itself already no-ops a redundant
+  // click while one of its two paths is already in flight (see useExport/
+  // useBackgroundExport) or when there's no asAt yet to export against.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key.toLowerCase() !== "e" || !e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+      e.preventDefault();
+      handleExportClick();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleExportClick]);
   const [density, setDensity] = useDensity();
   const [selectionState, setSelectionState] = useState<SelectionState>({
     selected: new Set(),
@@ -447,20 +464,21 @@ export function RegisterPage() {
               (clicking through anyway still gets a clean rejection, not a stuck
               spinner), so a stale `total` here can only ever produce an unnecessary
               warning, never a false "all clear." */}
-          {total !== null && total > EXPORT_ROW_LIMIT && (
+          {overLimit && (
             <span
               className="flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
-              title={`This filtered view has ${total.toLocaleString()} rows — more than a single Export request can generate right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). Narrow your filters (Center, Sub Classification, Status, or Date Acquired) to bring it under the limit.`}
+              title={`This filtered view has ${total!.toLocaleString()} rows — more than a single Export request can generate right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). It'll run in the background instead and notify you when it's ready; narrowing your filters (Center, Sub Classification, Status, or Date Acquired) still gets you a faster, instant download.`}
             >
               <WarningIcon fontSize={14} />
-              Too many rows to export
+              Large export — runs in background
             </span>
           )}
           <ExportButton
             url={exportUrl}
-            shortcutHint="Export to Excel (Ctrl+Shift+E)"
-            exporting={exportingRegister}
-            onExport={runRegisterExport}
+            label={overLimit ? "Export in Background" : "Export to Excel"}
+            shortcutHint={overLimit ? "Export in Background (Ctrl+Shift+E)" : "Export to Excel (Ctrl+Shift+E)"}
+            exporting={overLimit ? backgroundExporting : exportingRegister}
+            onExport={handleExportClick}
           />
           <ColumnPicker prefs={columnPrefs} />
           <AiSearchButton />

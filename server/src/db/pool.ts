@@ -451,6 +451,32 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       CONSTRAINT export_concurrency_single_row CHECK (id)
     );
     INSERT INTO export_concurrency (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
+
+    -- See schema.sql's own export_jobs comment for the full reasoning — mirrored here
+    -- verbatim (IF NOT EXISTS) so an already-running production database picks it up on
+    -- its next cold start, same convention as export_concurrency just above.
+    CREATE TABLE IF NOT EXISTS export_jobs (
+      id                 TEXT PRIMARY KEY,
+      user_id            BIGINT NOT NULL REFERENCES users(id),
+      status             TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+      filters            JSONB NOT NULL DEFAULT '{}'::jsonb,
+      as_at              DATE NOT NULL,
+      object_key         TEXT NOT NULL,
+      upload_id          TEXT,
+      upload_parts       JSONB NOT NULL DEFAULT '[]'::jsonb,
+      pending_buffer     TEXT NOT NULL DEFAULT '',
+      bytes_uploaded     BIGINT NOT NULL DEFAULT 0,
+      last_far_id        TEXT,
+      total_rows         INTEGER,
+      processed_rows     INTEGER NOT NULL DEFAULT 0,
+      file_url           TEXT,
+      file_size_bytes    BIGINT,
+      error_message      TEXT,
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at       TIMESTAMPTZ,
+      expires_at         TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours')
+    );
+    CREATE INDEX IF NOT EXISTS idx_export_jobs_user_id ON export_jobs (user_id, created_at DESC);
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

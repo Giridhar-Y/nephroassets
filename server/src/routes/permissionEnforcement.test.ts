@@ -4,6 +4,7 @@ import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import assetsRoutes from "./assets.js";
 import assetsExportRoutes from "./assetsExport.js";
+import assetsExportJobsRoutes from "./assetsExportJobs.js";
 import transfersRoutes from "./transfers.js";
 import bulkUploadRoutes from "./bulkUpload.js";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
@@ -43,7 +44,15 @@ interface RouteCase {
 // established "reaches the handler" pattern for the same reason.
 const GATED: Record<string, RouteCase[]> = {
   "register:view": [{ method: "GET", url: "/api/assets" }, { method: "GET", url: "/api/assets/DOES-NOT-EXIST" }],
-  "register:export": [{ method: "GET", url: "/api/assets/export" }],
+  "register:export": [
+    { method: "GET", url: "/api/assets/export" },
+    // Object storage is unconfigured in tests, so the POST always 503s past the
+    // permission gate (same "not blocked by the gate" reasoning as register:aiSearch's
+    // OPENAI_API_KEY-unset case below) — the job state machine itself is covered by
+    // assetsExportJobs.test.ts.
+    { method: "POST", url: "/api/assets/export/jobs" },
+    { method: "GET", url: "/api/assets/export/jobs/DOES-NOT-EXIST" }
+  ],
   // OPENAI_API_KEY is unset in tests, so the handler always 503s past the permission
   // gate — that's still "not blocked by the gate" (not 401/403), which is all this suite
   // proves; the AI translation logic itself is covered by ai/registerSearch.test.ts.
@@ -137,6 +146,7 @@ describe("Permission enforcement — every (module, action) pair, at the API lev
     await app.register(multipart);
     await app.register(assetsRoutes);
     await app.register(assetsExportRoutes);
+    await app.register(assetsExportJobsRoutes);
     await app.register(transfersRoutes);
     await app.register(bulkUploadRoutes);
     await app.register(bulkDisposalsRoutes);

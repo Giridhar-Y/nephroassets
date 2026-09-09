@@ -411,6 +411,49 @@ CREATE TABLE export_concurrency (
 );
 INSERT INTO export_concurrency (id) VALUES (TRUE);
 
+-- Asynchronous background Register export (routes/assetsExportJobs.ts) — a large or
+-- filtered export runs as a resumable multipart upload to S3/R2 instead of one
+-- synchronous streamed HTTP response, so it can't hit Vercel's 60s function ceiling no
+-- matter how big it gets. `id` is app-generated (crypto.randomUUID(), not
+-- gen_random_uuid()) to avoid depending on the pgcrypto extension being enabled. `filters`
+-- is the exact validated query the export was requested with — re-read on every
+-- processing hop instead of re-parsing a querystring, since a background hop has no HTTP
+-- request of its own. `last_far_id`/`upload_id`/`upload_parts` are the resume state: a
+-- hop picks up exactly where the previous one left off (see EXPORT_ROW_LIMIT's own
+-- reasoning in assetsExport.ts for why keyset-on-far_id is already this codebase's
+-- established batching pattern). `upload_parts` is `[{partNumber, etag}]`, needed
+-- verbatim, in order, to complete an S3 multipart upload. `expires_at` bounds how long a
+-- finished job's row (and its signed download URL) stays valid — nothing here currently
+-- deletes an expired row or its S3 object; a cleanup pass is a future follow-up, not this
+-- table's job.
+CREATE TABLE export_jobs (
+  id                 TEXT PRIMARY KEY,
+  user_id            BIGINT NOT NULL REFERENCES users(id),
+  status             TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+  filters            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  as_at              DATE NOT NULL,
+  object_key         TEXT NOT NULL,
+  upload_id          TEXT,
+  upload_parts       JSONB NOT NULL DEFAULT '[]'::jsonb,
+  -- CSV text already built (header rows, or a batch's rows) but not yet flushed as an S3
+  -- part — S3 requires every part but the last to be >=5MB, so a batch that doesn't push
+  -- the buffer over that line has to carry over to the NEXT processing hop rather than
+  -- being uploaded (or dropped) early; persisting it here is what makes that safe across
+  -- serverless invocations with no shared memory.
+  pending_buffer     TEXT NOT NULL DEFAULT '',
+  bytes_uploaded     BIGINT NOT NULL DEFAULT 0,
+  last_far_id        TEXT,
+  total_rows         INTEGER,
+  processed_rows     INTEGER NOT NULL DEFAULT 0,
+  file_url           TEXT,
+  file_size_bytes    BIGINT,
+  error_message      TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at       TIMESTAMPTZ,
+  expires_at         TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours')
+);
+CREATE INDEX idx_export_jobs_user_id ON export_jobs (user_id, created_at DESC);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

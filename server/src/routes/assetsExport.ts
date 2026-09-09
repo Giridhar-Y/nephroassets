@@ -24,7 +24,7 @@ import { acquireExportSlot, releaseExportSlot } from "./exportConcurrency.js";
 // C2_COLUMN_IDS (minus expiryDateC1/C2, which are Register-screen-only, never
 // exported). Dropped from the export when every Sub Classification the request is
 // filtered to is C1-only — see shouldHideC2Columns below.
-const C2_EXPORT_KEYS = new Set([
+export const C2_EXPORT_KEYS = new Set([
   "usefulLifeC2Years",
   "c2OpeningCost",
   "additionsC2",
@@ -110,7 +110,11 @@ const multiValue = z
   .optional()
   .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
 
-const exportQuerySchema = z.object({
+// Exported for assetsExportJobs.ts's background-export route, which validates the same
+// query shape at job-creation time and persists the validated result verbatim (as
+// `filters` JSONB) so every later processing hop re-reads an already-validated object
+// instead of re-parsing a querystring it doesn't have.
+export const exportQuerySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   center: multiValue,
   capLocation: multiValue,

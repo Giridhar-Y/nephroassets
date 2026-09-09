@@ -238,6 +238,36 @@ export function getExportUrl(params: { asAt: string } & AssetFilters): string {
   return `/api/assets/export?${search.toString()}`;
 }
 
+export interface ExportJobStatus {
+  id: string;
+  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+  asAt: string;
+  totalRows: number | null;
+  processedRows: number;
+  fileUrl: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+// Background Register export (routes/assetsExportJobs.ts on the server) — same filters
+// as getExportUrl above, just POSTed to create a job instead of downloaded directly.
+// Used for an export too large/slow for the synchronous route (see useBackgroundExport.ts
+// for the size threshold and the polling loop that follows this up).
+export function createExportJob(params: { asAt: string } & AssetFilters): Promise<{ jobId: string }> {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      setFilterParam(search, key, value);
+    }
+  }
+  return request(`/api/assets/export/jobs?${search.toString()}`, { method: "POST" });
+}
+
+export function fetchExportJob(jobId: string): Promise<ExportJobStatus> {
+  return request(`/api/assets/export/jobs/${encodeURIComponent(jobId)}`);
+}
+
 // Capitalization: register a brand-new asset.
 export function createAsset(payload: AssetCreateInput): Promise<{ farId: string; created: boolean }> {
   return request("/api/assets", { method: "POST", body: JSON.stringify(payload) });

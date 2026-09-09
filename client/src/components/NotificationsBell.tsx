@@ -60,6 +60,16 @@ export function NotificationsBell() {
                     <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.type === "error" ? "bg-accent" : "bg-brand-teal"}`} />
                     <div className="min-w-0">
                       <p className="text-xs text-ink">{n.message}</p>
+                      {n.link && (
+                        <a
+                          href={n.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-0.5 inline-block text-xs font-semibold text-accent hover:underline"
+                        >
+                          {n.linkLabel ?? "Download"}
+                        </a>
+                      )}
                       <p className="mt-0.5 text-[10px] text-gray-400">{formatRelativeTime(n.createdAt)}</p>
                     </div>
                   </div>
