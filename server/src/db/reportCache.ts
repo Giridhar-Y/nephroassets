@@ -10,22 +10,22 @@
 // most report loads (page revisits, multiple users viewing the same AS_AT, switching
 // between report tabs) ask the exact same question again before anything has changed.
 //
-// Invalidated from ONE place — see pool.ts's installReportCacheInvalidation — rather
-// than an explicit call at every asset/transfer/settings-mutating route. This app
-// already has real precedent for "forgot to update every duplicate spot" bugs (the
-// prior-FY-disposal filter landed in assets.ts/assetsExport.ts but not reports.ts's own
-// six independent WHERE-clause copies); scattering ~17 explicit invalidation calls
-// across capitalization/additions/disposals/transfers/5 bulk routes/3 settings routes
-// would be the same failure shape waiting to happen again, including for any future
-// mutation route nobody remembers to wire up. A single regex over every write's own SQL
-// text can't be forgotten by a future route.
-//
-// Not an LRU — a handful of distinct report+filter combinations at most (a few users,
-// a few AS_AT values), never large enough to need eviction by size. maxAgeMs is a
-// safety net, not the primary invalidation mechanism: bounds how stale a result could
-// ever get if some write pattern this module's WRITE_PATTERN somehow doesn't recognize
-// slips through, without relying on that bound to do the normal-case work.
-const MAX_AGE_MS = 5 * 60 * 1000;
+// Plain time-based expiry — NOT invalidated on write. A prior version wrapped
+// pool.query/pool.connect (db/pool.ts) to clear this cache the instant any write touched
+// assets/transfers/settings, specifically to avoid scattering ~17 explicit invalidation
+// calls across every mutating route. That wrapping caused a real production incident:
+// pg-pool hands the SAME underlying client object back out on every checkout (confirmed
+// in its own source — client.release is reassigned per checkout, client.query is not),
+// so re-wrapping client.query on every db.connect() call nested a new layer around the
+// previous one on every reuse of that same pooled client, without limit, over the life
+// of a long-running process — Register/Reports eventually hung under real traffic. Fixed
+// by removing the wrapper entirely rather than making it idempotent: touching pg.Pool's
+// own internals for this is more risk than a report being briefly stale is worth.
+// MAX_AGE_MS is short enough that "stale after a mutation" is barely noticeable (a
+// revisit or a page reload always gets fresh figures once it expires) while still
+// collapsing the common case this exists for — several requests for the same report
+// within a few seconds of each other.
+export const REPORT_CACHE_TTL_MS = 20 * 1000;
 
 interface CacheEntry {
   value: unknown;
@@ -45,7 +45,7 @@ export function reportCacheKey(reportName: string, parts: Record<string, unknown
 export function getCachedReport<T>(key: string): T | undefined {
   const entry = cache.get(key);
   if (!entry) return undefined;
-  if (Date.now() - entry.cachedAt > MAX_AGE_MS) {
+  if (Date.now() - entry.cachedAt > REPORT_CACHE_TTL_MS) {
     cache.delete(key);
     return undefined;
   }
@@ -56,10 +56,12 @@ export function setCachedReport<T>(key: string, value: T): void {
   cache.set(key, { value, cachedAt: Date.now() });
 }
 
-/** Clears every cached report — called whenever a write touches assets/transfers/
- *  settings (see pool.ts). Clearing everything rather than a scoped subset: this cache
- *  is small (a handful of entries) and cheap to rebuild, so there's no real cost to
- *  being blunt, and no risk of a scoped-invalidation bug leaving a stale entry behind. */
-export function invalidateReportCache(): void {
+/** Test-only reset — without this, this module-level cache persists across every test
+ *  in a file (same process, same Map), so a `DELETE FROM assets` in one test's own
+ *  beforeEach wouldn't stop a later test with the same cache key (e.g. the same
+ *  unfiltered register-summary request) from seeing an earlier test's stale cached
+ *  result within the TTL window. Not exposed outside tests — same convention as
+ *  assetsExportJobs.ts's setObjectStorageForTests. */
+export function clearReportCacheForTests(): void {
   cache.clear();
 }

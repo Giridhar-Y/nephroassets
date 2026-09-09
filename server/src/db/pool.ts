@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { backfillUserPermissions, seedBuiltInRoles } from "../auth/permissions.js";
-import { invalidateReportCache } from "./reportCache.js";
 
 // Return DATE columns as raw "YYYY-MM-DD" strings instead of pg's default JS Date
 // (which applies local-timezone conversion and can shift the day). The calc engine
@@ -44,58 +43,7 @@ export async function getPool(): Promise<pg.Pool> {
     pool = new pg.Pool({ connectionString: await ensureDevPostgres() });
     attachIdleErrorHandler(pool);
   }
-  installReportCacheInvalidation(pool);
   return pool;
-}
-
-// Matches any top-level INSERT/UPDATE/DELETE against assets, transfers, or settings —
-// every one of reportCache.ts's cached figures is derived entirely from those three
-// tables. Not anchored to the start of the string so a write nested in a CTE (`WITH x AS
-// (...) INSERT INTO assets ...`) still matches. `assets`/`transfers`/`settings` as whole
-// words only, so this doesn't false-match this app's several similarly-named audit/log
-// tables (asset_activity_log, asset_delete_audit_log, asset_bulk_action_log,
-// settings_audit_log) — none of those hold figures any report reads.
-const REPORT_INVALIDATING_WRITE = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:assets|transfers|settings)\b/i;
-
-/** Wraps `.query` on both the pool itself and every client `.connect()` hands out, so a
- *  write reaches this check regardless of which of the two ways this app issues queries
- *  it went through (a plain `db.query(...)`, or `db.connect()` for a multi-statement
- *  transaction — both patterns are already in real use across the route files). This is
- *  the one and only place report-cache invalidation is wired up — see reportCache.ts's
- *  own comment for why a single choke point here beats an explicit call at every
- *  mutating route. Purely additive: every call's arguments and return value pass through
- *  completely unchanged, this only ever adds a synchronous regex check beforehand. */
-function installReportCacheInvalidation(target: pg.Pool): void {
-  wrapQuery(target);
-  const originalConnect = target.connect.bind(target);
-  target.connect = ((...args: unknown[]) => {
-    // pg-pool's OWN Pool.prototype.query implementation calls `this.connect(callback)`
-    // internally (callback style, args.length > 0) to get a client for a plain
-    // `pool.query(...)` call — passed straight through, completely untouched. That
-    // plain-query path is already covered anyway: wrapQuery(target) above intercepts
-    // pool.query() itself, before this internal connect/client.query/release dance ever
-    // runs, so wrapping it a second time here would be redundant even if it were safe.
-    // Only application code's own explicit, zero-argument `await db.connect()` (used for
-    // a multi-statement transaction — several routes hold the client themselves across
-    // several `client.query(...)` calls) reaches the branch below, which also wraps the
-    // client it hands back.
-    if (args.length > 0) return originalConnect(...(args as Parameters<typeof target.connect>));
-    return (async () => {
-      const client = await originalConnect();
-      wrapQuery(client);
-      return client;
-    })();
-  }) as typeof target.connect;
-}
-
-function wrapQuery(queryable: { query: (...args: unknown[]) => unknown }): void {
-  const originalQuery = queryable.query.bind(queryable);
-  queryable.query = (...args: unknown[]) => {
-    const first = args[0];
-    const sql = typeof first === "string" ? first : (first as { text?: string } | undefined)?.text;
-    if (sql && REPORT_INVALIDATING_WRITE.test(sql)) invalidateReportCache();
-    return originalQuery(...args);
-  };
 }
 
 // An idle pooled client's underlying socket can die out from under it — Supabase's

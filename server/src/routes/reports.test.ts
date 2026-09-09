@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import reportsRoutes from "./reports.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
+import { clearReportCacheForTests, REPORT_CACHE_TTL_MS } from "../db/reportCache.js";
 import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
@@ -1292,6 +1293,7 @@ describe("Asset Movement & Depreciation Schedule: excludes assets disposed befor
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   it("excludes a prior-FY disposal from the paginated schedule, but keeps one disposed within the FY", async () => {
@@ -1918,6 +1920,7 @@ describe("Register Summary report (GET /api/reports/register-summary)", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   async function seedFixtures() {
@@ -2189,6 +2192,7 @@ describe("Location Summary report (GET /api/reports/location-summary)", () => {
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   it("excludes an asset disposed before FY Start from the count and total, same as the Register", async () => {
@@ -2256,6 +2260,7 @@ describe("Depreciation Posting Summary (GET /api/reports/depreciation-posting)",
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   it("doesn't 500 or error with a prior-FY disposal in the data, and excludes it from the WHERE clause consistently with the other reports", async () => {
@@ -2304,6 +2309,7 @@ describe("Audit Reconciliation: deliberately still includes assets disposed befo
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   it("still reconciles a Sub Classification whose only asset was disposed before FY Start (unlike the Register/other reports)", async () => {
@@ -2361,6 +2367,7 @@ describe("Report caching (Register Summary / Location Summary / Depreciation Pos
     const db = await getPool();
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
+    clearReportCacheForTests();
   });
 
   it("Register Summary: a second identical request is served from cache, without querying the database again", async () => {
@@ -2395,139 +2402,122 @@ describe("Report caching (Register Summary / Location Summary / Depreciation Pos
     querySpy.mockRestore();
   });
 
-  it("Register Summary: creating a new asset busts the cache, so the very next request reflects it", async () => {
-    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-    const beforeCount = before.json().grandTotal.assetCount;
-
-    await insertAsset({
-      far_id: "CACHE-RS-BUST",
-      sub_classification: "Test-Cache-Bust",
-      asset_description: "Busts the cache",
-      serial_no: "CRSB1",
-      qty: 1,
-      useful_life_c1_years: 5,
-      c1_opening_cost: 10000,
-      deletions_c1: 0,
-      acc_dep_c1_opening: 0,
-      date_of_disposal: null,
-      location: "Center-CacheBust"
-    });
-
-    const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-    expect(after.json().grandTotal.assetCount).toBe(beforeCount + 1);
-    expect(after.json().groups.some((g: { location: string }) => g.location === "Center-CacheBust")).toBe(true);
-  });
-
-  it("Register Summary: a disposal (an UPDATE, not an INSERT) also busts the cache", async () => {
-    await insertAsset({
-      far_id: "CACHE-RS-DISPOSE",
-      sub_classification: "Test-Cache-Dispose",
-      asset_description: "Will be disposed",
-      serial_no: "CRSD1",
-      qty: 1,
-      useful_life_c1_years: 5,
-      c1_opening_cost: 10000,
-      deletions_c1: 0,
-      acc_dep_c1_opening: 0,
-      date_of_disposal: null,
-      status: "Active",
-      location: "Center-CacheDispose"
-    });
-    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-    expect(
-      before.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Active")
-    ).toBe(true);
-
-    const db = await getPool();
-    await db.query(
-      `UPDATE assets SET status = 'Disposed', date_of_disposal = $1, deletions_c1 = c1_opening_cost WHERE far_id = 'CACHE-RS-DISPOSE'`,
-      [AS_AT]
-    );
-
-    const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-    expect(
-      after.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Disposed")
-    ).toBe(true);
-    expect(
-      after.json().groups.some((g: { location: string; status: string }) => g.location === "Center-CacheDispose" && g.status === "Active")
-    ).toBe(false);
-  });
-
-  it("Location Summary and Depreciation Posting are also cached and also invalidated by a write", async () => {
-    await insertAsset({
-      far_id: "CACHE-OTHER-1",
-      sub_classification: "Test-Cache-Other",
-      asset_description: "Location/Dep Posting cache test",
-      serial_no: "CO1",
-      qty: 1,
-      useful_life_c1_years: 5,
-      c1_opening_cost: 10000,
-      deletions_c1: 0,
-      acc_dep_c1_opening: 0,
-      date_of_disposal: null,
-      location: "Center-CacheOther"
-    });
-
-    const locBefore = await authedInject(app, {
-      method: "GET",
-      url: "/api/reports/location-summary?location=Center-CacheOther"
-    });
-    expect(locBefore.json().assetCount).toBe(1);
-    const depBefore = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
-    const depBeforeTotal = depBefore.json().totalPeriodDepreciation;
-
-    await insertAsset({
-      far_id: "CACHE-OTHER-2",
-      sub_classification: "Test-Cache-Other",
-      asset_description: "A second asset, same location",
-      serial_no: "CO2",
-      qty: 1,
-      useful_life_c1_years: 5,
-      c1_opening_cost: 20000,
-      deletions_c1: 0,
-      acc_dep_c1_opening: 0,
-      date_of_disposal: null,
-      location: "Center-CacheOther"
-    });
-
-    const locAfter = await authedInject(app, {
-      method: "GET",
-      url: "/api/reports/location-summary?location=Center-CacheOther"
-    });
-    expect(locAfter.json().assetCount).toBe(2);
-    const depAfter = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
-    expect(depAfter.json().totalPeriodDepreciation).toBeGreaterThan(depBeforeTotal);
-  });
-
-  it("a Settings change (e.g. Figures As Of) busts the cache too", async () => {
-    await insertAsset({
-      far_id: "CACHE-SETTINGS-1",
-      sub_classification: "Test-Cache-Settings",
-      asset_description: "Settings-change cache test",
-      serial_no: "CS1",
-      qty: 1,
-      useful_life_c1_years: 5,
-      c1_opening_cost: 10000,
-      deletions_c1: 0,
-      acc_dep_c1_opening: 0,
-      date_of_disposal: null,
-      location: "Center-CacheSettings"
-    });
-
-    // No explicit ?asAt= — resolved from the settings row, so the cached result should
-    // become stale (wrong echoed `asAt`) the moment that row changes, if invalidation
-    // didn't actually fire.
-    const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-    expect(before.json().asAt).toBe(AS_AT);
-
-    const db = await getPool();
-    const NEW_AS_AT = "2026-07-01";
-    await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [NEW_AS_AT]);
+  // Time-based expiry only — NOT invalidated on write. See reportCache.ts's own header
+  // comment for why: an earlier version busted the cache from a single pool.ts wrapper
+  // around pool.query/pool.connect, which caused a real production incident (pg-pool
+  // hands the same underlying client back out on every checkout, so re-wrapping
+  // client.query on every db.connect() nested a new layer on every reuse, without
+  // limit, over a long-running process's lifetime, until Register/Reports hung under
+  // real traffic). These tests use fake timers to prove the ACTUAL guarantee this
+  // version makes: a result can be up to REPORT_CACHE_TTL_MS stale after a write, and
+  // is guaranteed fresh again once that window passes — not "immediately fresh", which
+  // this design deliberately no longer promises.
+  it("Register Summary: a write within the TTL window doesn't appear yet (accepted staleness), but does once the TTL elapses", async () => {
+    vi.useFakeTimers();
     try {
-      const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
-      expect(after.json().asAt).toBe(NEW_AS_AT);
+      const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      const beforeCount = before.json().grandTotal.assetCount;
+
+      await insertAsset({
+        far_id: "CACHE-RS-BUST",
+        sub_classification: "Test-Cache-Bust",
+        asset_description: "Not yet visible until the TTL elapses",
+        serial_no: "CRSB1",
+        qty: 1,
+        useful_life_c1_years: 5,
+        c1_opening_cost: 10000,
+        deletions_c1: 0,
+        acc_dep_c1_opening: 0,
+        date_of_disposal: null,
+        location: "Center-CacheBust"
+      });
+
+      const stillCached = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      expect(stillCached.json().grandTotal.assetCount).toBe(beforeCount); // the new asset isn't in it yet
+
+      await vi.advanceTimersByTimeAsync(REPORT_CACHE_TTL_MS + 1000);
+
+      const afterExpiry = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      expect(afterExpiry.json().grandTotal.assetCount).toBe(beforeCount + 1);
+      expect(afterExpiry.json().groups.some((g: { location: string }) => g.location === "Center-CacheBust")).toBe(true);
     } finally {
-      await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [AS_AT]);
+      vi.useRealTimers();
+    }
+  });
+
+  it("Location Summary and Depreciation Posting are also cached, and also self-correct once the TTL elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      await insertAsset({
+        far_id: "CACHE-OTHER-1",
+        sub_classification: "Test-Cache-Other",
+        asset_description: "Location/Dep Posting cache test",
+        serial_no: "CO1",
+        qty: 1,
+        useful_life_c1_years: 5,
+        c1_opening_cost: 10000,
+        deletions_c1: 0,
+        acc_dep_c1_opening: 0,
+        date_of_disposal: null,
+        location: "Center-CacheOther"
+      });
+
+      const locBefore = await authedInject(app, {
+        method: "GET",
+        url: "/api/reports/location-summary?location=Center-CacheOther"
+      });
+      expect(locBefore.json().assetCount).toBe(1);
+      const depBefore = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
+      const depBeforeTotal = depBefore.json().totalPeriodDepreciation;
+
+      await insertAsset({
+        far_id: "CACHE-OTHER-2",
+        sub_classification: "Test-Cache-Other",
+        asset_description: "A second asset, same location",
+        serial_no: "CO2",
+        qty: 1,
+        useful_life_c1_years: 5,
+        c1_opening_cost: 20000,
+        deletions_c1: 0,
+        acc_dep_c1_opening: 0,
+        date_of_disposal: null,
+        location: "Center-CacheOther"
+      });
+
+      await vi.advanceTimersByTimeAsync(REPORT_CACHE_TTL_MS + 1000);
+
+      const locAfter = await authedInject(app, {
+        method: "GET",
+        url: "/api/reports/location-summary?location=Center-CacheOther"
+      });
+      expect(locAfter.json().assetCount).toBe(2);
+      const depAfter = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
+      expect(depAfter.json().totalPeriodDepreciation).toBeGreaterThan(depBeforeTotal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a Settings change (e.g. Figures As Of) is also picked up once the TTL elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      // No explicit ?asAt= — resolved from the settings row, so the cached result
+      // echoes the OLD as_at until the cache entry expires.
+      const before = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+      expect(before.json().asAt).toBe(AS_AT);
+
+      const db = await getPool();
+      const NEW_AS_AT = "2026-07-01";
+      await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [NEW_AS_AT]);
+      try {
+        await vi.advanceTimersByTimeAsync(REPORT_CACHE_TTL_MS + 1000);
+        const after = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+        expect(after.json().asAt).toBe(NEW_AS_AT);
+      } finally {
+        await db.query(`UPDATE settings SET as_at = $1 WHERE id = TRUE`, [AS_AT]);
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

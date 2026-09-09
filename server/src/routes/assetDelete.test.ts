@@ -7,6 +7,7 @@ import transfersRoutes from "./transfers.js";
 import bulkUploadRoutes from "./bulkUpload.js";
 import reportsRoutes from "./reports.js";
 import { getPool } from "../db/pool.js";
+import { clearReportCacheForTests } from "../db/reportCache.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload } from "./bulkTestHelpers.js";
@@ -111,6 +112,10 @@ describe("Global-Admin-only delete/undo", () => {
         url: "/api/assets/DEL-TEST-1",
         payload: { reason: "test" }
       });
+      // Depreciation Posting caches its result for a short TTL (reportCache.ts) — real
+      // usage just waits it out, but a test wants to see the effect immediately, same
+      // as if the TTL had already elapsed.
+      clearReportCacheForTests();
 
       const after = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting?asAt=2026-08-17" });
       expect(after.json().totalPeriodDepreciation).toBe(0);
