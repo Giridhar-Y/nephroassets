@@ -1265,6 +1265,71 @@ describe("Asset Movement & Depreciation Schedule", () => {
   });
 });
 
+describe("Asset Movement & Depreciation Schedule: excludes assets disposed before FY Start", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("excludes a prior-FY disposal from the paginated schedule, but keeps one disposed within the FY", async () => {
+    await insertAsset({
+      far_id: "XDEP-PRIOR-FY",
+      sub_classification: "Test-XDep",
+      asset_description: "Disposed before FY Start",
+      serial_no: "XDPF",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-12-15",
+      location: "Center-Prior"
+    });
+    await insertAsset({
+      far_id: "XDEP-THIS-FY",
+      sub_classification: "Test-XDep",
+      asset_description: "Disposed within the FY",
+      serial_no: "XDTF",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2026-06-01",
+      location: "Center-Prior"
+    });
+
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/transfer-depreciation/movement" });
+    expect(res.statusCode).toBe(200);
+    const farIds = res.json().items.map((i: { farId: string }) => i.farId);
+    expect(farIds).not.toContain("XDEP-PRIOR-FY");
+    expect(farIds).toContain("XDEP-THIS-FY");
+  });
+});
+
 // Regression coverage for a real production incident (2026-08-29) that led to this
 // restructure: the old three-sheet export's Location-wise Summary and Asset-wise
 // Summary looked mismatched (16 assets/₹1.36L reading as "missing") purely because
@@ -1944,6 +2009,29 @@ describe("Register Summary report (GET /api/reports/register-summary)", () => {
     ]);
   });
 
+  it("excludes an asset disposed before FY Start, same as the Register and its Export", async () => {
+    await seedFixtures();
+    await insertAsset({
+      far_id: "SUM-PRIOR-FY-DISPOSAL",
+      sub_classification: "Dialysis Machines",
+      asset_description: "Disposed last FY",
+      serial_no: "SPFD",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 99999,
+      additions_c1: 0,
+      deletions_c1: 99999,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-12-15", // before FY_START (2026-04-01)
+      sale_value: 0,
+      status: "Disposed",
+      location: "Center-Prior"
+    });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
+    const body = res.json();
+    expect(body.groups.some((g: { location: string }) => g.location === "Center-Prior")).toBe(false);
+  });
+
   it("sums Qty and C1 Opening Cost correctly for a group with more than one asset", async () => {
     await seedFixtures();
     const res = await authedInject(app, { method: "GET", url: "/api/reports/register-summary" });
@@ -2071,5 +2159,170 @@ describe("Register Summary report (GET /api/reports/register-summary)", () => {
       expect(lastLine[0]).toBe("GRAND TOTAL");
       expect(Number(lastLine[3])).toBe(jsonBody.grandTotal.assetCount);
     });
+  });
+});
+
+describe("Location Summary report (GET /api/reports/location-summary)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("excludes an asset disposed before FY Start from the count and total, same as the Register", async () => {
+    await insertAsset({
+      far_id: "LOC-ACTIVE",
+      sub_classification: "Test-Loc",
+      asset_description: "Still active",
+      serial_no: "LA1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 10000,
+      deletions_c1: 0,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: null,
+      location: "Center-LocSummary"
+    });
+    await insertAsset({
+      far_id: "LOC-PRIOR-FY-DISPOSAL",
+      sub_classification: "Test-Loc",
+      asset_description: "Disposed before FY Start",
+      serial_no: "LA2",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-12-15",
+      location: "Center-LocSummary"
+    });
+
+    const res = await authedInject(app, {
+      method: "GET",
+      url: "/api/reports/location-summary?location=Center-LocSummary"
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.assetCount).toBe(1);
+  });
+});
+
+describe("Depreciation Posting Summary (GET /api/reports/depreciation-posting)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("doesn't 500 or error with a prior-FY disposal in the data, and excludes it from the WHERE clause consistently with the other reports", async () => {
+    await insertAsset({
+      far_id: "DEPPOST-PRIOR-FY",
+      sub_classification: "Test-DepPost",
+      asset_description: "Disposed before FY Start",
+      serial_no: "DPP1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-12-15",
+      location: "Center-DepPost"
+    });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/depreciation-posting" });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("Audit Reconciliation: deliberately still includes assets disposed before FY Start", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest("user", null);
+    app.addHook("preHandler", authGateHook);
+    await app.register(cookie);
+    await app.register(reportsRoutes);
+    await app.ready();
+
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
+      [AS_AT, FY_START, FY_END, DAYS_IN_FY]
+    );
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    const db = await getPool();
+    await db.query(`DELETE FROM transfers`);
+    await db.query(`DELETE FROM assets`);
+  });
+
+  it("still reconciles a Sub Classification whose only asset was disposed before FY Start (unlike the Register/other reports)", async () => {
+    await insertAsset({
+      far_id: "RECON-PRIOR-FY",
+      sub_classification: "Test-ReconPriorFY",
+      asset_description: "Disposed before FY Start",
+      serial_no: "RPF1",
+      qty: 1,
+      useful_life_c1_years: 5,
+      c1_opening_cost: 50000,
+      deletions_c1: 50000,
+      acc_dep_c1_opening: 0,
+      date_of_disposal: "2025-12-15",
+      location: "Center-Recon"
+    });
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.items.some((i: { subClassification: string }) => i.subClassification === "Test-ReconPriorFY")).toBe(true);
   });
 });

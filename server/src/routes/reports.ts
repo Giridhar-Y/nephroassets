@@ -208,6 +208,14 @@ async function computeReconciliationItems(
   const hasComponent2ByName = new Map(subClassRows.map((r) => [r.name, r.has_component2]));
 
   const params: unknown[] = [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
+  // Deliberately NOT the "date_of_disposal >= fyStart" gate GET /api/assets and the
+  // other reports below apply — also, notably, no "date_acquired <= asAt" gate either
+  // (unlike every other report in this file). Audit Reconciliation's whole purpose is
+  // verifying every asset's full lifecycle ties out (Opening + Additions - Deletions =
+  // Closing), not showing "what's currently on the register" — an asset disposed of in
+  // a prior FY still needs to reconcile here (with all-zero current-period activity,
+  // same as one not yet capitalized), and excluding it would make this report agree
+  // with the Register for the wrong reason: hiding the row, not verifying it.
   const calcWhere = ["deleted_at IS NULL"];
   const scopeSql = centerScopeSql(user, "COALESCE(revised_location, location)", params);
   if (scopeSql) calcWhere.push(scopeSql);
@@ -697,6 +705,10 @@ async function computeMovementSchedulePage(
 ): Promise<{ items: MovementScheduleRow[]; nextCursor: string | null }> {
   const params: unknown[] = [fy.asAt];
   const baseConditions = ["date_acquired <= $1", "deleted_at IS NULL"];
+  // Same reasoning as GET /api/assets and the Register Export: an asset disposed of
+  // before the active FY began is prior-year history, not part of the current schedule.
+  params.push(fy.fyStart);
+  baseConditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
   if (cursor) {
     params.push(cursor);
     baseConditions.push(`far_id > $${params.length}`);
@@ -808,6 +820,10 @@ async function* streamAssetDepreciationBatches(
   for (;;) {
     const params: unknown[] = [fy.asAt];
     const baseConditions = ["date_acquired <= $1", "deleted_at IS NULL"];
+    // Same reasoning as GET /api/assets and the Register Export: an asset disposed of
+    // before the active FY began is prior-year history, not part of the current totals.
+    params.push(fy.fyStart);
+    baseConditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
     if (lastFarId !== null) {
       params.push(lastFarId);
       baseConditions.push(`far_id > $${params.length}`);
@@ -1504,6 +1520,10 @@ async function computeRegisterSummary(
   // can never include an asset not yet capitalized as of that date.
   params.push(asAt);
   conditions.push(`date_acquired <= $${params.length}`);
+  // Same reasoning as GET /api/assets and the Register Export: an asset disposed of
+  // before the active FY began is prior-year history, not part of the current summary.
+  params.push(fy.fyStart);
+  conditions.push(`(date_of_disposal IS NULL OR date_of_disposal >= $${params.length})`);
   if (q.dateAcquiredFrom) {
     params.push(q.dateAcquiredFrom);
     conditions.push(`date_acquired >= $${params.length}`);
@@ -1629,7 +1649,10 @@ export default async function reportsRoutes(app: FastifyInstance) {
            date_of_disposal, deletions_c1, sale_value, acc_dep_c1_opening, $2::date, $3::date, $5::date, $4::integer, date_acquired
          )).gross_block), 0) AS total_c1_gross_block
        FROM assets
-       WHERE COALESCE(revised_location, location) = $1 AND deleted_at IS NULL`,
+       WHERE COALESCE(revised_location, location) = $1 AND deleted_at IS NULL
+         -- Same reasoning as GET /api/assets and the Register Export: an asset disposed
+         -- of before the active FY began is prior-year history, not part of this count.
+         AND (date_of_disposal IS NULL OR date_of_disposal >= $3)`,
       [parsed.data.location, fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd]
     );
 
@@ -1704,7 +1727,12 @@ export default async function reportsRoutes(app: FastifyInstance) {
     }
 
     const depPostingParams: unknown[] = [fy.asAt, fy.fyStart, fy.daysInFy, fy.fyEnd];
-    const depPostingWhere = ["deleted_at IS NULL"];
+    // Same reasoning as GET /api/assets and the Register Export: an asset disposed of
+    // before the active FY began is prior-year history, not part of the current posting
+    // (a mathematical no-op today — its period_depreciation already computes to 0 once
+    // effectiveEndDate falls before fyStart — but kept for consistency with every other
+    // report here, and in case a future column here ever counts assets, not just sums).
+    const depPostingWhere = ["deleted_at IS NULL", "(date_of_disposal IS NULL OR date_of_disposal >= $2)"];
     const depPostingScopeSql = centerScopeSql(req.user!, "COALESCE(revised_location, location)", depPostingParams);
     if (depPostingScopeSql) depPostingWhere.push(depPostingScopeSql);
 
