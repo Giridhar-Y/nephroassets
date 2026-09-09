@@ -34,13 +34,55 @@ async function insertAsset(farId: string, overrides: Record<string, unknown> = {
   await db.query(`INSERT INTO assets (${columns.join(", ")}) VALUES (${placeholders})`, values);
 }
 
+/** One multi-row INSERT of `count` assets, each with a description padded to ~5KB — real
+ *  exports never have descriptions this long, this is purely to reach multiple 8MB
+ *  multipart parts (PART_SIZE_BYTES) with a few thousand rows instead of the ~1-200k a
+ *  realistic row width would need, which would make this test far too slow for the
+ *  routine `npm test` suite (see vitest.scale.config.ts's own comment on why THAT scale of
+ *  test is kept separate). */
+async function insertManyPaddedAssets(count: number, farIdPrefix: string): Promise<void> {
+  const db = await getPool();
+  const paddedDescription = "X".repeat(5000);
+  const columns = [
+    "far_id",
+    "sub_classification",
+    "asset_description",
+    "status",
+    "date_acquired",
+    "location",
+    "useful_life_c1_years",
+    "useful_life_c2_years",
+    "c1_opening_cost",
+    "c2_opening_cost"
+  ];
+  const params: unknown[] = [];
+  const rowPlaceholders: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const values = [
+      `${farIdPrefix}-${String(i).padStart(6, "0")}`,
+      "Test-Sub",
+      paddedDescription,
+      "Active",
+      "2020-01-01",
+      "Center-ExportJob",
+      5,
+      5,
+      10000,
+      0
+    ];
+    rowPlaceholders.push(`(${values.map((_, colIdx) => `$${i * columns.length + colIdx + 1}`).join(",")})`);
+    params.push(...values);
+  }
+  await db.query(`INSERT INTO assets (${columns.join(",")}) VALUES ${rowPlaceholders.join(",")}`, params);
+}
+
 /** An in-memory stand-in for S3 — tracks each multipart upload's parts (keyed by part
  *  number, order-independent since S3 itself doesn't require parts uploaded in order,
  *  only completed in order) so a test can read back exactly what would have reached the
  *  bucket, with no real one involved. */
 class FakeObjectStorage implements ObjectStorage {
-  private uploads = new Map<string, { key: string; parts: Map<number, string> }>();
-  completed = new Map<string, string>(); // object key -> concatenated final body
+  private uploads = new Map<string, { key: string; parts: Map<number, Buffer> }>();
+  completed = new Map<string, string>(); // object key -> concatenated final body (decoded)
   aborted = new Set<string>(); // uploadId
 
   async createMultipartUpload(key: string): Promise<string> {
@@ -49,17 +91,26 @@ class FakeObjectStorage implements ObjectStorage {
     return uploadId;
   }
 
-  async uploadPart(_key: string, uploadId: string, partNumber: number, body: string): Promise<string> {
+  async uploadPart(_key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string> {
     const upload = this.uploads.get(uploadId);
     if (!upload) throw new Error(`uploadPart: unknown uploadId ${uploadId}`);
-    upload.parts.set(partNumber, body);
+    upload.parts.set(partNumber, Buffer.from(body));
     return `etag-${uploadId}-${partNumber}`;
   }
 
   async completeMultipartUpload(key: string, uploadId: string, parts: UploadPart[]): Promise<{ sizeBytes: number }> {
     const upload = this.uploads.get(uploadId);
     if (!upload) throw new Error(`completeMultipartUpload: unknown uploadId ${uploadId}`);
-    const body = [...parts].sort((a, b) => a.partNumber - b.partNumber).map((p) => upload.parts.get(p.partNumber) ?? "").join("");
+    // Same real-world constraint R2 enforces (assetsExportJobs.ts's PART_SIZE_BYTES
+    // comment) — every part but the last must be the exact same length. Asserted here so
+    // any regression in the fixed-size-flush logic fails a test instead of only surfacing
+    // against the real bucket in production.
+    const ordered = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+    const nonTrailing = ordered.slice(0, -1).map((p) => upload.parts.get(p.partNumber)?.length ?? 0);
+    if (nonTrailing.length > 1 && new Set(nonTrailing).size > 1) {
+      throw new Error("All non-trailing parts must have the same length.");
+    }
+    const body = Buffer.concat(ordered.map((p) => upload.parts.get(p.partNumber) ?? Buffer.alloc(0))).toString("utf-8");
     this.completed.set(key, body);
     return { sizeBytes: Buffer.byteLength(body, "utf-8") };
   }
@@ -144,6 +195,31 @@ describe("Background Register export: advanceExportJob", () => {
     const farIdsInBody = lines.slice(2).map((l) => l.split(",")[0]);
     expect(farIdsInBody).toEqual(["JOBTEST-001", "JOBTEST-002", "JOBTEST-003"]);
   });
+
+  // Regression test for a real production failure: Cloudflare R2 rejected
+  // CompleteMultipartUpload with "All non-trailing parts must have the same length" the
+  // first time this feature ran against a real bucket — R2 enforces that constraint,
+  // unlike S3 (which only requires >=5MB per part, size can vary). ~4,200 padded-
+  // description rows push this comfortably past two full PART_SIZE_BYTES (8MB) flushes
+  // plus a smaller final part, so FakeObjectStorage's own same-length assertion (see its
+  // completeMultipartUpload) actually gets exercised, not just trivially satisfied by a
+  // single-part export.
+  it("produces multiple same-length parts for a large export, not just one", async () => {
+    const ROW_COUNT = 4200;
+    await insertManyPaddedAssets(ROW_COUNT, "JOBBIG");
+    const storage = new FakeObjectStorage();
+    await insertJobRow("job-big", userId, { filters: { search: "JOBBIG" } });
+
+    await advanceExportJob(await getPool(), "job-big", storage, 60_000);
+
+    const job = await fetchJobRow("job-big");
+    expect(job.status).toBe("COMPLETED");
+    expect(job.processed_rows).toBe(ROW_COUNT);
+
+    const body = storage.completed.get(job.object_key)!;
+    const lines = body.split("\r\n").filter((l) => l.length > 0);
+    expect(lines.length).toBe(ROW_COUNT + 2); // + filter-summary row + header row
+  }, 30_000);
 
   it("resumes across multiple hops without losing or duplicating rows", async () => {
     for (const suffix of ["A", "B", "C", "D", "E"]) await insertAsset(`JOBRESUME-${suffix}`);

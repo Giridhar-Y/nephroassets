@@ -17,7 +17,12 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 // AWS SDK's own request machinery.
 export interface ObjectStorage {
   createMultipartUpload(key: string, contentType: string): Promise<string>;
-  uploadPart(key: string, uploadId: string, partNumber: number, body: string): Promise<string>;
+  /** `body` is raw bytes, not text — every part but the last must be an EXACT fixed size
+   *  on Cloudflare R2 (assetsExportJobs.ts's PART_SIZE_BYTES), which only works by slicing
+   *  a byte buffer at exact offsets; a part boundary can land in the middle of a
+   *  multi-byte UTF-8 character, which is fine since parts are just concatenated bytes on
+   *  the far side, never individually decoded. */
+  uploadPart(key: string, uploadId: string, partNumber: number, body: Buffer): Promise<string>;
   completeMultipartUpload(key: string, uploadId: string, parts: UploadPart[]): Promise<{ sizeBytes: number }>;
   abortMultipartUpload(key: string, uploadId: string): Promise<void>;
   getSignedDownloadUrl(key: string, expiresInSeconds: number): Promise<string>;

@@ -22,9 +22,13 @@ type ExportQuery = z.infer<typeof exportQuerySchema>;
 // free to tune independently now that neither shares the other's request lifetime.
 const JOB_BATCH_SIZE = 20_000;
 
-// S3 requires every part but the last to be at least 5MB — 6MB gives real margin without
-// holding much more than necessary in memory before a flush.
-const MIN_PART_FLUSH_BYTES = 6 * 1024 * 1024;
+// The exact size of every non-final multipart part. S3 itself only requires each part
+// (but the last) to be >=5MB and tolerates different sizes across parts; Cloudflare R2 is
+// stricter and requires every non-trailing part to be EXACTLY the same length (confirmed
+// live — R2 rejected CompleteMultipartUpload with "All non-trailing parts must have the
+// same length" when this was a >= threshold instead of a fixed size). 8MB clears S3's own
+// 5MB floor with margin and keeps memory use per part modest.
+const PART_SIZE_BYTES = 8 * 1024 * 1024;
 
 // How long one processing hop (one GET .../jobs/:id call, or the internal self-nudge
 // below) is allowed to run before it must persist progress and return — safely under
@@ -169,6 +173,14 @@ export async function advanceExportJob(
   const { rows } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [jobId]);
   const job = rows[0];
   if (!job || job.status === "COMPLETED" || job.status === "FAILED") return;
+  const objectKey = job.object_key;
+
+  // Hoisted above the try block so the catch below can always abort whichever multipart
+  // upload is actually live, including one created by THIS call after the initial SELECT
+  // above already read a stale (null) upload_id — referencing job.upload_id there instead
+  // would miss exactly that case, the one that matters most (a failure partway through
+  // this same call, after the upload was already created).
+  let uploadId = job.upload_id;
 
   const start = performance.now();
   try {
@@ -200,16 +212,28 @@ export async function advanceExportJob(
     }
     const exportColumns = shouldHideC2 ? EXPORT_COLUMNS.filter((c) => !C2_EXPORT_KEYS.has(c.key)) : EXPORT_COLUMNS;
 
-    let buffer = job.pending_buffer;
-    let uploadId = job.upload_id;
+    // Tracked as raw bytes (not a JS string) throughout — R2 requires every non-trailing
+    // multipart part to be EXACTLY the same length (a real, stricter rule than S3's own
+    // "just >=5MB, size can vary" — confirmed live: an earlier version of this function
+    // flushed a variable-sized part whenever the buffer crossed a threshold, and R2 threw
+    // "All non-trailing parts must have the same length" completing the upload). Working
+    // in Buffers rather than strings also means a part boundary can safely fall in the
+    // middle of a multi-byte UTF-8 character — the final downloaded file is just every
+    // part's bytes concatenated in order, so the character reassembles correctly either
+    // way; nothing here ever needs to decode a part on its own.
+    let pendingBuffer: Buffer = job.pending_buffer ? Buffer.from(job.pending_buffer, "base64") : Buffer.alloc(0);
     const uploadParts: UploadPart[] = [...job.upload_parts];
     let nextPartNumber = uploadParts.length + 1;
     let bytesUploaded = Number(job.bytes_uploaded);
     let lastFarId = job.last_far_id;
     let processedRows = job.processed_rows;
 
+    function appendText(text: string): void {
+      pendingBuffer = Buffer.concat([pendingBuffer, Buffer.from(text, "utf-8")]);
+    }
+
     if (!uploadId) {
-      uploadId = await storage.createMultipartUpload(job.object_key, "text/csv");
+      uploadId = await storage.createMultipartUpload(objectKey, "text/csv");
       // Row 1: filter-summary note, same convention as the synchronous export's own —
       // what this file represents, not just a raw column dump. Row 2: column names. No
       // totals/group-band rows here — a deliberate simplification for this new code path
@@ -217,32 +241,33 @@ export async function advanceExportJob(
       // per-asset rows below are byte-identical in shape to the synchronous export's own.
       const filterSummaryText =
         buildFilterSummaryText(q, q.conditions) + (q.exception ? `; Dashboard Exception: ${EXCEPTION_LABELS[q.exception]}` : "");
-      buffer += csvLine([`Filters applied: ${filterSummaryText}`]) + "\r\n";
-      buffer += csvLine(exportColumns.map((c) => resolveLabel(c, ctx))) + "\r\n";
-      // Persisted immediately, not deferred to the first flush() below — if this hop's
-      // time budget runs out before any batch even completes (a real possibility: the
-      // budget is meant to protect a slow COLD hop too), the multipart upload this just
-      // created would otherwise never be recorded, and the NEXT hop would orphan it by
-      // creating a second one from scratch while losing these two header rows entirely.
-      await db.query(`UPDATE export_jobs SET upload_id = $1, pending_buffer = $2 WHERE id = $3`, [uploadId, buffer, jobId]);
+      appendText(csvLine([`Filters applied: ${filterSummaryText}`]) + "\r\n");
+      appendText(csvLine(exportColumns.map((c) => resolveLabel(c, ctx))) + "\r\n");
+      // Persisted immediately, not deferred to the first flush below — if this hop's time
+      // budget runs out before any batch even completes (a real possibility: the budget is
+      // meant to protect a slow COLD hop too), the multipart upload this just created
+      // would otherwise never be recorded, and the NEXT hop would orphan it by creating a
+      // second one from scratch while losing these two header rows entirely.
+      await db.query(`UPDATE export_jobs SET upload_id = $1, pending_buffer = $2 WHERE id = $3`, [
+        uploadId,
+        pendingBuffer.toString("base64"),
+        jobId
+      ]);
     }
 
-    async function flush(final: boolean): Promise<void> {
-      if (buffer.length === 0) return;
-      const body = buffer;
-      buffer = "";
-      const etag = await storage.uploadPart(job!.object_key, uploadId!, nextPartNumber, body);
-      uploadParts.push({ partNumber: nextPartNumber, etag });
-      nextPartNumber++;
-      bytesUploaded += Buffer.byteLength(body, "utf-8");
-      if (!final) {
-        await db.query(
-          `UPDATE export_jobs
-           SET upload_id = $1, upload_parts = $2, pending_buffer = '', bytes_uploaded = $3,
-               last_far_id = $4, processed_rows = $5
-           WHERE id = $6`,
-          [uploadId, JSON.stringify(uploadParts), bytesUploaded, lastFarId, processedRows, jobId]
-        );
+    // Flushes exactly PART_SIZE_BYTES at a time off the front of pendingBuffer, looping in
+    // case one batch pushed it past that more than once — every part this produces is
+    // identical in length (the R2 requirement above); whatever's left under that size stays
+    // pending for the next hop, or becomes the final (allowed to be any size) part at real
+    // completion below.
+    async function flushFullParts(): Promise<void> {
+      while (pendingBuffer.length >= PART_SIZE_BYTES) {
+        const partBody = pendingBuffer.subarray(0, PART_SIZE_BYTES);
+        pendingBuffer = Buffer.from(pendingBuffer.subarray(PART_SIZE_BYTES));
+        const etag = await storage.uploadPart(objectKey, uploadId!, nextPartNumber, partBody);
+        uploadParts.push({ partNumber: nextPartNumber, etag });
+        nextPartNumber++;
+        bytesUploaded += partBody.length;
       }
     }
 
@@ -312,25 +337,22 @@ export async function advanceExportJob(
         });
         lines[i] = csvLine(values);
       }
-      buffer += lines.join("\r\n") + "\r\n";
+      appendText(lines.join("\r\n") + "\r\n");
       processedRows += batchRows.length;
       lastFarId = batchRows[batchRows.length - 1]!.far_id;
 
-      if (Buffer.byteLength(buffer, "utf-8") >= MIN_PART_FLUSH_BYTES) {
-        await flush(false);
-      } else {
-        // Not enough to flush yet — still persist progress so a killed invocation (or one
-        // that never gets a chance to flush before its own time budget) doesn't lose the
-        // cursor, only re-processing already-exported rows on the next hop is wasted work,
-        // not correctness — but the buffer text itself also has to be saved, since it
-        // holds rows already counted in processedRows/lastFarId above.
-        await db.query(`UPDATE export_jobs SET pending_buffer = $1, last_far_id = $2, processed_rows = $3 WHERE id = $4`, [
-          buffer,
-          lastFarId,
-          processedRows,
-          jobId
-        ]);
-      }
+      await flushFullParts();
+      // Persisted after every batch regardless of whether a part was actually flushed
+      // this time — pending_buffer (base64) always reflects exactly what's already
+      // accounted for in processed_rows/last_far_id, so a killed invocation never loses or
+      // duplicates a row, only re-fetches (cheap) whatever this hop hadn't gotten to yet.
+      await db.query(
+        `UPDATE export_jobs
+         SET upload_id = $1, upload_parts = $2, pending_buffer = $3, bytes_uploaded = $4,
+             last_far_id = $5, processed_rows = $6
+         WHERE id = $7`,
+        [uploadId, JSON.stringify(uploadParts), pendingBuffer.toString("base64"), bytesUploaded, lastFarId, processedRows, jobId]
+      );
 
       if (batchRows.length < JOB_BATCH_SIZE) {
         exhausted = true;
@@ -340,22 +362,30 @@ export async function advanceExportJob(
 
     if (!exhausted) return; // time budget hit, more rows remain — next hop resumes from here
 
-    await flush(true);
+    // The final part — unlike every part flushFullParts produced above, this one is
+    // allowed to be any size (including smaller than PART_SIZE_BYTES), same as S3/R2 both
+    // require: every part but the last must match; the last may not.
+    if (pendingBuffer.length > 0) {
+      const etag = await storage.uploadPart(objectKey, uploadId!, nextPartNumber, pendingBuffer);
+      uploadParts.push({ partNumber: nextPartNumber, etag });
+      bytesUploaded += pendingBuffer.length;
+      pendingBuffer = Buffer.alloc(0);
+    }
     if (uploadParts.length === 0) {
       // An empty result set (filters matched nothing) — still a valid, if header-only,
-      // CSV. S3 requires at least one part to complete a multipart upload, so the header
-      // rows already written to `buffer` above (and flushed just now) cover this; if
-      // somehow still empty (shouldn't happen — the header rows are always >0 bytes),
-      // abort cleanly rather than calling CompleteMultipartUpload with zero parts.
-      await storage.abortMultipartUpload(job.object_key, uploadId!);
+      // CSV. S3/R2 require at least one part to complete a multipart upload, so the header
+      // rows written above (and flushed just now) cover this; if somehow still empty
+      // (shouldn't happen — the header rows are always >0 bytes), abort cleanly rather
+      // than calling CompleteMultipartUpload with zero parts.
+      await storage.abortMultipartUpload(objectKey, uploadId!);
       await db.query(`UPDATE export_jobs SET status = 'FAILED', error_message = $1 WHERE id = $2`, [
         "Export produced no data.",
         jobId
       ]);
       return;
     }
-    await storage.completeMultipartUpload(job.object_key, uploadId!, uploadParts);
-    const fileUrl = await storage.getSignedDownloadUrl(job.object_key, SIGNED_URL_EXPIRY_SECONDS);
+    await storage.completeMultipartUpload(objectKey, uploadId!, uploadParts);
+    const fileUrl = await storage.getSignedDownloadUrl(objectKey, SIGNED_URL_EXPIRY_SECONDS);
     await db.query(
       `UPDATE export_jobs
        SET status = 'COMPLETED', file_url = $1, file_size_bytes = $2, total_rows = $3, processed_rows = $3,
@@ -365,8 +395,8 @@ export async function advanceExportJob(
     );
   } catch (err) {
     log.error({ err, jobId }, "Background export job failed");
-    if (job.upload_id) {
-      await storage.abortMultipartUpload(job.object_key, job.upload_id).catch(() => {});
+    if (uploadId) {
+      await storage.abortMultipartUpload(objectKey, uploadId).catch(() => {});
     }
     await db
       .query(`UPDATE export_jobs SET status = 'FAILED', error_message = $1 WHERE id = $2`, [
