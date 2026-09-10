@@ -140,22 +140,35 @@ function permissionKey(p: PermissionGrant): string {
   return `${p.module}:${p.action}`;
 }
 
-/** Per-user slide-over — the shared PermissionMatrix, a "Reset to [role] template"
- *  bulk-apply per active role (grants come straight off the already-fetched roles
- *  list, no extra round trip), and one Save that replaces the user's entire grant set
- *  in a single request (matches the server's own replace-all contract, not incremental
+// A center code's grouping key for the quick-select chips — the leading "-"/"_"/space
+// -delimited token with any trailing digits stripped (e.g. "AP-HYD-014" -> "AP",
+// "TS002" -> "TS"). Derived from whatever codes actually exist rather than a hardcoded
+// state list, so it groups correctly regardless of naming convention and covers every
+// state/region present, not just a handful of examples.
+function centerGroupPrefix(code: string): string {
+  const token = code.split(/[^A-Za-z0-9]/)[0] || code;
+  return token.replace(/[0-9]+$/, "") || token;
+}
+
+const CHIP_CLASS = (active: boolean) =>
+  `rounded-full border px-2.5 py-1 text-xs font-semibold ${
+    active ? "border-accent bg-accent text-white" : "border-gray-300 text-gray-600 hover:bg-gray-50"
+  }`;
+
+/** Per-user slide-over — the shared PermissionMatrix, plus Center Access (see its own
+ *  search/chip/bulk-select controls below, built for a network with hundreds of
+ *  centers) — and one Save that replaces the user's entire grant set in a single
+ *  request (matches the server's own replace-all contract, not incremental
  *  grant/revoke calls). Only reachable via the "Permissions" button, itself gated on
  *  admin:managePermissions — not every Admin necessarily holds it. */
 function PermissionsPanel({
   target,
   isSelf,
-  roles,
   onClose,
   onSaved
 }: {
   target: AdminUser;
   isSelf: boolean;
-  roles: MasterRole[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -165,6 +178,9 @@ function PermissionsPanel({
   const [granted, setGranted] = useState<Set<string>>(new Set());
   const [centers, setCenters] = useState<string[]>([]);
   const [centerAccess, setCenterAccess] = useState<Set<string>>(new Set());
+  const [centerSearch, setCenterSearch] = useState("");
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([fetchUserPermissions(target.id), fetchCenters()])
@@ -178,10 +194,6 @@ function PermissionsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target.id]);
 
-  function applyTemplate(role: MasterRole) {
-    setGranted(new Set(role.grants.map(permissionKey)));
-  }
-
   function toggleCenter(center: string) {
     setCenterAccess((prev) => {
       const next = new Set(prev);
@@ -189,6 +201,22 @@ function PermissionsPanel({
       else next.add(center);
       return next;
     });
+  }
+
+  const centerGroups = Array.from(new Set(centers.map(centerGroupPrefix))).sort();
+  const filteredCenters = centers.filter((center) => {
+    if (activeGroup && centerGroupPrefix(center) !== activeGroup) return false;
+    if (showSelectedOnly && !centerAccess.has(center)) return false;
+    if (centerSearch && !center.toLowerCase().includes(centerSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  function selectAllFiltered() {
+    setCenterAccess((prev) => new Set([...prev, ...filteredCenters]));
+  }
+
+  function clearAllCenters() {
+    setCenterAccess(new Set());
   }
 
   async function handleSave() {
@@ -216,29 +244,20 @@ function PermissionsPanel({
             <LockIcon fontSize={18} />
             Permissions — {target.username}
           </h2>
-          <p className="mt-1 text-xs text-gray-500">
-            Role label: <RoleBadge role={target.role} /> — a starting template only; toggles below are this user's
-            actual access.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {roles
-              .filter((r) => r.active)
-              .map((role) => (
-                <button
-                  key={role.id}
-                  type="button"
-                  className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-                  onClick={() => applyTemplate(role)}
-                >
-                  Reset to {roleDisplayName(role.name)} template
-                </button>
-              ))}
+          <div className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-500">
+            <span>Role:</span>
+            <RoleBadge role={target.role} />
           </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-5 py-3">
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <h3 className="text-sm font-semibold text-ink">Center Access</h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-ink">Center Access</h3>
+              <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                Selected: {centerAccess.size} / {centers.length}
+              </span>
+            </div>
             <p className="mt-1 text-xs text-gray-600">
               A second, independent narrowing on top of the permissions below — which centers' assets this user can
               see and act on. No centers selected means every center (unscoped), the default for everyone.
@@ -247,17 +266,74 @@ function PermissionsPanel({
               <div className="mt-3 h-16 animate-pulse rounded bg-amber-100" />
             ) : (
               <>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {centers.map((center) => (
-                    <label
-                      key={center}
-                      className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2 py-1 text-xs text-gray-700"
-                    >
-                      <input type="checkbox" checked={centerAccess.has(center)} onChange={() => toggleCenter(center)} />
-                      {center}
-                    </label>
-                  ))}
+                <input
+                  type="text"
+                  className={`${fieldControlClass} mt-3 w-full`}
+                  placeholder="Search centers by code, name, or state (e.g. AP, TS, KA, BLR, HYD)…"
+                  value={centerSearch}
+                  onChange={(e) => setCenterSearch(e.target.value)}
+                />
+
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={selectAllFiltered}
+                    disabled={filteredCenters.length === 0}
+                  >
+                    Select All Filtered
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={clearAllCenters}
+                    disabled={centerAccess.size === 0}
+                  >
+                    Clear All
+                  </button>
+                  <button
+                    type="button"
+                    className={CHIP_CLASS(showSelectedOnly)}
+                    onClick={() => setShowSelectedOnly((s) => !s)}
+                  >
+                    Show Selected Only
+                  </button>
                 </div>
+
+                {centerGroups.length > 1 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <button type="button" className={CHIP_CLASS(activeGroup === null)} onClick={() => setActiveGroup(null)}>
+                      All
+                    </button>
+                    {centerGroups.map((group) => (
+                      <button
+                        key={group}
+                        type="button"
+                        className={CHIP_CLASS(activeGroup === group)}
+                        onClick={() => setActiveGroup(group)}
+                      >
+                        {group}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-3 grid max-h-64 grid-cols-2 gap-1 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50/50 p-3 sm:grid-cols-3">
+                  {filteredCenters.length === 0 ? (
+                    <p className="col-span-full py-4 text-center text-xs text-gray-400">No centers match.</p>
+                  ) : (
+                    filteredCenters.map((center) => (
+                      <label
+                        key={center}
+                        className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-700 hover:bg-white"
+                      >
+                        <input type="checkbox" checked={centerAccess.has(center)} onChange={() => toggleCenter(center)} />
+                        <span className="truncate">{center}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+
                 <p className="mt-2 text-xs font-medium text-amber-800">
                   {centerAccess.size === 0
                     ? "Unscoped — sees every center."
@@ -538,7 +614,7 @@ export function AdminPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6">
+    <div className="flex h-full flex-col overflow-y-auto bg-white px-6 pb-28 pt-6">
       <PageHeader
         icon={AdminIcon}
         title="Admin"
@@ -587,8 +663,18 @@ export function AdminPage() {
         </div>
       </Card>
 
-      <div className="mt-6 max-w-5xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-sm">
+      {/* shrink-0: without it, a flex child with overflow-hidden gets an automatic
+          flexbox min-height of 0 (not its content height) — the browser then silently
+          shrinks this table to fit the page instead of the page's own overflow-y-auto
+          scrolling to show it, which is what made the mouse wheel appear broken here. */}
+      {/* overflow-x-auto + table min-w: the edit-mode inputs/selects can widen the row
+          past the card's width — without a horizontal scroll boundary here, that excess
+          width had nowhere to go and pushed Save/Cancel off-screen with no way back.
+          The Actions column is sticky right so those two buttons (or Edit/⋮) stay
+          reachable without needing to scroll all the way over regardless. */}
+      <div className="mt-6 max-w-5xl shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className={TH_CLASS}>Username</th>
@@ -597,14 +683,16 @@ export function AdminPage() {
                 <th className={TH_CLASS}>Status</th>
                 <th className={TH_CLASS}>Role</th>
                 <th className={TH_CLASS}>Last Login</th>
-                <th className={`${TH_CLASS} min-w-[160px]`}>Actions</th>
+                <th className={`${TH_CLASS} sticky right-0 z-10 min-w-[160px] border-l border-slate-200 bg-slate-50`}>
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {rows?.map((row) => {
                 const isSelf = row.id === me?.id;
                 return (
-                  <tr key={row.id} className="transition-colors hover:bg-slate-50/60">
+                  <tr key={row.id} className="group transition-colors hover:bg-slate-50/60">
                     {editingId === row.id ? (
                       <>
                         <td className={`${TD_CLASS} font-medium`}>{row.username}</td>
@@ -627,7 +715,9 @@ export function AdminPage() {
                           />
                         </td>
                         <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
-                        <td className={`${TD_CLASS} min-w-[160px]`}>
+                        <td
+                          className={`${TD_CLASS} sticky right-0 z-10 min-w-[160px] border-l border-slate-200 bg-white`}
+                        >
                           <div className="flex items-center gap-2 whitespace-nowrap">
                             <Button
                               size="sm"
@@ -663,7 +753,9 @@ export function AdminPage() {
                           <RoleBadge role={row.role} />
                         </td>
                         <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
-                        <td className={`${TD_CLASS} min-w-[160px]`}>
+                        <td
+                          className={`${TD_CLASS} sticky right-0 z-10 min-w-[160px] border-l border-slate-200 bg-white group-hover:bg-slate-50/60`}
+                        >
                           <div className="flex items-center gap-2 whitespace-nowrap">
                             <Button size="sm" variant="secondary" onClick={() => startEdit(row)}>
                               <EditIcon fontSize={14} />
@@ -687,6 +779,7 @@ export function AdminPage() {
               })}
             </tbody>
           </table>
+        </div>
         {rows?.length === 0 && <p className="px-4 py-10 text-center text-sm text-gray-400">No users yet.</p>}
       </div>
 
@@ -698,7 +791,6 @@ export function AdminPage() {
         <PermissionsPanel
           target={permissionsTarget}
           isSelf={permissionsTarget.id === me?.id}
-          roles={roles}
           onClose={() => setPermissionsTarget(null)}
           onSaved={() => setPermissionsTarget(null)}
         />
