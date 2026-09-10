@@ -28,18 +28,18 @@ import { SettingsGate } from "./components/SettingsGate.js";
 import { RequireAuth } from "./components/RequireAuth.js";
 import { RequirePermission } from "./components/RequirePermission.js";
 import { ToastProvider } from "./components/Toast.js";
-import { UpdateBanner } from "./components/UpdateBanner.js";
+import { ServiceWorkerUpdater } from "./components/ServiceWorkerUpdater.js";
 import { NotificationsProvider } from "./lib/NotificationsContext.js";
 
 export default function App() {
   return (
     <ToastProvider>
-    <UpdateBanner />
     <NotificationsProvider>
     <AuthProvider>
       <SettingsProvider>
         <FiltersProvider>
           <HashRouter>
+            <ServiceWorkerUpdater />
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/account" element={<AccountPage />} />

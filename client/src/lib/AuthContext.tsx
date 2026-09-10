@@ -23,6 +23,12 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// Written on every sign-out (below) purely to fire a `storage` event in every OTHER open
+// tab — that event never reaches the tab that wrote it, which is exactly what's needed
+// here (this tab already cleared its own state inline). The value itself is never read
+// back, only its presence as a change trigger.
+const AUTH_LOGOUT_BROADCAST_KEY = "nephroassets.authLogoutBroadcast";
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,6 +55,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("auth:unauthenticated", onUnauthenticated);
   }, []);
 
+  // Sign-out in one tab signs out every other open tab immediately — the server-side
+  // session/cookie is already gone by the time AUTH_LOGOUT_BROADCAST_KEY is written, so
+  // there's nothing for this listener to call except the same local cleanup logout()
+  // itself does; no need to re-hit /api/auth/logout from a tab that didn't initiate it.
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key !== AUTH_LOGOUT_BROADCAST_KEY || !e.newValue) return;
+      setUser(null);
+      clearPersistedUiState();
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const login = async (username: string, password: string): Promise<{ ok: true } | { ok: false; error: string }> => {
     try {
       const { user } = await apiLogin(username, password);
@@ -71,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setUser(null);
       clearPersistedUiState();
+      localStorage.setItem(AUTH_LOGOUT_BROADCAST_KEY, String(Date.now()));
     }
   };
 

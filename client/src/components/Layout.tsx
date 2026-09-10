@@ -1,13 +1,25 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type Dispatch, type SetStateAction } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type Dispatch,
+  type SetStateAction
+} from "react";
 import { useSettings } from "../lib/SettingsContext.js";
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission, type Module } from "../lib/permissions.js";
 import { SIDEBAR_COLLAPSED_KEY_PREFIX } from "../lib/durablePreferenceKeys.js";
 import { formatCompactIndianCount, formatDate } from "../lib/format.js";
+import { useIdleLogout } from "../hooks/useIdleLogout.js";
 import { useToast } from "./Toast.js";
 import { NotificationsBell } from "./NotificationsBell.js";
 import { UserMenu } from "./UserMenu.js";
+import { InactivityWarningModal } from "./InactivityWarningModal.js";
 import { LogoSymbol, Wordmark } from "./Logo.js";
 import { InstallAppButton } from "./InstallAppButton.js";
 import { IosInstallHint } from "./IosInstallHint.js";
@@ -239,6 +251,12 @@ export function Layout() {
     localStorage.setItem(sidebarCollapsedKey(user!.id), String(collapsed));
   }, [collapsed, user]);
 
+  const handleInactivityLogout = useCallback(async () => {
+    await logout();
+    navigate("/login", { replace: true, state: { notice: "You were signed out due to inactivity." } });
+  }, [logout, navigate]);
+  const { showWarning, secondsRemaining, stayActive } = useIdleLogout(handleInactivityLogout);
+
   return (
     <div className="flex h-full print:block print:h-auto">
       <aside
@@ -323,6 +341,13 @@ export function Layout() {
         </div>
       </RegisterAssetCountContext.Provider>
       <IosInstallHint />
+      {showWarning && (
+        <InactivityWarningModal
+          secondsRemaining={secondsRemaining}
+          onStayActive={stayActive}
+          onSignOutNow={handleInactivityLogout}
+        />
+      )}
     </div>
   );
 }

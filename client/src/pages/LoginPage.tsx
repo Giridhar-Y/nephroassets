@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext.js";
-import { ErrorIcon } from "../lib/icons.js";
+import { ErrorIcon, InfoIcon } from "../lib/icons.js";
 import { LogoSymbol, Wordmark } from "../components/Logo.js";
 import { PasswordInput } from "../components/PasswordInput.js";
 
@@ -12,6 +12,9 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Set by Layout.tsx's inactivity auto-logout when it redirects here — read once, from
+  // whatever navigate() call landed on this page, not persisted anywhere.
+  const notice = (location.state as { notice?: string } | null)?.notice ?? null;
 
   if (user) {
     if (user.mustChangePassword) return <Navigate to="/change-password" replace />;
@@ -39,6 +42,13 @@ export function LoginPage() {
           </h1>
         </div>
         <p className="mt-1 text-sm text-gray-500">Sign in to your account.</p>
+
+        {notice && (
+          <p className="mt-4 flex items-center gap-1.5 rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">
+            <InfoIcon fontSize={15} />
+            {notice}
+          </p>
+        )}
 
         <div className="mt-6 border-t border-gray-100 pt-6">
           <form className="space-y-4" onSubmit={handleSubmit}>

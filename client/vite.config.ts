@@ -10,17 +10,16 @@ export default defineConfig({
       // under `vite dev`, so it can't affect e2e/dev testing at all; left unset
       // deliberately rather than toggled, so that stays true regardless of test mode.
       //
-      // "prompt", not "autoUpdate": autoUpdate calls skipWaiting()+clientsClaim() the
-      // instant a new deployment's service worker is found, on every open tab, with no
-      // warning — swapping the running app out from under someone mid-task. "prompt"
-      // instead installs the new worker and WAITS; useServiceWorkerUpdate.ts
-      // (lib/useServiceWorkerUpdate.ts) surfaces that as a dismissable-only-by-acting
-      // banner (UpdateBanner.tsx), and only reloads once the user clicks Update Now.
-      // injectRegister:null pairs with this — it stops the plugin auto-injecting its own
-      // (fire-and-forget, no update-callback) registration script into index.html, since
-      // useServiceWorkerUpdate.ts registers the service worker itself via the
-      // `virtual:pwa-register` module instead, specifically so it can hook onNeedRefresh.
-      registerType: "prompt",
+      // "autoUpdate": a new deployment's service worker takes over automatically —
+      // no "Update Now" prompt. useServiceWorkerUpdate.ts still does the actual
+      // skipWaiting+reload itself (via `virtual:pwa-register`, immediate:true), timed to
+      // a route navigation (ServiceWorkerUpdater.tsx) rather than firing mid-task; this
+      // setting plus workbox.clientsClaim/skipWaiting below just make the generated
+      // service worker itself never sit around waiting to be told. injectRegister:null
+      // stops the plugin auto-injecting its own fire-and-forget registration script,
+      // since useServiceWorkerUpdate.ts registers the service worker itself instead,
+      // specifically so it can hook onNeedRefresh.
+      registerType: "autoUpdate",
       injectRegister: null,
       includeAssets: ["favicon.svg", "icons/favicon-32x32.png"],
       manifest: {
@@ -42,6 +41,11 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // Paired with registerType:"autoUpdate" above: the installed/waiting worker
+        // claims every open tab (and this installed PWA, on its next reopen or
+        // navigation) the instant it activates, instead of waiting to be asked.
+        clientsClaim: true,
+        skipWaiting: true,
         // Precache only the built app shell (JS/CSS/HTML/fonts/icons) — generateSW's
         // default globPatterns already only match dist/ build output, so /api/* was
         // never going to be swept in by that alone. The runtimeCaching + denylist rules
