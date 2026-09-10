@@ -2,6 +2,10 @@
 
 A Fixed Asset Register for dialysis-center assets. React + TypeScript client, Fastify +
 PostgreSQL server, deployed to Vercel (serverless, `api/index.ts`) with Supabase Postgres.
+Also packaged as a standalone container (root `Dockerfile`) for a persistent-process host
+like AWS App Runner or Render (`render.yaml`) — same app, same Supabase database, just a
+different entry point (`server/src/index.ts`'s `app.listen(...)` instead of a serverless
+handler).
 
 ## Setup
 
@@ -60,3 +64,21 @@ cd server && npm test         # vitest — unit + integration
 cd client && npm test         # vitest — unit/integration (jsdom)
 cd client && npm run test:e2e # Playwright, against a running dev server
 ```
+
+### Container deployment (AWS App Runner, or any standalone-Node host)
+
+```bash
+docker build -t nephroassets .
+docker run -p 3000:3000 \
+  -e DATABASE_URL=postgres://... \
+  -e JWT_SECRET=$(openssl rand -base64 48) \
+  nephroassets
+```
+
+One image serves both the API and the built client on a single port (`PORT`, defaults to
+3000 in the image) — same `DATABASE_URL`/`JWT_SECRET` requirements as any other
+deployment (see `server/.env.example`). On App Runner specifically: point it at this
+repo/image, set those two as required environment variables (plus any optional ones —
+`EXPORT_S3_*` for background exports, `OPENAI_API_KEY` for AI Register Search — the app
+runs fine without them, those features just stay off), and set the service's port to
+match `PORT`.

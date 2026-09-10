@@ -1,0 +1,25 @@
+# Keeps the build context small and stops the builder stage's `COPY client client` /
+# `COPY server server` from ever pulling in a host machine's own node_modules or stale
+# dist/ (wrong platform-native binaries, or masking a real build failure with leftovers).
+**/node_modules
+**/dist
+server/.pgdata
+server/.pgdata-test
+server/.pgdata-scale
+**/*.log
+**/.env
+**/.env.local
+**/*.tsbuildinfo
+
+.git
+.github
+.claude
+
+backups
+docs
+client/e2e/.auth
+client/test-results
+client/playwright-report
+
+Dockerfile
+.dockerignore
