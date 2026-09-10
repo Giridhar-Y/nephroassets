@@ -28,7 +28,6 @@ import {
   DashboardIcon,
   RegisterIcon,
   SettingsIcon,
-  SignOutIcon,
   CalendarIcon,
   HistoryIcon,
   AddCircleIcon,
@@ -298,22 +297,13 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-gray-100 px-3 py-3">
-          <button
-            type="button"
-            title={collapsed ? "Sign Out" : undefined}
-            className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-700 ${
-              collapsed ? "justify-center px-0" : ""
-            }`}
-            onClick={async () => {
-              await logout();
-              navigate("/login", { replace: true });
-            }}
-          >
-            <SignOutIcon fontSize={collapsed ? 20 : 18} />
-            {!collapsed && "Sign Out"}
-          </button>
-        </div>
+        {/* Account management/Sign Out now lives only in the header's UserMenu avatar
+            dropdown — one authoritative place instead of two. */}
+        {!collapsed && (
+          <div className="border-t border-gray-100 px-3 py-3">
+            <p className="text-center text-[11px] font-medium text-gray-400">NephroAssets v1.0 • FAR</p>
+          </div>
+        )}
       </aside>
       <RegisterAssetCountContext.Provider value={setRegisterAssetCount}>
         <div className="flex min-w-0 flex-1 flex-col print:block">
