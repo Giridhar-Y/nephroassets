@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ApiError,
   createAdminUser,
@@ -17,19 +18,30 @@ import {
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission } from "../lib/permissions.js";
 import { PermissionMatrix } from "../components/PermissionMatrix.js";
-import { AdminIcon, KeyIcon, LockIcon } from "../lib/icons.js";
+import { AdminIcon, DisableUserIcon, EditIcon, KeyIcon, LockIcon, MoreVerticalIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
-import { Badge } from "../components/ui/Badge.js";
+import { Card } from "../components/ui/Card.js";
+import { Button } from "../components/ui/Button.js";
+import { Field, fieldControlClass, Input } from "../components/ui/FormField.js";
 import { RoleBadge, roleDisplayName } from "../components/ui/RoleBadge.js";
 import { useToast } from "../components/Toast.js";
 
-const INPUT_CLASS =
-  "rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
-const TH_CLASS = "px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600";
-const TD_CLASS = "px-3 py-2 text-sm text-ink";
+const TH_CLASS = "px-4 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-600";
+const TD_CLASS = "px-4 py-3 text-sm text-ink align-middle";
 
 function StatusBadge({ status }: { status: AdminUser["status"] }) {
-  return <Badge tone={status === "active" ? "success" : "neutral"}>{status === "active" ? "Active" : "Disabled"}</Badge>;
+  if (status === "active") {
+    return (
+      <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+        Active
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+      Disabled
+    </span>
+  );
 }
 
 function RoleSelect({
@@ -46,7 +58,13 @@ function RoleSelect({
   title?: string;
 }) {
   return (
-    <select className={INPUT_CLASS} value={value} disabled={disabled} title={title} onChange={(e) => onChange(e.target.value)}>
+    <select
+      className={`${fieldControlClass} w-full`}
+      value={value}
+      disabled={disabled}
+      title={title}
+      onChange={(e) => onChange(e.target.value)}
+    >
       {roles
         // A deactivated role stays selectable if it's this field's current value (same
         // "already-in-use values stay visible" convention every other Masters-backed
@@ -283,6 +301,116 @@ function defaultRoleName(roles: MasterRole[]): string {
   return active.find((r) => r.name.toLowerCase() === "viewer")?.name ?? active[0]?.name ?? "";
 }
 
+// The ⋮ menu for a row's less-common actions — same click-outside pattern as
+// UserMenu.tsx, but rendered through a portal: the table sits inside an
+// overflow-hidden bordered container (for clean rounded corners), which would clip an
+// absolutely-positioned dropdown opened on a row near the bottom edge. Edit stays a
+// standalone button since it's the action taken most often.
+function ActionMenu({
+  row,
+  isSelf,
+  busy,
+  canManagePermissions,
+  onReset,
+  onToggleStatus,
+  onPermissions
+}: {
+  row: AdminUser;
+  isSelf: boolean;
+  busy: boolean;
+  canManagePermissions: boolean;
+  onReset: () => void;
+  onToggleStatus: () => void;
+  onPermissions: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Estimated menu height (3 items) — flips the menu to open upward when the button
+  // sits too close to the bottom of the viewport for it to fit below, same as any
+  // fixed-position dropdown opened near the fold.
+  const MENU_HEIGHT_ESTIMATE = 150;
+
+  function toggle() {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      const right = window.innerWidth - rect.right;
+      if (window.innerHeight - rect.bottom < MENU_HEIGHT_ESTIMATE) {
+        setCoords({ bottom: window.innerHeight - rect.top + 4, right });
+      } else {
+        setCoords({ top: rect.bottom + 4, right });
+      }
+    }
+    setOpen((o) => !o);
+  }
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label="More actions"
+        className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100"
+        onClick={toggle}
+      >
+        <MoreVerticalIcon fontSize={18} />
+      </button>
+      {open &&
+        coords &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <div
+              className="fixed z-50 w-52 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+              style={{ top: coords.top, bottom: coords.bottom, right: coords.right }}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  setOpen(false);
+                  onReset();
+                }}
+                disabled={busy}
+              >
+                <KeyIcon fontSize={16} />
+                Reset Password
+              </button>
+              {canManagePermissions && (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-slate-50"
+                  onClick={() => {
+                    setOpen(false);
+                    onPermissions();
+                  }}
+                >
+                  <LockIcon fontSize={16} />
+                  View Permissions
+                </button>
+              )}
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-gray-700"
+                onClick={() => {
+                  setOpen(false);
+                  onToggleStatus();
+                }}
+                disabled={busy || isSelf}
+                title={isSelf ? "You can't disable your own account." : undefined}
+              >
+                <DisableUserIcon fontSize={16} />
+                {row.status === "active" ? "Disable Account" : "Re-enable Account"}
+              </button>
+            </div>
+          </>,
+          document.body
+        )}
+    </div>
+  );
+}
+
 export function AdminPage() {
   const { user: me } = useAuth();
   const { showToast } = useToast();
@@ -419,169 +547,147 @@ export function AdminPage() {
         logged."
       />
 
-      <div className="mt-6 max-w-5xl rounded-xl bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Username</label>
-            <input className={INPUT_CLASS} value={username} onChange={(e) => setUsername(e.target.value)} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Email</label>
-            <input
-              className={INPUT_CLASS}
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Display Name</label>
-            <input
-              className={INPUT_CLASS}
+      <Card className="mt-6 max-w-5xl p-6">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-ink">+ Add New User</h2>
+          <p className="mt-0.5 text-sm text-gray-500">Create a login for a new team member and assign their starting role.</p>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="Username" htmlFor="new-username">
+            <Input id="new-username" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </Field>
+          <Field label="Email" htmlFor="new-email">
+            <Input id="new-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+          <Field label="Display Name" htmlFor="new-display-name">
+            <Input
+              id="new-display-name"
               placeholder="Optional — defaults to email"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
             />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Temporary Password</label>
-            <input
-              className={INPUT_CLASS}
+          </Field>
+          <Field label="Role" htmlFor="new-role">
+            <RoleSelect value={role} onChange={setRole} roles={roles} />
+          </Field>
+        </div>
+        <div className="mt-4 flex flex-wrap items-end gap-4">
+          <Field label="Temporary Password" htmlFor="new-password" className="min-w-[240px] flex-1">
+            <Input
+              id="new-password"
               type="text"
               placeholder="At least 8 characters"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Role</label>
-            <RoleSelect value={role} onChange={setRole} roles={roles} />
-          </div>
-          <button
-            type="button"
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
-            onClick={handleCreate}
-            disabled={busy || !username.trim() || !email.trim() || password.length < 8}
-          >
+          </Field>
+          <Button onClick={handleCreate} disabled={busy || !username.trim() || !email.trim() || password.length < 8}>
             Create User
-          </button>
+          </Button>
         </div>
+      </Card>
 
-        <table className="mt-4 w-full text-sm">
-          <thead className="border-b-2 border-gray-300 bg-gray-50">
-            <tr>
-              <th className={TH_CLASS}>Username</th>
-              <th className={TH_CLASS}>Display Name</th>
-              <th className={TH_CLASS}>Email</th>
-              <th className={TH_CLASS}>Status</th>
-              <th className={TH_CLASS}>Role</th>
-              <th className={TH_CLASS}>Last Login</th>
-              <th className={TH_CLASS}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows?.map((row) => {
-              const isSelf = row.id === me?.id;
-              return (
-                <tr key={row.id} className="border-b border-gray-100">
-                  {editingId === row.id ? (
-                    <>
-                      <td className={`${TD_CLASS} font-medium`}>{row.username}</td>
-                      <td className={TD_CLASS}>
-                        <input
-                          className={INPUT_CLASS}
-                          value={editDisplayName}
-                          onChange={(e) => setEditDisplayName(e.target.value)}
-                        />
-                      </td>
-                      <td className={TD_CLASS}>
-                        <input className={INPUT_CLASS} value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
-                      </td>
-                      <td className={TD_CLASS}>
-                        <StatusBadge status={row.status} />
-                      </td>
-                      <td className={TD_CLASS}>
-                        <RoleSelect
-                          value={editRole}
-                          onChange={setEditRole}
-                          roles={roles}
-                          disabled={isSelf}
-                          title={isSelf ? "You can't change your own role." : undefined}
-                        />
-                      </td>
-                      <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
-                      <td className={`${TD_CLASS} space-x-2 text-right`}>
-                        <button
-                          type="button"
-                          className="font-medium text-accent hover:underline disabled:opacity-50"
-                          onClick={() => saveEdit(row)}
-                          disabled={busy || !editEmail.trim() || !editDisplayName.trim()}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className="font-medium text-gray-500 hover:underline"
-                          onClick={() => setEditingId(null)}
-                        >
-                          Cancel
-                        </button>
-                      </td>
-                    </>
-                  ) : (
-                    <>
-                      <td className={`${TD_CLASS} font-medium`}>
-                        {row.username}
-                        {isSelf && <span className="ml-1.5 text-xs font-normal text-gray-400">(you)</span>}
-                      </td>
-                      <td className={TD_CLASS}>{row.displayName}</td>
-                      <td className={TD_CLASS}>{row.email}</td>
-                      <td className={TD_CLASS}>
-                        <StatusBadge status={row.status} />
-                      </td>
-                      <td className={TD_CLASS}>
-                        <RoleBadge role={row.role} />
-                      </td>
-                      <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
-                      <td className={`${TD_CLASS} space-x-2 text-right`}>
-                        <button type="button" className="font-medium text-accent hover:underline" onClick={() => startEdit(row)}>
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="font-medium text-gray-500 hover:underline disabled:opacity-50"
-                          onClick={() => handleReset(row)}
-                          disabled={busy}
-                        >
-                          Reset Password
-                        </button>
-                        <button
-                          type="button"
-                          className="font-medium text-gray-500 hover:underline disabled:opacity-50"
-                          onClick={() => toggleStatus(row)}
-                          disabled={busy || isSelf}
-                          title={isSelf ? "You can't disable your own account." : undefined}
-                        >
-                          {row.status === "active" ? "Disable" : "Re-enable"}
-                        </button>
-                        {canManagePermissions && (
-                          <button
-                            type="button"
-                            className="font-medium text-gray-500 hover:underline"
-                            onClick={() => setPermissionsTarget(row)}
-                          >
-                            Permissions
-                          </button>
-                        )}
-                      </td>
-                    </>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {rows?.length === 0 && <p className="mt-6 text-center text-sm text-gray-400">No users yet.</p>}
+      <div className="mt-6 max-w-5xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="border-b border-slate-200 bg-slate-50">
+              <tr>
+                <th className={TH_CLASS}>Username</th>
+                <th className={TH_CLASS}>Display Name</th>
+                <th className={TH_CLASS}>Email</th>
+                <th className={TH_CLASS}>Status</th>
+                <th className={TH_CLASS}>Role</th>
+                <th className={TH_CLASS}>Last Login</th>
+                <th className={`${TH_CLASS} min-w-[160px]`}>Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows?.map((row) => {
+                const isSelf = row.id === me?.id;
+                return (
+                  <tr key={row.id} className="transition-colors hover:bg-slate-50/60">
+                    {editingId === row.id ? (
+                      <>
+                        <td className={`${TD_CLASS} font-medium`}>{row.username}</td>
+                        <td className={TD_CLASS}>
+                          <Input value={editDisplayName} onChange={(e) => setEditDisplayName(e.target.value)} />
+                        </td>
+                        <td className={TD_CLASS}>
+                          <Input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
+                        </td>
+                        <td className={TD_CLASS}>
+                          <StatusBadge status={row.status} />
+                        </td>
+                        <td className={TD_CLASS}>
+                          <RoleSelect
+                            value={editRole}
+                            onChange={setEditRole}
+                            roles={roles}
+                            disabled={isSelf}
+                            title={isSelf ? "You can't change your own role." : undefined}
+                          />
+                        </td>
+                        <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
+                        <td className={`${TD_CLASS} min-w-[160px]`}>
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <Button
+                              size="sm"
+                              onClick={() => saveEdit(row)}
+                              disabled={busy || !editEmail.trim() || !editDisplayName.trim()}
+                            >
+                              Save
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className={`${TD_CLASS} font-medium`}>
+                          <div className="flex items-center gap-1.5">
+                            {row.username}
+                            {isSelf && (
+                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                                (you)
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className={TD_CLASS}>{row.displayName}</td>
+                        <td className={TD_CLASS}>{row.email}</td>
+                        <td className={TD_CLASS}>
+                          <StatusBadge status={row.status} />
+                        </td>
+                        <td className={TD_CLASS}>
+                          <RoleBadge role={row.role} />
+                        </td>
+                        <td className={TD_CLASS}>{formatDateTime(row.lastLoginAt)}</td>
+                        <td className={`${TD_CLASS} min-w-[160px]`}>
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <Button size="sm" variant="secondary" onClick={() => startEdit(row)}>
+                              <EditIcon fontSize={14} />
+                              Edit
+                            </Button>
+                            <ActionMenu
+                              row={row}
+                              isSelf={isSelf}
+                              busy={busy}
+                              canManagePermissions={canManagePermissions}
+                              onReset={() => handleReset(row)}
+                              onToggleStatus={() => toggleStatus(row)}
+                              onPermissions={() => setPermissionsTarget(row)}
+                            />
+                          </div>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        {rows?.length === 0 && <p className="px-4 py-10 text-center text-sm text-gray-400">No users yet.</p>}
       </div>
 
       {reveal && (

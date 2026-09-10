@@ -55,5 +55,7 @@ export {
   SaveRegular as SaveIcon,
   SaveCopyRegular as SaveAsNewIcon,
   PersonRegular as PersonIcon,
-  MailRegular as MailIcon
+  MailRegular as MailIcon,
+  MoreVerticalRegular as MoreVerticalIcon,
+  PersonProhibitedRegular as DisableUserIcon
 } from "@fluentui/react-icons";
