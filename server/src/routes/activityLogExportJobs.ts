@@ -142,6 +142,10 @@ export async function advanceActivityLogExportJob(
 
     if (!uploadId) {
       uploadId = await storage.createMultipartUpload(objectKey, "text/csv");
+      // UTF-8 BOM — see assetsExport.ts's identical write for why. Written exactly once
+      // (only the hop that creates the upload reaches this branch), as the very first
+      // bytes of the file.
+      appendText(String.fromCharCode(0xfeff));
       appendText(csvLine([`Filters applied: ${buildActivityLogFilterSummaryText(q)}`]) + "\r\n");
       appendText(csvLine(["Timestamp", "Category", "Action", "FAR ID", "Actor", "Details (Summary)", "Source"]) + "\r\n");
       await db.query(`UPDATE export_jobs SET upload_id = $1, pending_buffer = $2 WHERE id = $3`, [
@@ -196,7 +200,7 @@ export async function advanceActivityLogExportJob(
         const changedFields = buildChangedFields(item.details);
         const changedText = changedFields.map((f) => `${f.label}: ${f.oldValue} → ${f.newValue}`).join("; ");
         const otherDetails = buildOtherDetailsText(item.details);
-        const detailsSummary = [changedText, otherDetails].filter(Boolean).join("; ") || "—";
+        const detailsSummary = [changedText, otherDetails].filter(Boolean).join("; ") || "-";
         lines[i] = csvLine([
           formatIstTimestamp(item.createdAt),
           CATEGORY_LABELS[item.category],

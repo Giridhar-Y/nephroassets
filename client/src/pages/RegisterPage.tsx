@@ -180,7 +180,7 @@ export function RegisterPage() {
   // below and the toolbar button share one `exporting` state — see ExportButton's own
   // exporting/onExport props for why two independent copies would be a race.
   const { exporting: exportingRegister, runExport: runRegisterExport } = useExport(exportUrl);
-  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
+  const { isExporting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
     { asAt: string } & AssetFilters
   >({
     createJob: createExportJob,
@@ -479,6 +479,7 @@ export function RegisterPage() {
           <ExportButton
             url={exportUrl}
             label="Export"
+            exportingLabel={overLimit ? "Exporting in background…" : "Exporting…"}
             shortcutHint="Export (Ctrl+Shift+E)"
             exporting={overLimit ? backgroundExporting : exportingRegister}
             onExport={handleExportClick}

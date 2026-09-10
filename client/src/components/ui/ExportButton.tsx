@@ -17,6 +17,7 @@ import { Button } from "./Button.js";
 export function ExportButton({
   url,
   label = "Export to Excel",
+  exportingLabel = "Exporting…",
   size = "sm",
   shortcutHint,
   exporting: exportingProp,
@@ -24,6 +25,10 @@ export function ExportButton({
 }: {
   url: string | undefined;
   label?: string;
+  /** Shown (with the spinner) while `exporting` is true — RegisterPage/ActivityLogPage
+   *  pass "Exporting in background…" for their background-job path specifically, so it
+   *  reads differently from a quick synchronous export still in flight. */
+  exportingLabel?: string;
   size?: "sm" | "md";
   /** Shown in the button's title attribute (e.g. "Export to Excel (Ctrl+Shift+E)") —
    *  only set by Register, the one screen with that shortcut wired up. Audit
@@ -32,12 +37,13 @@ export function ExportButton({
    *  shortcut that doesn't work there. */
   shortcutHint?: string;
   /** Controls export state from outside instead of this component managing its own —
-   *  Register does this so its Ctrl+Shift+E shortcut (hooks/useExport.ts, called once at
-   *  the page level) and this button share one `exporting` state, rather than two
-   *  independent ones that could let a shortcut-triggered export and a button click race
-   *  each other. Same controlled/uncontrolled convention AssetGrid's expanded/density
-   *  props already use — provide both together, or neither to keep this component's own
-   *  internal state (every page but Register). */
+   *  Register/Activity Log do this so their sync export AND background-job export share
+   *  one `exporting` state (RegisterPage's Ctrl+Shift+E shortcut too), rather than
+   *  independent ones that could let two paths race each other or let a click land while
+   *  a background job is still being polled minutes after it started. Same controlled/
+   *  uncontrolled convention AssetGrid's expanded/density props already use — provide
+   *  both together, or neither to keep this component's own internal state (every page
+   *  but Register/Activity Log). */
   exporting?: boolean;
   onExport?: () => void;
 }) {
@@ -49,7 +55,7 @@ export function ExportButton({
   return (
     <Button variant="secondary" size={size} onClick={runExport} disabled={!url || exporting} title={shortcutHint}>
       {exporting ? <RetryIcon fontSize={14} className="animate-spin" /> : <ExportIcon fontSize={14} />}
-      {exporting ? "Exporting…" : label}
+      {exporting ? exportingLabel : label}
     </Button>
   );
 }

@@ -279,6 +279,10 @@ export async function advanceExportJob(
 
     if (!uploadId) {
       uploadId = await storage.createMultipartUpload(objectKey, "text/csv");
+      // UTF-8 BOM — see assetsExport.ts's identical write for why. Written exactly once
+      // (only the hop that creates the upload reaches this branch at all), as the very
+      // first bytes of the file.
+      appendText(String.fromCharCode(0xfeff));
       // Row 1: filter-summary note, same convention as the synchronous export's own —
       // what this file represents, not just a raw column dump. Row 2: group header band
       // (same GROUP_INFO/groupRuns the synchronous CSV export's own group-band row uses —

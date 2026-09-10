@@ -184,7 +184,7 @@ export function ActivityLogPage() {
   };
   const exportUrl = getActivityLogExportUrl(exportParams);
   const { exporting: exportingSync, runExport: runSyncExport } = useExport(exportUrl);
-  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
+  const { isExporting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
     Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo">
   >({
     createJob: createActivityLogExportJob,
@@ -303,7 +303,15 @@ export function ActivityLogPage() {
         title="Activity Log"
         subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
           bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
-        actions={<ExportButton url={exportUrl} label="Export" exporting={exporting} onExport={handleExportClick} />}
+        actions={
+          <ExportButton
+            url={exportUrl}
+            label="Export"
+            exportingLabel={overLimit ? "Exporting in background…" : "Exporting…"}
+            exporting={exporting}
+            onExport={handleExportClick}
+          />
+        }
       >
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">

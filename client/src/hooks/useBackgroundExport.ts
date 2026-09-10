@@ -18,7 +18,14 @@ const POLL_INTERVAL_MS = 4000;
  *  single long-lived fetch. Generic over `TParams` (each screen POSTs its own filter
  *  shape) and takes its create/fetch calls and notification copy as config rather than
  *  hardcoding Register's — the polling/retry/notification logic itself is identical
- *  either way, only which two API functions and what text differ. */
+ *  either way, only which two API functions and what text differ.
+ *
+ *  `isExporting` stays true for the WHOLE job lifecycle — job creation through every
+ *  PENDING/PROCESSING poll tick — not just the brief POST that creates it. An earlier
+ *  version tracked only that initial POST, so the toolbar button sprang back to its
+ *  normal state the instant the job was created while the real work (which can run for
+ *  minutes at 200k+ rows) was still silently polling underneath it — no visual feedback,
+ *  and nothing stopped a second click from starting a duplicate job in the meantime. */
 export function useBackgroundExport<TParams>(config: {
   createJob: (params: TParams) => Promise<{ jobId: string }>;
   fetchJob: (jobId: string) => Promise<ExportJobStatus>;
@@ -30,7 +37,7 @@ export function useBackgroundExport<TParams>(config: {
 }) {
   const { showToast } = useToast();
   const { addNotification } = useNotifications();
-  const [starting, setStarting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   // RegisterPage/ActivityLogPage build `config` as a fresh object literal every render
   // (startingMessage in particular often embeds a just-computed row count) — a ref
@@ -41,20 +48,19 @@ export function useBackgroundExport<TParams>(config: {
   configRef.current = config;
 
   const startExport = useCallback(async (params: TParams) => {
-    if (starting) return;
-    setStarting(true);
+    if (isExporting) return;
+    setIsExporting(true);
     try {
       const { jobId } = await configRef.current.createJob(params);
       showToast(configRef.current.startingMessage);
-      pollExportJob(jobId, configRef.current, addNotification);
+      pollExportJob(jobId, configRef.current, addNotification, setIsExporting);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not start the export.", "error");
-    } finally {
-      setStarting(false);
+      setIsExporting(false);
     }
-  }, [starting, showToast, addNotification]);
+  }, [isExporting, showToast, addNotification]);
 
-  return { starting, startExport };
+  return { isExporting, startExport };
 }
 
 function pollExportJob(
@@ -64,7 +70,8 @@ function pollExportJob(
     buildCompletedMessage: (job: ExportJobStatus) => string;
     downloadLabel?: string;
   },
-  addNotification: ReturnType<typeof useNotifications>["addNotification"]
+  addNotification: ReturnType<typeof useNotifications>["addNotification"],
+  setIsExporting: (value: boolean) => void
 ): void {
   const tick = async () => {
     let job;
@@ -75,6 +82,7 @@ function pollExportJob(
       return;
     }
     if (job.status === "COMPLETED") {
+      setIsExporting(false);
       addNotification(config.buildCompletedMessage(job), "success", {
         link: job.fileUrl ?? undefined,
         linkLabel: config.downloadLabel ?? "Download CSV"
@@ -82,6 +90,7 @@ function pollExportJob(
       return;
     }
     if (job.status === "FAILED") {
+      setIsExporting(false);
       addNotification(job.errorMessage ?? "Background export failed.", "error");
       return;
     }

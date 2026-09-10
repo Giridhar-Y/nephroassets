@@ -259,7 +259,7 @@ function humanizeKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
 }
 function formatDetailValue(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "—";
+  if (value === null || value === undefined || value === "") return "-";
   if (Array.isArray(value)) {
     if (value.length === 0) return "none";
     return value.map((v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v))).join(", ");
@@ -358,7 +358,7 @@ export const DEFAULT_FY_START_DAY = 1;
 
 export const EXPORT_BATCH_SIZE = 2000;
 
-/** "Filters: FAR ID contains "X"  |  Category: Y" (or "None — showing all activity") —
+/** "Filters: FAR ID contains "X"  |  Category: Y" (or "None - showing all activity") —
  *  shared by the synchronous .xlsx export below and activityLogExportJobs.ts's own
  *  background CSV export, so the two can never quietly word this differently for the
  *  same filters. */
@@ -370,7 +370,7 @@ export function buildActivityLogFilterSummaryText(q: FilterQuery): string {
   if (q.dateFrom || q.dateTo) {
     filterParts.push(`Date: ${q.dateFrom ? isoToDDMMYYYY(q.dateFrom) : "the beginning"} to ${q.dateTo ? isoToDDMMYYYY(q.dateTo) : "today"}`);
   }
-  return filterParts.length > 0 ? `Filters: ${filterParts.join("  |  ")}` : "Filters: None — showing all activity";
+  return filterParts.length > 0 ? `Filters: ${filterParts.join("  |  ")}` : "Filters: None - showing all activity";
 }
 
 // Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event
@@ -523,7 +523,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
       // exports already use for their own title rows (reports.ts/assetsExport.ts) —
       // reused rather than a third "brand color" for Excel exports in this app.
       const titleRow = worksheet.getRow(1);
-      titleRow.getCell(1).value = "NephroPlus — Activity Log Export";
+      titleRow.getCell(1).value = "NephroPlus - Activity Log Export";
       worksheet.mergeCells(1, 1, 1, COLUMN_COUNT);
       titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
       titleRow.getCell(1).font = { color: { argb: "FFFFFFFF" }, bold: true, size: 12 };

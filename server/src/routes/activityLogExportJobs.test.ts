@@ -127,8 +127,16 @@ describe("Background Activity Log export: advanceActivityLogExportJob", () => {
     expect(job.file_url).toContain("signed=1");
 
     const body = storage.completed.get(job.object_key)!;
+    // UTF-8 BOM as the literal first character — see assetsExportJobs.test.ts's identical
+    // assertion for why (the real "â€”" mojibake bug this fixes).
+    expect(body.charCodeAt(0)).toBe(0xfeff);
     const lines = body.split("\r\n").filter((l) => l.length > 0);
     expect(lines[0]).toContain("Filters applied:");
+    // The exact filter-summary text this bug was reported against — a plain ASCII
+    // hyphen, not an em-dash (which would mojibake to "â€”" once Excel guesses the
+    // wrong encoding for a BOM-less file — no longer possible either, per the BOM
+    // assertion above).
+    expect(lines[0]).toContain("Filters: None - showing all activity");
     expect(lines[1]).toBe("Timestamp,Category,Action,FAR ID,Actor,Details (Summary),Source");
     expect(lines.length).toBe(4); // filter row + header row + 2 data rows, oldest first
     expect(lines[2]).toContain("ACTJOB-001");

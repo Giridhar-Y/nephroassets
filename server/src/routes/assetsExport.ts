@@ -998,6 +998,13 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
 
     const stream = new PassThrough();
     reply.send(stream);
+    // UTF-8 BOM — the very first bytes of the stream, before anything else. Without it,
+    // Excel (the overwhelming majority of openers for a plain .csv) guesses the file's
+    // encoding from the system locale instead of trusting the content is UTF-8, and
+    // mangles any non-ASCII character (the em-dash below included) into mojibake like
+    // "â€”" — confirmed live. The BOM is what tells Excel on both Windows and Mac to
+    // decode as UTF-8 without guessing.
+    stream.write(String.fromCharCode(0xfeff));
 
     try {
       // Plain CSV, not a styled .xlsx — replaces the old per-row-styled ExcelJS output
@@ -1018,7 +1025,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       // so it's never mistaken for the full register once it's out of context (e.g.
       // forwarded, or opened weeks later). A single field, not one per column (nothing
       // to merge across in CSV).
-      stream.write(csvLine([`Filters applied: ${filterSummaryText}  —  Exported: ${exportedAtText} IST`]) + "\r\n");
+      stream.write(csvLine([`Filters applied: ${filterSummaryText}  -  Exported: ${exportedAtText} IST`]) + "\r\n");
 
       // Row 2: totals — "TOTAL" in the first column, a sum under every totalable numeric
       // column, blank everywhere else (text/date columns, and non-totalable numbers like

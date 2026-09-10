@@ -189,6 +189,10 @@ describe("Background Register export: advanceExportJob", () => {
     expect(job.file_url).toContain("signed=1");
 
     const body = storage.completed.get(job.object_key)!;
+    // UTF-8 BOM as the literal first character — without it, Excel mis-guesses the
+    // file's encoding and mangles any non-ASCII character into mojibake (a real
+    // production bug this was the fix for).
+    expect(body.charCodeAt(0)).toBe(0xfeff);
     const lines = body.split("\r\n").filter((l) => l.length > 0);
     expect(lines[0]).toContain("Filters applied:");
     expect(lines[1]).toContain("Asset Identification"); // group-band row
