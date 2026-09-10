@@ -37,16 +37,19 @@ const JOB_BATCH_SIZE = 20_000;
 // stricter and requires every non-trailing part to be EXACTLY the same length (confirmed
 // live — R2 rejected CompleteMultipartUpload with "All non-trailing parts must have the
 // same length" when this was a >= threshold instead of a fixed size). 8MB clears S3's own
-// 5MB floor with margin and keeps memory use per part modest.
-const PART_SIZE_BYTES = 8 * 1024 * 1024;
+// 5MB floor with margin and keeps memory use per part modest. Exported — every job kind's
+// advance function (activityLogExportJobs.ts included) shares this same R2 constraint, so
+// they share the one constant rather than each guessing a value that happens to agree.
+export const PART_SIZE_BYTES = 8 * 1024 * 1024;
 
 // How long one processing hop (one GET .../jobs/:id call, or the internal self-nudge
 // below) is allowed to run before it must persist progress and return — safely under
 // Vercel's 60s function ceiling (vercel.json's maxDuration), leaving headroom for the
-// request/response overhead and the final multipart-completion call.
-const PROCESS_TIME_BUDGET_MS = 45_000;
+// request/response overhead and the final multipart-completion call. Exported for the
+// same reason as PART_SIZE_BYTES above.
+export const PROCESS_TIME_BUDGET_MS = 45_000;
 
-const SIGNED_URL_EXPIRY_SECONDS = 24 * 60 * 60;
+export const SIGNED_URL_EXPIRY_SECONDS = 24 * 60 * 60;
 
 /** far-register-DD-MM-YYYY_HH-mm.csv, in IST — same date convention (DD-MM-YYYY) and
  *  timezone (Asia/Kolkata) as the synchronous export's own exportedAtText
@@ -72,6 +75,7 @@ interface JobRow {
   id: string;
   user_id: string;
   status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+  job_type: "REGISTER" | "ACTIVITY_LOG";
   filters: ExportQuery;
   as_at: string;
   object_key: string;
@@ -207,6 +211,13 @@ export async function advanceExportJob(
   const { rows } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [jobId]);
   const job = rows[0];
   if (!job || job.status === "COMPLETED" || job.status === "FAILED") return;
+  // Defensive only — the two job kinds have separate GET routes (this one's caller only
+  // ever looks up a row it created via POST /api/assets/export/jobs), so a mismatch here
+  // would mean a caller reused a jobId across routes, not a real steady-state case.
+  if (job.job_type !== "REGISTER") {
+    log.error({ jobId, jobType: job.job_type }, "advanceExportJob called on a non-REGISTER job");
+    return;
+  }
   const objectKey = job.object_key;
 
   // Hoisted above the try block so the catch below can always abort whichever multipart
@@ -449,19 +460,22 @@ export async function advanceExportJob(
   }
 }
 
-/** Best-effort — fires a GET at this same job's status endpoint, forwarding the
- *  triggering request's own session cookie (so it's authenticated as the same user who
- *  owns the job, with zero changes to the global auth gate), and does NOT wait for it.
- *  Vercel serverless has no guaranteed way to keep running after a response is sent, so
- *  this may simply never complete — that's fine, not a correctness risk: the job's actual
- *  progress is only ever advanced by (and persisted inside) advanceExportJob, and the
- *  client's own next poll tick reaches the exact same endpoint and picks up from whatever
- *  was last persisted regardless of whether this nudge landed. */
-function fireSelfNudge(req: FastifyRequest, jobId: string): void {
+/** Best-effort — fires a GET at the job's own status endpoint, forwarding the triggering
+ *  request's own session cookie (so it's authenticated as the same user who owns the job,
+ *  with zero changes to the global auth gate), and does NOT wait for it. Vercel
+ *  serverless has no guaranteed way to keep running after a response is sent, so this may
+ *  simply never complete — that's fine, not a correctness risk: the job's actual progress
+ *  is only ever advanced by (and persisted inside) each job kind's own advance function,
+ *  and the client's own next poll tick reaches the exact same endpoint and picks up from
+ *  whatever was last persisted regardless of whether this nudge landed. `path` is the
+ *  full status-endpoint path (e.g. `/api/assets/export/jobs/${jobId}`) — parametrized
+ *  rather than assuming the Register route so activityLogExportJobs.ts's own POST handler
+ *  can reuse this instead of a near-duplicate copy. */
+export function fireSelfNudge(req: FastifyRequest, path: string): void {
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return;
   const origin = `${req.protocol}://${req.headers.host}`;
-  fetch(`${origin}/api/assets/export/jobs/${jobId}`, { headers: { cookie: cookieHeader } }).catch(() => {});
+  fetch(`${origin}${path}`, { headers: { cookie: cookieHeader } }).catch(() => {});
 }
 
 // The real S3-backed implementation is the default everywhere except tests, which swap
@@ -497,12 +511,12 @@ export default async function assetsExportJobsRoutes(app: FastifyInstance) {
     const jobId = randomUUID();
     const objectKey = `exports/${req.user!.id}/${jobId}.csv`;
     await db.query(
-      `INSERT INTO export_jobs (id, user_id, status, filters, as_at, object_key)
-       VALUES ($1, $2, 'PENDING', $3, $4, $5)`,
+      `INSERT INTO export_jobs (id, user_id, status, job_type, filters, as_at, object_key)
+       VALUES ($1, $2, 'PENDING', 'REGISTER', $3, $4, $5)`,
       [jobId, req.user!.id, JSON.stringify(parsed.data), asAt, objectKey]
     );
 
-    fireSelfNudge(req, jobId);
+    fireSelfNudge(req, `/api/assets/export/jobs/${jobId}`);
 
     reply.code(202);
     return { jobId };
@@ -517,7 +531,7 @@ export default async function assetsExportJobsRoutes(app: FastifyInstance) {
     const db = await getPool();
     const { rows } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [paramsParsed.data.id]);
     const job = rows[0];
-    if (!job || Number(job.user_id) !== req.user!.id) {
+    if (!job || Number(job.user_id) !== req.user!.id || job.job_type !== "REGISTER") {
       reply.code(404);
       return { error: "No export job found with that id." };
     }
@@ -526,7 +540,7 @@ export default async function assetsExportJobsRoutes(app: FastifyInstance) {
       await advanceExportJob(db, job.id, activeStorage, PROCESS_TIME_BUDGET_MS, req.log);
       const { rows: refreshed } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [job.id]);
       const current = refreshed[0]!;
-      if (current.status === "PROCESSING") fireSelfNudge(req, job.id);
+      if (current.status === "PROCESSING") fireSelfNudge(req, `/api/assets/export/jobs/${job.id}`);
       return jobToJson(current);
     }
     return jobToJson(job);

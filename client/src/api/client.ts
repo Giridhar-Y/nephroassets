@@ -246,7 +246,9 @@ export function getExportUrl(params: { asAt: string } & AssetFilters, format?: "
 export interface ExportJobStatus {
   id: string;
   status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
-  asAt: string;
+  /** Register jobs only — Activity Log's own background export (createActivityLogExportJob
+   *  below) has no "figures as of" concept, so its jobToJson response omits this field. */
+  asAt?: string;
   totalRows: number | null;
   processedRows: number;
   fileUrl: string | null;
@@ -271,6 +273,26 @@ export function createExportJob(params: { asAt: string } & AssetFilters): Promis
 
 export function fetchExportJob(jobId: string): Promise<ExportJobStatus> {
   return request(`/api/assets/export/jobs/${encodeURIComponent(jobId)}`);
+}
+
+// Background Activity Log export (routes/activityLogExportJobs.ts) — same filter set as
+// getActivityLogExportUrl above, just POSTed to create a resumable R2 job instead of
+// downloaded directly. Used when the filtered row count is too large for the synchronous
+// .xlsx export (see ActivityLogPage.tsx's own threshold check).
+export function createActivityLogExportJob(
+  params: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo">
+): Promise<{ jobId: string }> {
+  const search = new URLSearchParams();
+  if (params.farId) search.set("farId", params.farId);
+  if (params.actor) search.set("actor", params.actor);
+  if (params.category) search.set("category", params.category);
+  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
+  if (params.dateTo) search.set("dateTo", params.dateTo);
+  return request(`/api/audit-log/activity/export/jobs?${search}`, { method: "POST" });
+}
+
+export function fetchActivityLogExportJob(jobId: string): Promise<ExportJobStatus> {
+  return request(`/api/audit-log/activity/export/jobs/${encodeURIComponent(jobId)}`);
 }
 
 // Capitalization: register a brand-new asset.

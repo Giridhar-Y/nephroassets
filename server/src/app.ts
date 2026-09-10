@@ -22,6 +22,7 @@ import mastersRoutes from "./routes/masters.js";
 import bulkMastersRoutes from "./routes/bulkMasters.js";
 import bulkMergeRoutes from "./routes/bulkMerge.js";
 import activityLogRoutes from "./routes/activityLog.js";
+import activityLogExportJobsRoutes from "./routes/activityLogExportJobs.js";
 import aiSearchRoutes from "./routes/aiSearch.js";
 
 // Builds and registers the Fastify app but never calls `.listen(...)` — shared by the
@@ -86,6 +87,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(bulkMastersRoutes);
   await app.register(bulkMergeRoutes);
   await app.register(activityLogRoutes);
+  await app.register(activityLogExportJobsRoutes);
   await app.register(aiSearchRoutes);
 
   // Fastify's default error handler already logs, but doesn't guarantee a JSON body —

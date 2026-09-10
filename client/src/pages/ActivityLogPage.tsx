@@ -1,19 +1,30 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
+  createActivityLogExportJob,
   fetchActivityLog,
+  fetchActivityLogExportJob,
   fetchActivityLogSummary,
   getActivityLogExportUrl,
   type ActivityCategory,
   type ActivityLogEntry,
-  type ActivityLogSummary
+  type ActivityLogSummary,
+  type FetchActivityLogParams
 } from "../api/client.js";
 import { formatDateTime } from "../lib/format.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { useExport } from "../hooks/useExport.js";
+import { useBackgroundExport } from "../hooks/useBackgroundExport.js";
 
 const PAGE_SIZE = 50;
+
+// A filtered view at or under this row count exports synchronously (the existing .xlsx
+// route); above it runs as a background R2 job instead — same threshold reasoning as
+// Register's own EXPORT_ROW_LIMIT (RegisterPage.tsx), just a separately-tuned number for
+// this screen's own filtered-count/row-shape.
+const ACTIVITY_LOG_EXPORT_ROW_LIMIT = 10_000;
 
 // Timestamp / Category / FAR ID (flexible) / Actor / Details-button — shared by the
 // sticky header row and every data row (plain divs, not a <table>) so columns line up
@@ -164,6 +175,40 @@ export function ActivityLogPage() {
   const [dateTo, setDateTo] = useState(() => searchParams.get("dateTo") ?? "");
   const [summary, setSummary] = useState<ActivityLogSummary | null>(null);
 
+  const exportParams: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo"> = {
+    farId: farId || undefined,
+    actor: actor || undefined,
+    category: category || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined
+  };
+  const exportUrl = getActivityLogExportUrl(exportParams);
+  const { exporting: exportingSync, runExport: runSyncExport } = useExport(exportUrl);
+  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
+    Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo">
+  >({
+    createJob: createActivityLogExportJob,
+    fetchJob: fetchActivityLogExportJob,
+    startingMessage: `Exporting ${(summary?.total ?? 0).toLocaleString()} activity logs in the background. We'll notify you when ready.`,
+    buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString()} rows).`
+  });
+  // Filtered count too large for the synchronous .xlsx export runs as a background job
+  // instead — same toolbar button, just a different path once the count is known, exactly
+  // Register's own overLimit/handleExportClick split (RegisterPage.tsx).
+  const overLimit = summary !== null && summary.total > ACTIVITY_LOG_EXPORT_ROW_LIMIT;
+  const exporting = overLimit ? backgroundExporting : exportingSync;
+  const handleExportClick = useCallback(() => {
+    if (overLimit) {
+      void startBackgroundExport(exportParams);
+    } else {
+      runSyncExport();
+    }
+    // exportParams is a fresh object every render (built from the current filter state
+    // above) — including it here would defeat useCallback's memoization for no benefit,
+    // since every filter it's built from is already its own dependency below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overLimit, startBackgroundExport, runSyncExport, farId, actor, category, dateFrom, dateTo]);
+
   // Writes every filter back to the URL (replace, so Back doesn't step through every
   // keystroke) whenever one changes, so the current view can be shared as a direct link.
   useEffect(() => {
@@ -258,17 +303,7 @@ export function ActivityLogPage() {
         title="Activity Log"
         subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
           bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
-        actions={
-          <ExportButton
-            url={getActivityLogExportUrl({
-              farId: farId || undefined,
-              actor: actor || undefined,
-              category: category || undefined,
-              dateFrom: dateFrom || undefined,
-              dateTo: dateTo || undefined
-            })}
-          />
-        }
+        actions={<ExportButton url={exportUrl} label="Export" exporting={exporting} onExport={handleExportClick} />}
       >
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">

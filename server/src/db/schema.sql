@@ -430,6 +430,12 @@ CREATE TABLE export_jobs (
   id                 TEXT PRIMARY KEY,
   user_id            BIGINT NOT NULL REFERENCES users(id),
   status             TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
+  -- Which advance-function/row-shape this job uses — REGISTER (assetsExportJobs.ts) was
+  -- the only kind until activityLogExportJobs.ts added a second. Kept on the SAME table
+  -- (rather than a second one) since every other column already generalizes across both:
+  -- the resumable-multipart-upload state (upload_id/upload_parts/pending_buffer/
+  -- bytes_uploaded) has zero row-shape dependency, and `filters` is already opaque JSONB.
+  job_type           TEXT NOT NULL DEFAULT 'REGISTER' CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG')),
   filters            JSONB NOT NULL DEFAULT '{}'::jsonb,
   as_at              DATE NOT NULL,
   object_key         TEXT NOT NULL,
@@ -443,6 +449,11 @@ CREATE TABLE export_jobs (
   pending_buffer     TEXT NOT NULL DEFAULT '',
   bytes_uploaded     BIGINT NOT NULL DEFAULT 0,
   last_far_id        TEXT,
+  -- Activity Log's own resume position — its keyset cursor is a (created_at, src, id)
+  -- triple, not a bare FAR ID, so it can't reuse last_far_id above; encoded the same way
+  -- activityLog.ts's own list/export cursor already is (base64url JSON), just persisted
+  -- instead of round-tripped through the client.
+  resume_cursor      TEXT,
   total_rows         INTEGER,
   processed_rows     INTEGER NOT NULL DEFAULT 0,
   file_url           TEXT,

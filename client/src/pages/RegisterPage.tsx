@@ -26,7 +26,16 @@ import { AiSearchButton } from "../components/AiSearchPanel.js";
 import { formatCompactIndianCount } from "../lib/format.js";
 import { toggleRegisterSelection, type SelectionState } from "../lib/registerSelection.js";
 import { groupParentChildRows } from "../lib/registerGrouping.js";
-import { fetchCenters, fetchStatuses, fetchSubClassifications, getExportUrl, type SubClassificationOption } from "../api/client.js";
+import {
+  createExportJob,
+  fetchCenters,
+  fetchExportJob,
+  fetchStatuses,
+  fetchSubClassifications,
+  getExportUrl,
+  type SubClassificationOption
+} from "../api/client.js";
+import type { AssetFilters } from "../lib/types.js";
 import { isConditionComplete, OPERATORS_BY_TYPE, type ColumnCondition, type ColumnFilterType } from "../lib/columnFilters.js";
 import { allScopedC1Only, C2_COLUMN_IDS, hideC2Columns, scopedSubClassificationNames } from "../lib/columns.js";
 import { hasPermission } from "../lib/permissions.js";
@@ -171,7 +180,14 @@ export function RegisterPage() {
   // below and the toolbar button share one `exporting` state — see ExportButton's own
   // exporting/onExport props for why two independent copies would be a race.
   const { exporting: exportingRegister, runExport: runRegisterExport } = useExport(exportUrl);
-  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport();
+  const { starting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
+    { asAt: string } & AssetFilters
+  >({
+    createJob: createExportJob,
+    fetchJob: fetchExportJob,
+    startingMessage: "Large export started in the background — you'll get a notification when it's ready.",
+    buildCompletedMessage: (job) => `Register export ready (${job.processedRows.toLocaleString()} rows).`
+  });
 
   const [centers, setCenters] = useState<string[]>([]);
   const [subClassifications, setSubClassifications] = useState<SubClassificationOption[]>([]);

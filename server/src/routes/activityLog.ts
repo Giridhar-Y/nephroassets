@@ -8,9 +8,9 @@ import type { AuthedUser } from "../auth/middleware.js";
 import { isoToDDMMYYYY } from "./bulkParse.js";
 
 const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "delete", "masters"] as const;
-type Category = (typeof CATEGORIES)[number];
+export type Category = (typeof CATEGORIES)[number];
 
-const CATEGORY_LABELS: Record<Category, string> = {
+export const CATEGORY_LABELS: Record<Category, string> = {
   capitalization: "Capitalization",
   addition: "Addition",
   transfer: "Transfer",
@@ -64,7 +64,7 @@ const activityLogQuerySchema = z.object({
 });
 
 // No cursor/limit — the export always covers every matching row, not one page.
-const activityLogExportQuerySchema = z.object({
+export const activityLogExportQuerySchema = z.object({
   farId: z.string().optional(),
   actor: z.string().optional(),
   dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -82,7 +82,7 @@ const activityLogSummaryQuerySchema = z.object({
   dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
 
-interface Cursor {
+export interface Cursor {
   createdAt: string;
   src: string;
   id: number;
@@ -95,10 +95,10 @@ interface Cursor {
 // the (created_at, src, id) triple instead — src as a deterministic tie-breaker for the
 // rare case two sources share an identical created_at (same-transaction inserts, e.g. a
 // cascaded transfer's parent+child rows, already share one now() value today).
-function encodeCursor(c: Cursor): string {
+export function encodeCursor(c: Cursor): string {
   return Buffer.from(JSON.stringify(c)).toString("base64url");
 }
-function decodeCursor(raw: string): Cursor | null {
+export function decodeCursor(raw: string): Cursor | null {
   try {
     const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
     if (
@@ -138,9 +138,9 @@ const COMBINED_JOIN_SQL = `
   LEFT JOIN users u ON u.id = c.actor_user_id
   LEFT JOIN assets a ON a.far_id = c.far_id
 `;
-const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username ${COMBINED_JOIN_SQL}`;
+export const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username ${COMBINED_JOIN_SQL}`;
 
-interface FilterQuery {
+export interface FilterQuery {
   farId?: string;
   actor?: string;
   category?: Category;
@@ -153,7 +153,7 @@ interface FilterQuery {
  *  contains" can never disagree with "what the screen is showing" for the same filter
  *  values. Returns `params` still open for a caller to push a cursor/limit onto
  *  afterward. */
-function buildActivityLogConditions(q: FilterQuery, user: Pick<AuthedUser, "centerScope">): { conditions: string[]; params: unknown[] } {
+export function buildActivityLogConditions(q: FilterQuery, user: Pick<AuthedUser, "centerScope">): { conditions: string[]; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
   // Center-scoped access: the Capitalization/Addition/Transfer/Disposal/Delete
@@ -200,7 +200,7 @@ function buildActivityLogConditions(q: FilterQuery, user: Pick<AuthedUser, "cent
   return { conditions, params };
 }
 
-interface RawRow {
+export interface RawRow {
   id: string;
   src: "activity" | "delete" | "masters";
   action: string;
@@ -211,7 +211,7 @@ interface RawRow {
   username: string | null;
 }
 
-interface ShapedItem {
+export interface ShapedItem {
   id: number;
   source: "activity" | "delete" | "masters";
   action: string;
@@ -226,7 +226,7 @@ interface ShapedItem {
  *  resolved, and `details.type`/`details.reason` merged in for delete/masters rows —
  *  shared so the export's "Type/Action" and "Reason" columns read exactly what the list
  *  view's own expanded-details panel would show for the same row. */
-function shapeRow(r: RawRow): ShapedItem {
+export function shapeRow(r: RawRow): ShapedItem {
   let category: Category;
   let details = r.details;
   if (r.src === "delete") {
@@ -267,7 +267,7 @@ function formatDetailValue(value: unknown): string {
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
-function humanizeAction(action: string): string {
+export function humanizeAction(action: string): string {
   return action.split("_").map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w)).join(" ");
 }
 
@@ -275,7 +275,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface ChangedField {
+export interface ChangedField {
   label: string;
   oldValue: string;
   newValue: string;
@@ -287,7 +287,7 @@ interface ChangedField {
  *  to diff (a create). Structured rather than joined into one string so the export can
  *  put Old Value / New Value in their own filterable/pivotable columns instead of a
  *  semicolon-joined blob. */
-function buildChangedFields(details: Record<string, unknown> | null): ChangedField[] {
+export function buildChangedFields(details: Record<string, unknown> | null): ChangedField[] {
   if (!details || !isPlainObject(details.previous)) return [];
   return Object.entries(details.previous).map(([key, oldValue]) => ({
     label: humanizeKey(key),
@@ -300,7 +300,7 @@ function buildChangedFields(details: Record<string, unknown> | null): ChangedFie
  *  already fully represented in the Changed column (previous itself, and every field
  *  Changed already shows old -> new for — otherwise a Masters update's changed field
  *  would appear twice, once in each column). */
-function buildOtherDetailsText(details: Record<string, unknown> | null): string {
+export function buildOtherDetailsText(details: Record<string, unknown> | null): string {
   if (!details) return "";
   const changedKeys = isPlainObject(details.previous) ? new Set(Object.keys(details.previous)) : null;
   return Object.entries(details)
@@ -311,7 +311,7 @@ function buildOtherDetailsText(details: Record<string, unknown> | null): string 
 
 // DD-MM-YYYY HH:MM IST — matches assetsExport.ts's exportedAtText convention (Intl parts
 // rather than a locale default separator, pinned to IST regardless of server timezone).
-function formatIstTimestamp(iso: string): string {
+export function formatIstTimestamp(iso: string): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "2-digit",
@@ -353,10 +353,25 @@ export function resolveFinancialYear(iso: string, fyStartMonth: number, fyStartD
 // configured yet — Masters activity can happen before FY setup, so the export shouldn't
 // hard-fail just because of that; every other category realistically implies FY setup
 // already happened (Capitalization/Addition/Transfer/Disposal all require it elsewhere).
-const DEFAULT_FY_START_MONTH = 4;
-const DEFAULT_FY_START_DAY = 1;
+export const DEFAULT_FY_START_MONTH = 4;
+export const DEFAULT_FY_START_DAY = 1;
 
-const EXPORT_BATCH_SIZE = 2000;
+export const EXPORT_BATCH_SIZE = 2000;
+
+/** "Filters: FAR ID contains "X"  |  Category: Y" (or "None — showing all activity") —
+ *  shared by the synchronous .xlsx export below and activityLogExportJobs.ts's own
+ *  background CSV export, so the two can never quietly word this differently for the
+ *  same filters. */
+export function buildActivityLogFilterSummaryText(q: FilterQuery): string {
+  const filterParts: string[] = [];
+  if (q.farId) filterParts.push(`FAR ID contains "${q.farId}"`);
+  if (q.actor) filterParts.push(`Actor contains "${q.actor}"`);
+  if (q.category) filterParts.push(`Category: ${CATEGORY_LABELS[q.category]}`);
+  if (q.dateFrom || q.dateTo) {
+    filterParts.push(`Date: ${q.dateFrom ? isoToDDMMYYYY(q.dateFrom) : "the beginning"} to ${q.dateTo ? isoToDDMMYYYY(q.dateTo) : "today"}`);
+  }
+  return filterParts.length > 0 ? `Filters: ${filterParts.join("  |  ")}` : "Filters: None — showing all activity";
+}
 
 // Read-only view of every Capitalization/Addition/Transfer/Disposal CREATE event
 // (asset_activity_log), every Global-Admin delete/undo action (asset_delete_audit_log),
@@ -468,14 +483,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
     const fyStartMonth = fyStartParts?.[1] ?? DEFAULT_FY_START_MONTH;
     const fyStartDay = fyStartParts?.[2] ?? DEFAULT_FY_START_DAY;
 
-    const filterParts: string[] = [];
-    if (q.farId) filterParts.push(`FAR ID contains "${q.farId}"`);
-    if (q.actor) filterParts.push(`Actor contains "${q.actor}"`);
-    if (q.category) filterParts.push(`Category: ${CATEGORY_LABELS[q.category]}`);
-    if (q.dateFrom || q.dateTo) {
-      filterParts.push(`Date: ${q.dateFrom ? isoToDDMMYYYY(q.dateFrom) : "the beginning"} to ${q.dateTo ? isoToDDMMYYYY(q.dateTo) : "today"}`);
-    }
-    const filterSummaryText = filterParts.length > 0 ? `Filters: ${filterParts.join("  |  ")}` : "Filters: None — showing all activity";
+    const filterSummaryText = buildActivityLogFilterSummaryText(q);
 
     const exportDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
 
