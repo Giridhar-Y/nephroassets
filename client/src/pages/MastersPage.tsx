@@ -23,10 +23,11 @@ import {
 import { useAuth } from "../lib/AuthContext.js";
 import { hasPermission } from "../lib/permissions.js";
 import { PermissionMatrix } from "../components/PermissionMatrix.js";
-import { BookDatabaseIcon, LockIcon, UploadIcon } from "../lib/icons.js";
+import { BookDatabaseIcon, ExportIcon, LockIcon, UploadIcon } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
+import { Input, Select } from "../components/ui/FormField.js";
 
 type Tab = "centers" | "subClassifications" | "statuses" | "roles";
 
@@ -39,10 +40,135 @@ const TABS: Array<{ id: Tab; label: string; bulkLabel: string | null }> = [
   { id: "roles", label: "Roles", bulkLabel: null }
 ];
 
+// Kebab-case per tab purely for the exported filename (masters-<slug>-DD-MM-YYYY.csv) —
+// TABS' own `id` values are camelCase (they double as object keys elsewhere).
+const TAB_FILE_SLUG: Record<Tab, string> = {
+  centers: "centers",
+  subClassifications: "sub-classifications",
+  statuses: "statuses",
+  roles: "roles"
+};
+
 const INPUT_CLASS =
   "rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 const TH_CLASS = "px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-gray-600";
 const TD_CLASS = "px-3 py-2 text-sm text-ink";
+
+type StatusFilter = "all" | "active" | "inactive";
+
+function matchesStatusFilter(active: boolean, filter: StatusFilter): boolean {
+  if (filter === "active") return active;
+  if (filter === "inactive") return !active;
+  return true;
+}
+
+// CSV, not XLSX — same call BulkUploadPage.tsx's own export already made: this app has
+// no client-side Excel-writing library (exceljs is server-only), and CSV needs none —
+// it opens directly in Excel and is a two-line Blob download. The filtered rows live
+// only in this component's own state (search/status filter are client-side), so this
+// has to build the file from what's already in memory rather than a server round trip.
+function csvEscape(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: string[][]) {
+  const csv = [headers, ...rows].map((line) => line.map(csvEscape).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportFilename(tab: Tab): string {
+  const today = new Date();
+  const dd = String(today.getDate()).padStart(2, "0");
+  const mm = String(today.getMonth() + 1).padStart(2, "0");
+  return `masters-${TAB_FILE_SLUG[tab]}-${dd}-${mm}-${today.getFullYear()}.csv`;
+}
+
+/** Search + status-filter + row-count + Export toolbar, shared by all four tabs — each
+ *  tab still owns its own search predicate and export column mapping (their row shapes
+ *  differ too much to share more than this), but the controls themselves, their
+ *  layout, and the "Showing X of Y" wording all come from one place so they can't drift
+ *  between tabs. */
+function MasterToolbar({
+  search,
+  onSearchChange,
+  searchPlaceholder,
+  statusFilter,
+  onStatusFilterChange,
+  shownCount,
+  totalCount,
+  entityLabelPlural,
+  onExport
+}: {
+  search: string;
+  onSearchChange: (v: string) => void;
+  searchPlaceholder: string;
+  statusFilter: StatusFilter;
+  onStatusFilterChange: (v: StatusFilter) => void;
+  shownCount: number;
+  totalCount: number;
+  entityLabelPlural: string;
+  onExport: () => void;
+}) {
+  const hasActiveFilter = search.trim() !== "" || statusFilter !== "all";
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-3">
+      <Input
+        className="min-w-[220px] flex-1"
+        placeholder={searchPlaceholder}
+        value={search}
+        onChange={(e) => onSearchChange(e.target.value)}
+      />
+      <Select
+        className="w-44"
+        value={statusFilter}
+        onChange={(e) => onStatusFilterChange(e.target.value as StatusFilter)}
+      >
+        <option value="all">All</option>
+        <option value="active">Active Only</option>
+        <option value="inactive">Inactive / Deactivated Only</option>
+      </Select>
+      <span className="whitespace-nowrap rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600">
+        Showing {shownCount} of {totalCount} {entityLabelPlural}
+      </span>
+      {hasActiveFilter && (
+        <button
+          type="button"
+          className="text-xs font-medium text-accent hover:underline"
+          onClick={() => {
+            onSearchChange("");
+            onStatusFilterChange("all");
+          }}
+        >
+          Clear
+        </button>
+      )}
+      <Button variant="secondary" size="sm" className="ml-auto" onClick={onExport}>
+        <ExportIcon fontSize={14} />
+        Export to Excel
+      </Button>
+    </div>
+  );
+}
+
+/** Shown when a search/status filter narrows the list to nothing — distinct from the
+ *  plain "No centers yet." empty state (no rows exist at all), which each tab keeps
+ *  showing unchanged when there's genuinely nothing to filter. */
+function NoFilterMatches({ onClear }: { onClear: () => void }) {
+  return (
+    <p className="mt-6 text-center text-sm text-gray-400">
+      No matches for your search.{" "}
+      <button type="button" className="font-medium text-accent hover:underline" onClick={onClear}>
+        Clear Search
+      </button>
+    </p>
+  );
+}
 
 function ActiveBadge({ active }: { active: boolean }) {
   return (
@@ -65,6 +191,8 @@ function CentersTab() {
   const [editCode, setEditCode] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   function load() {
     fetchMasterCenters()
@@ -130,6 +258,21 @@ function CentersTab() {
     }
   }
 
+  const q = search.trim().toLowerCase();
+  const filteredRows = (rows ?? []).filter(
+    (row) =>
+      matchesStatusFilter(row.active, statusFilter) &&
+      (q === "" || row.code.toLowerCase().includes(q) || row.description.toLowerCase().includes(q))
+  );
+
+  function handleExport() {
+    downloadCsv(
+      exportFilename("centers"),
+      ["Code", "Description", "Used By (Asset Count)", "Status"],
+      filteredRows.map((row) => [row.code, row.description, String(row.usageCount), row.active ? "Active" : "Inactive"])
+    );
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">
@@ -156,6 +299,18 @@ function CentersTab() {
         </button>
       </div>
 
+      <MasterToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search by code or description…"
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        shownCount={filteredRows.length}
+        totalCount={rows?.length ?? 0}
+        entityLabelPlural="Centers"
+        onExport={handleExport}
+      />
+
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
           <tr>
@@ -167,7 +322,7 @@ function CentersTab() {
           </tr>
         </thead>
         <tbody>
-          {rows?.map((row) => (
+          {filteredRows.map((row) => (
             <tr key={row.id} className="border-b border-gray-100">
               {editingId === row.id ? (
                 <>
@@ -223,6 +378,14 @@ function CentersTab() {
         </tbody>
       </table>
       {rows?.length === 0 && <p className="mt-6 text-center text-sm text-gray-400">No centers yet.</p>}
+      {rows && rows.length > 0 && filteredRows.length === 0 && (
+        <NoFilterMatches
+          onClear={() => {
+            setSearch("");
+            setStatusFilter("all");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -237,6 +400,8 @@ function SubClassificationsTab() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editLifeC1, setEditLifeC1] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [editLifeC2, setEditLifeC2] = useState("");
   const [editHasC2, setEditHasC2] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -320,6 +485,25 @@ function SubClassificationsTab() {
     }
   }
 
+  const q = search.trim().toLowerCase();
+  const filteredRows = (rows ?? []).filter(
+    (row) => matchesStatusFilter(row.active, statusFilter) && (q === "" || row.name.toLowerCase().includes(q))
+  );
+
+  function handleExport() {
+    downloadCsv(
+      exportFilename("subClassifications"),
+      ["Name", "Component 1 Useful Life (Years)", "Component 2 Useful Life (Years)", "Used By (Asset Count)", "Status"],
+      filteredRows.map((row) => [
+        row.name,
+        row.defaultUsefulLifeC1Years?.toString() ?? "",
+        row.hasComponent2 ? (row.defaultUsefulLifeC2Years?.toString() ?? "") : "",
+        String(row.usageCount),
+        row.active ? "Active" : "Inactive"
+      ])
+    );
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">
@@ -367,6 +551,18 @@ function SubClassificationsTab() {
         </button>
       </div>
 
+      <MasterToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search by name…"
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        shownCount={filteredRows.length}
+        totalCount={rows?.length ?? 0}
+        entityLabelPlural="Sub Classifications"
+        onExport={handleExport}
+      />
+
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
           <tr>
@@ -380,7 +576,7 @@ function SubClassificationsTab() {
           </tr>
         </thead>
         <tbody>
-          {rows?.map((row) => (
+          {filteredRows.map((row) => (
             <tr key={row.id} className="border-b border-gray-100">
               {editingId === row.id ? (
                 <>
@@ -458,6 +654,14 @@ function SubClassificationsTab() {
         </tbody>
       </table>
       {rows?.length === 0 && <p className="mt-6 text-center text-sm text-gray-400">No sub classifications yet.</p>}
+      {rows && rows.length > 0 && filteredRows.length === 0 && (
+        <NoFilterMatches
+          onClear={() => {
+            setSearch("");
+            setStatusFilter("all");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -469,6 +673,8 @@ function StatusesTab() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   function load() {
     fetchMasterStatuses()
@@ -533,6 +739,19 @@ function StatusesTab() {
     }
   }
 
+  const q = search.trim().toLowerCase();
+  const filteredRows = (rows ?? []).filter(
+    (row) => matchesStatusFilter(row.active, statusFilter) && (q === "" || row.name.toLowerCase().includes(q))
+  );
+
+  function handleExport() {
+    downloadCsv(
+      exportFilename("statuses"),
+      ["Name", "Used By (Asset Count)", "Status"],
+      filteredRows.map((row) => [row.name, String(row.usageCount), row.active ? "Active" : "Inactive"])
+    );
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">
@@ -550,6 +769,18 @@ function StatusesTab() {
         </button>
       </div>
 
+      <MasterToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search by name…"
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        shownCount={filteredRows.length}
+        totalCount={rows?.length ?? 0}
+        entityLabelPlural="Statuses"
+        onExport={handleExport}
+      />
+
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
           <tr>
@@ -560,7 +791,7 @@ function StatusesTab() {
           </tr>
         </thead>
         <tbody>
-          {rows?.map((row) => (
+          {filteredRows.map((row) => (
             <tr key={row.id} className="border-b border-gray-100">
               {editingId === row.id ? (
                 <>
@@ -631,6 +862,14 @@ function StatusesTab() {
         </tbody>
       </table>
       {rows?.length === 0 && <p className="mt-6 text-center text-sm text-gray-400">No statuses yet.</p>}
+      {rows && rows.length > 0 && filteredRows.length === 0 && (
+        <NoFilterMatches
+          onClear={() => {
+            setSearch("");
+            setStatusFilter("all");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -705,6 +944,8 @@ function RolesTab() {
   const [editName, setEditName] = useState("");
   const [permissionsTarget, setPermissionsTarget] = useState<MasterRole | null>(null);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   function load() {
     fetchMasterRoles()
@@ -765,6 +1006,19 @@ function RolesTab() {
     }
   }
 
+  const q = search.trim().toLowerCase();
+  const filteredRows = (rows ?? []).filter(
+    (row) => matchesStatusFilter(row.active, statusFilter) && (q === "" || row.name.toLowerCase().includes(q))
+  );
+
+  function handleExport() {
+    downloadCsv(
+      exportFilename("roles"),
+      ["Role Name", "User Count", "Status"],
+      filteredRows.map((row) => [row.name, String(row.usageCount), row.active ? "Active" : "Inactive"])
+    );
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 p-4">
@@ -783,6 +1037,18 @@ function RolesTab() {
         <p className="text-xs text-gray-400">Starts with an empty permission template — define it with "Permissions" below.</p>
       </div>
 
+      <MasterToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search by role name…"
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        shownCount={filteredRows.length}
+        totalCount={rows?.length ?? 0}
+        entityLabelPlural="Roles"
+        onExport={handleExport}
+      />
+
       <table className="mt-4 w-full text-sm">
         <thead className="border-b-2 border-gray-300 bg-gray-50">
           <tr>
@@ -794,7 +1060,7 @@ function RolesTab() {
           </tr>
         </thead>
         <tbody>
-          {rows?.map((row) => (
+          {filteredRows.map((row) => (
             <tr key={row.id} className="border-b border-gray-100">
               {editingId === row.id ? (
                 <>
@@ -874,6 +1140,14 @@ function RolesTab() {
         </tbody>
       </table>
       {rows?.length === 0 && <p className="mt-6 text-center text-sm text-gray-400">No roles yet.</p>}
+      {rows && rows.length > 0 && filteredRows.length === 0 && (
+        <NoFilterMatches
+          onClear={() => {
+            setSearch("");
+            setStatusFilter("all");
+          }}
+        />
+      )}
 
       {permissionsTarget && (
         <RolePermissionsPanel
