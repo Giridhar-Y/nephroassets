@@ -377,6 +377,7 @@ export interface ActivityLogEntry {
 
 export interface FetchActivityLogParams {
   farId?: string;
+  actor?: string;
   category?: ActivityCategory;
   dateFrom?: string;
   dateTo?: string;
@@ -394,6 +395,7 @@ export function fetchActivityLog(
 ): Promise<{ items: ActivityLogEntry[]; nextCursor: string | null }> {
   const search = new URLSearchParams();
   if (params.farId) search.set("farId", params.farId);
+  if (params.actor) search.set("actor", params.actor);
   if (params.category) search.set("category", params.category);
   if (params.dateFrom) search.set("dateFrom", params.dateFrom);
   if (params.dateTo) search.set("dateTo", params.dateTo);
@@ -402,12 +404,31 @@ export function fetchActivityLog(
   return request(`/api/audit-log/activity?${search}`);
 }
 
+export type ActivityLogSummary = { counts: Record<ActivityCategory, number>; total: number };
+
+// Powers the summary strip above the table — counts per category for the farId/actor/
+// date filters currently applied, deliberately excluding `category` itself so the strip
+// stays a meaningful set of quick-filters even while one category is already selected.
+export function fetchActivityLogSummary(
+  params: Pick<FetchActivityLogParams, "farId" | "actor" | "dateFrom" | "dateTo"> = {}
+): Promise<ActivityLogSummary> {
+  const search = new URLSearchParams();
+  if (params.farId) search.set("farId", params.farId);
+  if (params.actor) search.set("actor", params.actor);
+  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
+  if (params.dateTo) search.set("dateTo", params.dateTo);
+  return request(`/api/audit-log/activity/summary?${search}`);
+}
+
 // Same pattern as the Register/Audit Reconciliation's own getExportUrl — the browser
 // downloads it directly via the Content-Disposition header, this just builds the URL.
 // No cursor/limit (the export always covers every matching row, not one page).
-export function getActivityLogExportUrl(params: Pick<FetchActivityLogParams, "farId" | "category" | "dateFrom" | "dateTo"> = {}): string {
+export function getActivityLogExportUrl(
+  params: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo"> = {}
+): string {
   const search = new URLSearchParams();
   if (params.farId) search.set("farId", params.farId);
+  if (params.actor) search.set("actor", params.actor);
   if (params.category) search.set("category", params.category);
   if (params.dateFrom) search.set("dateFrom", params.dateFrom);
   if (params.dateTo) search.set("dateTo", params.dateTo);

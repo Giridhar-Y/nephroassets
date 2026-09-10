@@ -15,6 +15,7 @@ import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
+import { diffPrevious } from "./masters.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 import { buildExceptionPredicate, EXCEPTION_KEYS } from "./exceptionPredicates.js";
 
@@ -845,8 +846,9 @@ export default async function assetsRoutes(app: FastifyInstance) {
       sub_classification: string;
       location: string;
       revised_location: string | null;
+      parent_far_id: string | null;
     }>(
-      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification, location, revised_location
+      `SELECT date_acquired, date_of_disposal, additions_c1, additions_c2, date_of_addition, sub_classification, location, revised_location, parent_far_id
        FROM assets WHERE far_id = $1 AND deleted_at IS NULL`,
       [farId]
     );
@@ -917,6 +919,25 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: `Asset "${farId}" already has an addition recorded, or was disposed, since this request started — reload and try again.` };
     }
+    // previous: additionsC1/additionsC2/dateOfAddition are guaranteed 0/0/null by the "no
+    // existing addition" guard above, so diffPrevious will only actually keep whichever
+    // of those this request set to something other than its own default (e.g. an
+    // additionsC2 of 0 stays out of the diff, matching masters.ts's own skip-if-unchanged
+    // convention) — parentFarId is only compared at all when this request touches it.
+    const previous = diffPrevious(
+      {
+        additionsC1: Number(row.additions_c1),
+        additionsC2: Number(row.additions_c2),
+        dateOfAddition: row.date_of_addition,
+        parentFarId: row.parent_far_id
+      },
+      {
+        additionsC1: input.additionsC1,
+        additionsC2: input.additionsC2,
+        dateOfAddition: input.dateOfAddition,
+        parentFarId: input.parentFarId
+      }
+    );
     await logAssetActivity(db, {
       actorUserId: req.user!.id,
       action: "addition_create",
@@ -926,6 +947,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         additionsC2: input.additionsC2,
         dateOfAddition: input.dateOfAddition,
         parentFarId: input.parentFarId ?? null,
+        previous,
         source: "single"
       }
     });
@@ -1119,11 +1141,32 @@ export default async function assetsRoutes(app: FastifyInstance) {
         error: `Disposal date cannot be before the asset's capitalization date (${isoToDDMMYYYY(check[0]!.date_acquired)}).`
       };
     }
+    // previous: exactly the three fields applyFullDisposal actually overwrites that have
+    // a meaningful "before" state — status, saleValue, dateOfDisposal — captured from
+    // assetRowForWdv (read above, before the disposal write ran). status is added to the
+    // new-value side too (applyFullDisposal always sets it to 'Disposed') so it has a
+    // matching flat key for the diff to pair against, same convention masters.ts's
+    // patch-shaped `details` already follows.
+    const disposalPrevious = diffPrevious(
+      {
+        status: assetRowForWdv.status,
+        saleValue: Number(assetRowForWdv.sale_value),
+        dateOfDisposal: assetRowForWdv.date_of_disposal
+      },
+      { status: "Disposed", saleValue, dateOfDisposal }
+    );
     await logAssetActivity(db, {
       actorUserId: req.user!.id,
       action: "disposal_create",
       farId,
-      details: { dateOfDisposal, saleValue, childrenDisposed: result.childrenDisposed, source: "single" }
+      details: {
+        status: "Disposed",
+        dateOfDisposal,
+        saleValue,
+        childrenDisposed: result.childrenDisposed,
+        previous: disposalPrevious,
+        source: "single"
+      }
     });
     return { farId, disposed: true, childrenDisposed: result.childrenDisposed };
   });

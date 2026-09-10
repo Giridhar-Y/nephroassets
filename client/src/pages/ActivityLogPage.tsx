@@ -1,9 +1,16 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { fetchActivityLog, getActivityLogExportUrl, type ActivityCategory, type ActivityLogEntry } from "../api/client.js";
+import { useSearchParams } from "react-router-dom";
+import {
+  fetchActivityLog,
+  fetchActivityLogSummary,
+  getActivityLogExportUrl,
+  type ActivityCategory,
+  type ActivityLogEntry,
+  type ActivityLogSummary
+} from "../api/client.js";
 import { formatDateTime } from "../lib/format.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
-import { Badge } from "../components/ui/Badge.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 
 const PAGE_SIZE = 50;
@@ -22,16 +29,29 @@ const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   masters: "Masters"
 };
 
-// One of each tone Badge offers, so every category reads as visually distinct rather
-// than a flat gray list — not a severity scale (Masters isn't "worse" than Addition).
-const CATEGORY_TONES: Record<ActivityCategory, "info" | "success" | "brand" | "warning" | "danger" | "neutral"> = {
-  capitalization: "info",
-  addition: "success",
-  transfer: "brand",
-  disposal: "warning",
-  delete: "danger",
-  masters: "neutral"
+// Each of the four asset-lifecycle categories gets its own color pulled from the
+// NephroPlus brand palette (tailwind.config.js's `brand.*` tokens) rather than a generic
+// Tailwind green/amber/gray, so the badges read as on-brand and genuinely distinct from
+// one another — not a severity scale (Masters isn't "worse" than Addition). Delete stays
+// exactly the app's one existing danger color (the accent/crimson tint every other
+// destructive action already uses) since it's deliberately the highest-risk category;
+// Masters stays neutral gray since it isn't part of the asset lifecycle these four cover.
+const CATEGORY_BADGE_CLASS: Record<ActivityCategory, string> = {
+  capitalization: "bg-brand-blue/15 text-ink",
+  addition: "bg-brand-teal/15 text-ink",
+  transfer: "bg-brand-sky/20 text-ink",
+  disposal: "bg-brand-rose/30 text-ink",
+  delete: "bg-accent-light text-accent-hover",
+  masters: "bg-gray-100 text-gray-700"
 };
+
+function CategoryBadge({ category }: { category: ActivityCategory }) {
+  return (
+    <span className={`inline-flex w-fit items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${CATEGORY_BADGE_CLASS[category]}`}>
+      {CATEGORY_LABELS[category]}
+    </span>
+  );
+}
 
 // "additionsC1" -> "Additions C1", "cascadedFromParentFarId" -> "Cascaded From Parent Far
 // Id" — same plain, generic humanizer as Delete Log's old DetailsSummary, not a
@@ -55,13 +75,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Masters update actions (center/sub-classification/status/role) carry a `previous`
-// object alongside the flat entered values — see server/src/routes/masters.ts's
-// diffPrevious. Only the fields the patch actually changed appear there, keyed the same
-// as their flat counterpart, so a field present in `previous` renders as
-// "Field: old → new" instead of just the flat new-value line every other field still
-// gets. `previous` itself, and every field it already covers, are skipped from the flat
-// list below so nothing renders twice.
+// Every Capitalization/Addition/Transfer/Disposal update action, plus every Masters
+// update, carries a `previous` object alongside the flat entered values — see
+// server/src/routes/masters.ts's diffPrevious and assets.ts's/transfers.ts's own
+// previous-capture for the other three. Only the fields the action actually changed
+// appear there, keyed the same as their flat counterpart, so a field present in
+// `previous` renders as a real "Field / Old → New" row instead of just the flat
+// new-value line every other field still gets below. `previous` itself, and every field
+// it already covers, are skipped from the flat list so nothing renders twice.
 function DetailsSummary({ details }: { details: Record<string, unknown> | null }) {
   if (!details || Object.keys(details).length === 0) {
     return <span className="text-gray-400">No details recorded.</span>;
@@ -71,22 +92,38 @@ function DetailsSummary({ details }: { details: Record<string, unknown> | null }
   const flatEntries = Object.entries(details).filter(([key]) => key !== "previous" && !(previous && key in previous));
 
   return (
-    <ul className="space-y-1">
-      {changedEntries.map(([key, oldValue]) => (
-        <li key={key} className="break-words">
-          <span className="font-medium text-gray-500">{humanizeKey(key)}:</span>{" "}
-          <span className="text-gray-400 line-through">{formatDetailValue(oldValue)}</span>
-          <span className="mx-1 text-gray-400">→</span>
-          <span className="font-semibold text-ink">{formatDetailValue(details[key])}</span>
-        </li>
-      ))}
-      {flatEntries.map(([key, value]) => (
-        <li key={key} className="break-words">
-          <span className="font-medium text-gray-500">{humanizeKey(key)}:</span>{" "}
-          <span className="text-gray-700">{formatDetailValue(value)}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-3">
+      {changedEntries.length > 0 && (
+        <table className="w-full max-w-xl border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-[10px] font-bold uppercase tracking-wide text-gray-400">
+              <th className="py-1 pr-3">Field</th>
+              <th className="py-1 pr-3">Old Value</th>
+              <th className="py-1">New Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {changedEntries.map(([key, oldValue]) => (
+              <tr key={key} className="border-b border-gray-100 last:border-0">
+                <td className="py-1 pr-3 font-medium text-gray-500">{humanizeKey(key)}</td>
+                <td className="py-1 pr-3 text-gray-400 line-through">{formatDetailValue(oldValue)}</td>
+                <td className="py-1 font-semibold text-ink">{formatDetailValue(details[key])}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {flatEntries.length > 0 && (
+        <ul className="space-y-1">
+          {flatEntries.map(([key, value]) => (
+            <li key={key} className="break-words">
+              <span className="font-medium text-gray-500">{humanizeKey(key)}:</span>{" "}
+              <span className="text-gray-700">{formatDetailValue(value)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -99,6 +136,7 @@ function DetailsSummary({ details }: { details: Record<string, unknown> | null }
 // admin-only page into this editor+ one. A Masters entry has no FAR ID (it's not
 // asset-scoped) — rendered as "—" rather than left blank/broken.
 export function ActivityLogPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<ActivityLogEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -110,11 +148,34 @@ export function ActivityLogPage() {
   // Same technique as AssetGrid's own sticky header.
   const [scrolled, setScrolled] = useState(false);
 
-  const [farIdInput, setFarIdInput] = useState("");
-  const [farId, setFarId] = useState("");
-  const [category, setCategory] = useState<ActivityCategory | "">("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Seeded once from the URL on mount (a plain useState initial value, not two-way
+  // synced to back/forward navigation) so a filtered view opened from a shared link
+  // reconstructs the same filters immediately — see the write-back effect below for the
+  // other half of "shareable link".
+  const initialCategory = searchParams.get("category");
+  const [farIdInput, setFarIdInput] = useState(() => searchParams.get("farId") ?? "");
+  const [farId, setFarId] = useState(() => searchParams.get("farId") ?? "");
+  const [actorInput, setActorInput] = useState(() => searchParams.get("actor") ?? "");
+  const [actor, setActor] = useState(() => searchParams.get("actor") ?? "");
+  const [category, setCategory] = useState<ActivityCategory | "">(() =>
+    initialCategory && initialCategory in CATEGORY_LABELS ? (initialCategory as ActivityCategory) : ""
+  );
+  const [dateFrom, setDateFrom] = useState(() => searchParams.get("dateFrom") ?? "");
+  const [dateTo, setDateTo] = useState(() => searchParams.get("dateTo") ?? "");
+  const [summary, setSummary] = useState<ActivityLogSummary | null>(null);
+
+  // Writes every filter back to the URL (replace, so Back doesn't step through every
+  // keystroke) whenever one changes, so the current view can be shared as a direct link.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (farId) next.set("farId", farId);
+    if (actor) next.set("actor", actor);
+    if (category) next.set("category", category);
+    if (dateFrom) next.set("dateFrom", dateFrom);
+    if (dateTo) next.set("dateTo", dateTo);
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [farId, actor, category, dateFrom, dateTo]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -122,6 +183,7 @@ export function ActivityLogPage() {
     try {
       const res = await fetchActivityLog({
         farId: farId || undefined,
+        actor: actor || undefined,
         category: category || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
@@ -134,11 +196,27 @@ export function ActivityLogPage() {
     } finally {
       setLoading(false);
     }
-  }, [farId, category, dateFrom, dateTo]);
+  }, [farId, actor, category, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // The summary strip's counts intentionally ignore `category` (see fetchActivityLogSummary's
+  // own comment) so all six stay meaningful — and clickable — while one is selected.
+  useEffect(() => {
+    let cancelled = false;
+    fetchActivityLogSummary({ farId: farId || undefined, actor: actor || undefined, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined })
+      .then((res) => {
+        if (!cancelled) setSummary(res);
+      })
+      .catch(() => {
+        if (!cancelled) setSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [farId, actor, dateFrom, dateTo]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -146,6 +224,7 @@ export function ActivityLogPage() {
     try {
       const res = await fetchActivityLog({
         farId: farId || undefined,
+        actor: actor || undefined,
         category: category || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
@@ -161,10 +240,12 @@ export function ActivityLogPage() {
     }
   }
 
-  const hasActiveFilters = !!(farId || category || dateFrom || dateTo);
+  const hasActiveFilters = !!(farId || actor || category || dateFrom || dateTo);
   function clearFilters() {
     setFarIdInput("");
     setFarId("");
+    setActorInput("");
+    setActor("");
     setCategory("");
     setDateFrom("");
     setDateTo("");
@@ -181,6 +262,7 @@ export function ActivityLogPage() {
           <ExportButton
             url={getActivityLogExportUrl({
               farId: farId || undefined,
+              actor: actor || undefined,
               category: category || undefined,
               dateFrom: dateFrom || undefined,
               dateTo: dateTo || undefined
@@ -204,6 +286,23 @@ export function ActivityLogPage() {
               }}
               onBlur={() => setFarId(farIdInput.trim())}
               placeholder="Search…"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="al-actor" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+              Actor
+            </label>
+            <input
+              id="al-actor"
+              type="text"
+              className="w-40 rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+              value={actorInput}
+              onChange={(e) => setActorInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setActor(actorInput.trim());
+              }}
+              onBlur={() => setActor(actorInput.trim())}
+              placeholder="Username…"
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -255,6 +354,32 @@ export function ActivityLogPage() {
           )}
         </div>
       </PageHeader>
+
+      {summary && (
+        <div className="flex flex-wrap gap-2 border-b border-gray-100 bg-gray-50/60 px-6 py-2.5">
+          <button
+            type="button"
+            onClick={() => setCategory("")}
+            className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
+              category === "" ? "border-ink bg-ink text-white" : "border-gray-300 bg-white text-gray-600 hover:bg-gray-100"
+            }`}
+          >
+            All ({summary.total})
+          </button>
+          {(Object.keys(CATEGORY_LABELS) as ActivityCategory[]).map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setCategory(cat)}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
+                category === cat ? "border-ink bg-ink text-white" : "border-gray-300 bg-white text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              {CATEGORY_LABELS[cat]} ({summary.counts[cat]})
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && (
         <div className="flex items-center gap-1.5 border-b border-red-100 bg-red-50 px-6 py-2 text-sm text-red-700">
@@ -329,7 +454,7 @@ export function ActivityLogPage() {
                   >
                     <div className="whitespace-nowrap text-gray-600">{formatDateTime(entry.createdAt)}</div>
                     <div>
-                      <Badge tone={CATEGORY_TONES[entry.category]}>{CATEGORY_LABELS[entry.category]}</Badge>
+                      <CategoryBadge category={entry.category} />
                     </div>
                     <div className="truncate font-medium text-ink">{entry.farId ?? "—"}</div>
                     <div className="truncate text-gray-600">{entry.actorUsername ?? "Unknown user"}</div>

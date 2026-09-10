@@ -10,11 +10,54 @@ import bulkTransfersRoutes from "./bulkTransfers.js";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
 import mastersRoutes from "./masters.js";
 import bulkMastersRoutes from "./bulkMasters.js";
-import activityLogRoutes from "./activityLog.js";
+import activityLogRoutes, { resolveFinancialYear } from "./activityLog.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload } from "./bulkTestHelpers.js";
+
+// Pure function, no app/DB needed — isolated from the rest of this file's Fastify+DB
+// suite so the boundary math itself is pinned down directly rather than only inferred
+// from whatever dates happen to land in a live export test. All timestamps are picked
+// well clear of the IST offset (UTC+5:30) so there's no ambiguity about which calendar
+// day they fall on in Asia/Kolkata.
+describe("resolveFinancialYear (FY boundary math)", () => {
+  it("a date exactly on the FY start date belongs to the new FY", () => {
+    expect(resolveFinancialYear("2026-04-01T10:00:00Z", 4, 1)).toBe("FY 2026-27");
+  });
+
+  it("the day before FY start belongs to the previous FY — a different label from the start date itself", () => {
+    expect(resolveFinancialYear("2026-03-31T10:00:00Z", 4, 1)).toBe("FY 2025-26");
+  });
+
+  it("the day after FY start stays in the same FY as the start date", () => {
+    expect(resolveFinancialYear("2026-04-02T10:00:00Z", 4, 1)).toBe("FY 2026-27");
+  });
+
+  it("the last day of an FY (the day before the NEXT year's start date) still belongs to the earlier FY", () => {
+    expect(resolveFinancialYear("2027-03-31T10:00:00Z", 4, 1)).toBe("FY 2026-27");
+  });
+
+  it("a date several years before the configured fy_start still resolves correctly — the year-rollback math doesn't drift for older entries", () => {
+    expect(resolveFinancialYear("2020-04-01T10:00:00Z", 4, 1)).toBe("FY 2020-21");
+    expect(resolveFinancialYear("2020-03-31T10:00:00Z", 4, 1)).toBe("FY 2019-20");
+    expect(resolveFinancialYear("2015-06-15T10:00:00Z", 4, 1)).toBe("FY 2015-16");
+    expect(resolveFinancialYear("2015-01-15T10:00:00Z", 4, 1)).toBe("FY 2014-15");
+  });
+
+  it("respects a non-April FY start configured in Settings, not a hardcoded April 1", () => {
+    // A July 1 FY start: June 30 is the last day of the OLD FY, July 1 starts the new one.
+    expect(resolveFinancialYear("2026-06-30T10:00:00Z", 7, 1)).toBe("FY 2025-26");
+    expect(resolveFinancialYear("2026-07-01T10:00:00Z", 7, 1)).toBe("FY 2026-27");
+  });
+
+  it("a timestamp near the IST day boundary still resolves against the IST calendar date, not UTC's", () => {
+    // 2026-03-31T19:00:00Z is already 2026-04-01 00:30 IST (UTC+5:30) — the new FY.
+    expect(resolveFinancialYear("2026-03-31T19:00:00Z", 4, 1)).toBe("FY 2026-27");
+    // 2026-03-31T17:00:00Z is still 2026-03-31 22:30 IST — the old FY.
+    expect(resolveFinancialYear("2026-03-31T17:00:00Z", 4, 1)).toBe("FY 2025-26");
+  });
+});
 
 const NEW_ASSET = {
   farId: "ACT-TEST-1",
@@ -118,9 +161,14 @@ describe("Activity Log", () => {
     const { items } = res.json();
     expect(items).toHaveLength(1);
     expect(items[0].details).toMatchObject({ additionsC1: 1000, additionsC2: 0, dateOfAddition: "2026-06-01" });
+    // previous state, captured from the same pre-write SELECT the route already ran for
+    // its own validation — an asset can't reach this route with a prior addition, so
+    // these are always 0/0/null, but diffPrevious still skips additionsC2 here since 0
+    // (old) === 0 (new), the same skip-if-unchanged convention masters.ts's own diff uses.
+    expect(items[0].details.previous).toEqual({ additionsC1: 0, dateOfAddition: null });
   });
 
-  it("logs a single-item Disposal", async () => {
+  it("logs a single-item Disposal, with the pre-disposal status/sale value/date as previous", async () => {
     await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
     await authedInject(app, {
       method: "PATCH",
@@ -131,10 +179,11 @@ describe("Activity Log", () => {
     const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity?category=disposal" });
     const { items } = res.json();
     expect(items).toHaveLength(1);
-    expect(items[0].details).toMatchObject({ dateOfDisposal: "2026-07-01", saleValue: 500 });
+    expect(items[0].details).toMatchObject({ status: "Disposed", dateOfDisposal: "2026-07-01", saleValue: 500 });
+    expect(items[0].details.previous).toEqual({ status: "Active", saleValue: 0, dateOfDisposal: null });
   });
 
-  it("logs a single-item Transfer, one row per FAR ID moved", async () => {
+  it("logs a single-item Transfer, one row per FAR ID moved, with each asset's prior location as previous", async () => {
     await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
     await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "ACT-TEST-2" } });
     await authedInject(app, {
@@ -148,6 +197,7 @@ describe("Activity Log", () => {
     expect(items).toHaveLength(2);
     expect(items.map((i: { farId: string }) => i.farId).sort()).toEqual(["ACT-TEST-1", "ACT-TEST-2"]);
     expect(items[0].details).toMatchObject({ location: "Center-Other", transactionDate: "2026-06-01" });
+    expect(items[0].details.previous).toEqual({ location: "Center-Test" });
   });
 
   it("logs a Bulk Upload Capitalization (new rows only, not updates)", async () => {
@@ -312,6 +362,39 @@ describe("Activity Log", () => {
     expect(items[0].farId).toBe("ACT-MATCH-1");
   });
 
+  it("filters by actor (contains, case-insensitive)", async () => {
+    await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+
+    const match = await authedInject(app, { method: "GET", url: "/api/audit-log/activity?actor=HARNESS" });
+    expect(match.json().items).toHaveLength(1);
+
+    const noMatch = await authedInject(app, { method: "GET", url: "/api/audit-log/activity?actor=nobody-with-this-name" });
+    expect(noMatch.json().items).toHaveLength(0);
+  });
+
+  describe("GET /api/audit-log/activity/summary", () => {
+    it("counts each category correctly, unaffected by which category (if any) is separately selected on screen", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-Summary" } });
+      await authedInject(app, { method: "DELETE", url: "/api/assets/ACT-TEST-1", payload: { reason: "test" } });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/summary" });
+      expect(res.json()).toEqual({
+        counts: { capitalization: 1, addition: 0, transfer: 0, disposal: 0, delete: 1, masters: 1 },
+        total: 3
+      });
+    });
+
+    it("respects farId/actor/date filters but not category, so the strip stays meaningful while one category is selected", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "ACT-SUM-1" } });
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: { ...NEW_ASSET, farId: "OTHER-SUM" } });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/summary?farId=ACT-SUM" });
+      expect(res.json().counts).toMatchObject({ capitalization: 1 });
+      expect(res.json().total).toBe(1);
+    });
+  });
+
   it("filters by date range", async () => {
     await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
 
@@ -398,7 +481,14 @@ describe("Activity Log", () => {
       return workbook.worksheets[0]!;
     }
 
-    it("streams every matching row with the expected columns, headers, and no filters applied", async () => {
+    // Row 1: brand title band. Row 2: generated-by. Row 3: filter summary. Row 4: blank
+    // spacer. Row 5: the real column header row. Row 6+: data — one row per changed
+    // field (or one blank-diff row for an action with nothing to diff), see
+    // buildChangedFields's own comment.
+    const HEADER_ROW = 5;
+    const FIRST_DATA_ROW = HEADER_ROW + 1;
+
+    it("streams a branded header band, the expected column headers, and every matching row with no filters applied", async () => {
       await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
 
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
@@ -407,25 +497,45 @@ describe("Activity Log", () => {
       expect(res.headers["content-disposition"]).toMatch(/attachment; filename="activity-log-\d{4}-\d{2}-\d{2}\.xlsx"/);
 
       const sheet = await readSheet(res.rawPayload);
-      const headerRow = sheet.getRow(1).values as unknown[];
+      expect((sheet.getRow(1).values as unknown[])[1]).toBe("NephroPlus — Activity Log Export");
+      expect((sheet.getRow(2).values as unknown[])[1]).toMatch(/^Generated by .+ on \d{2}-\d{2}-\d{4} \d{2}:\d{2} IST$/);
+      expect((sheet.getRow(3).values as unknown[])[1]).toBe("Filters: None — showing all activity");
+
+      const headerRow = sheet.getRow(HEADER_ROW).values as unknown[];
       expect(headerRow.slice(1)).toEqual([
         "Timestamp (IST)",
         "Category",
         "Type / Action",
         "FAR ID",
         "Actor",
+        "Financial Year",
         "Reason",
-        "Changed",
+        "Field Changed",
+        "Old Value",
+        "New Value",
         "Other Details"
       ]);
-      const dataRow = sheet.getRow(2).values as unknown[];
+      const dataRow = sheet.getRow(FIRST_DATA_ROW).values as unknown[];
       expect(dataRow[2]).toBe("Capitalization");
       expect(dataRow[3]).toBe("Capitalization Create");
       expect(dataRow[4]).toBe("ACT-TEST-1");
-      expect(sheet.rowCount).toBe(2);
+      // settings.fy_start is 2026-04-01 in this suite — derived from wall-clock time
+      // rather than hardcoded, so this doesn't quietly start failing once fy_end passes.
+      const nowParts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit" })
+        .formatToParts(new Date())
+        .reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {} as Record<string, string>);
+      const expectedStartYear = Number(nowParts.month) >= 4 ? Number(nowParts.year) : Number(nowParts.year) - 1;
+      expect(dataRow[6]).toBe(`FY ${expectedStartYear}-${String((expectedStartYear + 1) % 100).padStart(2, "0")}`);
+      expect(sheet.rowCount).toBe(FIRST_DATA_ROW); // header band + one data row
     });
 
-    it("the Changed column humanizes a Masters update's old -> new diff, and Other Details carries the rest", async () => {
+    it("the filter summary line reflects the category filter actually applied", async () => {
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?category=masters" });
+      const sheet = await readSheet(res.rawPayload);
+      expect((sheet.getRow(3).values as unknown[])[1]).toBe("Filters: Category: Masters");
+    });
+
+    it("Old Value / New Value carry a Masters update's diff, and Other Details carries the rest", async () => {
       const create = await authedInject(app, {
         method: "POST",
         url: "/api/masters/centers",
@@ -442,11 +552,31 @@ describe("Activity Log", () => {
       const sheet = await readSheet(res.rawPayload);
       // Newest-first isn't guaranteed by the export (it streams oldest-first for keyset
       // pagination) — the update is the second Masters row written, so the second data row.
-      const updateRow = sheet.getRow(3).values as unknown[];
+      const updateRow = sheet.getRow(FIRST_DATA_ROW + 1).values as unknown[];
       expect(updateRow[3]).toBe("Center Updated");
-      expect(updateRow[7]).toBe("Description: Old description → New description");
-      expect(updateRow[8]).toMatch(/Source: single/);
-      expect(updateRow[8]).not.toMatch(/Description/); // already in Changed, not repeated here
+      expect(updateRow[8]).toBe("Description");
+      expect(updateRow[9]).toBe("Old description");
+      expect(updateRow[10]).toBe("New description");
+      expect(updateRow[11]).toMatch(/Source: single/);
+      expect(updateRow[11]).not.toMatch(/Description/); // already in Old/New Value, not repeated here
+    });
+
+    it("a Disposal's status/sale value/date all show up as their own Old -> New rows", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      await authedInject(app, {
+        method: "PATCH",
+        url: "/api/assets/ACT-TEST-1/disposal",
+        payload: { dateOfDisposal: "2026-07-01", saleValue: 500 }
+      });
+
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?category=disposal" });
+      const sheet = await readSheet(res.rawPayload);
+      const fieldsChanged = [];
+      for (let i = 0; i < 3; i++) {
+        fieldsChanged.push((sheet.getRow(FIRST_DATA_ROW + i).values as unknown[])[8]);
+      }
+      expect(fieldsChanged.sort()).toEqual(["Date Of Disposal", "Sale Value", "Status"]);
+      expect(sheet.rowCount).toBe(FIRST_DATA_ROW + 2); // one row per changed field, no blank-diff row
     });
 
     it("the Reason column is populated for a Delete entry and empty for a create", async () => {
@@ -459,13 +589,13 @@ describe("Activity Log", () => {
 
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
       const sheet = await readSheet(res.rawPayload);
-      const createRow = sheet.getRow(2).values as unknown[];
-      const deleteRow = sheet.getRow(3).values as unknown[];
+      const createRow = sheet.getRow(FIRST_DATA_ROW).values as unknown[];
+      const deleteRow = sheet.getRow(FIRST_DATA_ROW + 1).values as unknown[];
       // ExcelJS round-trips a written "" as undefined on read-back (no <v> element for an
       // empty inline string) — both mean "blank cell" to a reader opening the file.
-      expect(createRow[6]).toBeFalsy();
+      expect(createRow[7]).toBeFalsy();
       expect(deleteRow[3]).toBe("Capitalization Delete");
-      expect(deleteRow[6]).toBe("created by mistake");
+      expect(deleteRow[7]).toBe("created by mistake");
     });
 
     it("respects the same category/farId filters as the list endpoint", async () => {
@@ -474,15 +604,15 @@ describe("Activity Log", () => {
 
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?category=capitalization" });
       const sheet = await readSheet(res.rawPayload);
-      expect(sheet.rowCount).toBe(2);
-      expect((sheet.getRow(2).values as unknown[])[2]).toBe("Capitalization");
+      expect(sheet.rowCount).toBe(FIRST_DATA_ROW);
+      expect((sheet.getRow(FIRST_DATA_ROW).values as unknown[])[2]).toBe("Capitalization");
     });
 
-    it("an empty result still returns a valid workbook with just the header row", async () => {
+    it("an empty result still returns a valid workbook with just the header band", async () => {
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
       expect(res.statusCode).toBe(200);
       const sheet = await readSheet(res.rawPayload);
-      expect(sheet.rowCount).toBe(1);
+      expect(sheet.rowCount).toBe(HEADER_ROW);
     });
   });
 });

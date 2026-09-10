@@ -9,6 +9,7 @@ import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { buildTransferConditionSql, transferConditionsQuerySchema } from "./transferColumnFilters.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
+import { diffPrevious } from "./masters.js";
 
 const deleteReasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.") });
 
@@ -207,6 +208,8 @@ export default async function transfersRoutes(app: FastifyInstance) {
       client.release();
     }
     for (const farId of farIds) {
+      // previous.location: the asset's effective location read above, before this
+      // transfer's UPDATE ran — the one field this route actually changes.
       await logAssetActivity(db, {
         actorUserId: req.user!.id,
         action: "transfer_create",
@@ -215,6 +218,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
           transactionDate,
           location: toLocation,
           cascadedFromParentFarId: childParentMap.get(farId) ?? null,
+          previous: diffPrevious({ location: currentLocationByFarId.get(farId) ?? null }, { location: toLocation }),
           source: "single"
         }
       });

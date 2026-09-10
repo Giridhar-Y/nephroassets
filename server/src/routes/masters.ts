@@ -19,8 +19,10 @@ function isUniqueViolation(err: unknown): boolean {
  *  already be keyed the same way as `patch` (camelCase, matching the patch schema) —
  *  callers with snake_case DB columns map them first. Returned alongside each
  *  `update*ById` function's own result, for routes/masters.ts's PATCH handlers to fold
- *  into `logMasterActivity`'s `details.previous`. */
-function diffPrevious(existing: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+ *  into `logMasterActivity`'s `details.previous`. Exported for assets.ts's Addition/
+ *  Disposal and transfers.ts's Transfer routes, which build the same shape of diff for
+ *  their own mutations rather than duplicating this skip-if-unchanged logic three times. */
+export function diffPrevious(existing: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const previous: Record<string, unknown> = {};
   for (const [key, newValue] of Object.entries(patch)) {
     if (newValue === undefined) continue;
