@@ -16,6 +16,7 @@ import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { logAssetActivity, logAssetActivityBatch } from "./assetActivityLog.js";
+import { invalidateDashboardTotalsCache } from "../db/reportTotalsCache.js";
 
 // Center-scoped access: an upsert row can either create a brand-new asset (only its
 // target `location` matters) or correct an existing one (whose `location` column CAN
@@ -456,6 +457,11 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
         }
       }
     }
+
+    // Awaited — see assets.ts's bustDashboardTotalsCache for why. getPool() fresh rather
+    // than reusing a `db` local — every existing one in this route is scoped to a
+    // narrower if-block that doesn't reach this final return.
+    if (processed > 0) await invalidateDashboardTotalsCache(await getPool()).catch(() => {});
 
     // Commit path keeps its existing response shape — data is preview-only, so it's
     // dropped here rather than sent back on a commit-time error.

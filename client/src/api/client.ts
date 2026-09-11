@@ -38,13 +38,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isRetryable = (!init?.method || init.method === "GET") && !init?.body;
   let lastRes: Response | undefined;
   for (let attempt = 1; attempt <= (isRetryable ? RETRYABLE_ATTEMPTS : 1); attempt++) {
-    const res = await fetch(path, {
-      ...init,
-      // Only declare a JSON content-type when there's actually a body — Fastify's default
-      // JSON body parser rejects an empty body outright (FST_ERR_CTP_EMPTY_JSON_BODY) if
-      // told to expect one, which every no-body POST (logout, reset-password) hit.
-      headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers }
-    });
+    let res: Response;
+    try {
+      res = await fetch(path, {
+        ...init,
+        // Only declare a JSON content-type when there's actually a body — Fastify's default
+        // JSON body parser rejects an empty body outright (FST_ERR_CTP_EMPTY_JSON_BODY) if
+        // told to expect one, which every no-body POST (logout, reset-password) hit.
+        headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers }
+      });
+    } catch (err) {
+      // fetch() itself throwing — offline, DNS, a dropped connection before any response
+      // came back — is the same "didn't go through, worth one more try" case a 5xx is
+      // below, just with no Response to inspect. Every GET caller (Dashboard's totals
+      // tile, Register's asset list included) gets this for free rather than needing its
+      // own duplicate retry wrapper, since they all funnel through this one function.
+      if (isRetryable && attempt < RETRYABLE_ATTEMPTS) {
+        await sleep(RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      throw err;
+    }
     if (res.ok) return res.json() as Promise<T>;
     lastRes = res;
     if (isRetryable && res.status >= 500 && attempt < RETRYABLE_ATTEMPTS) {

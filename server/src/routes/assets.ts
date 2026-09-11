@@ -15,6 +15,7 @@ import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
+import { invalidateDashboardTotalsCache } from "../db/reportTotalsCache.js";
 import { diffPrevious } from "./masters.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 import { buildExceptionPredicate, EXCEPTION_KEYS } from "./exceptionPredicates.js";
@@ -167,6 +168,19 @@ function decodeCursor(cursor: string | undefined): [string, string] | null {
 
 function encodeCursor(sortValue: string, farId: string): string {
   return Buffer.from(JSON.stringify([sortValue, farId]), "utf-8").toString("base64url");
+}
+
+/** Called after a write that changes what Dashboard Totals reports (create, edit,
+ *  disposal, addition, delete, undo). Awaited — unlike assetsExportJobs.ts's
+ *  fire-and-forget fireSelfNudge (a genuinely uncertain HTTP round-trip to a
+ *  possibly-already-torn-down serverless instance), this is one cheap single-table
+ *  DELETE against the same pool the request already holds; not awaiting it would race
+ *  the very next dashboard load against a DELETE that may not have committed yet.
+ *  Best-effort only in the sense that a failure here doesn't fail the write it followed
+ *  (swallowed, not rethrown) — the 15-minute TTL (db/reportTotalsCache.ts) still bounds
+ *  how stale a failed invalidation can leave the cache. */
+async function bustDashboardTotalsCache(db: Awaited<ReturnType<typeof getPool>>): Promise<void> {
+  await invalidateDashboardTotalsCache(db).catch(() => {});
 }
 
 export default async function assetsRoutes(app: FastifyInstance) {
@@ -623,6 +637,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       farId: input.farId,
       details: { ...input, parentFarId, source: "single" }
     });
+    await bustDashboardTotalsCache(db);
     return { farId: input.farId, created: true };
   });
 
@@ -771,6 +786,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         farId
       ]
     );
+    await bustDashboardTotalsCache(db);
     return { farId: input.farId, updated: true };
   });
 
@@ -951,6 +967,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         source: "single"
       }
     });
+    await bustDashboardTotalsCache(db);
     return { farId, added: true };
   });
 
@@ -1168,6 +1185,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         source: "single"
       }
     });
+    await bustDashboardTotalsCache(db);
     return { farId, disposed: true, childrenDisposed: result.childrenDisposed };
   });
 
@@ -1246,6 +1264,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
         c2OpeningCost: Number(row.c2_opening_cost)
       }
     });
+    await bustDashboardTotalsCache(db);
     return { farId, deleted: true };
   });
 
@@ -1304,6 +1323,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       farId
     ]);
     await logAssetDelete(db, { actorUserId: req.user!.id, action: "addition_undo", farId, reason, details });
+    await bustDashboardTotalsCache(db);
     return { farId, additionUndone: true };
   });
 
@@ -1377,6 +1397,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reason,
       details: { ...result.parent, cascadedChildren: result.children }
     });
+    await bustDashboardTotalsCache(db);
     return { farId, disposalUndone: true, childrenUndone: result.children.map((c) => c.farId) };
   });
 }

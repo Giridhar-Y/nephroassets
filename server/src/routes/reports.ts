@@ -4,6 +4,7 @@ import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import { getCachedReport, reportCacheKey, setCachedReport } from "../db/reportCache.js";
+import { dashboardTotalsCacheKey, getCachedDashboardTotals, setCachedDashboardTotals } from "../db/reportTotalsCache.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
@@ -2014,10 +2015,26 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
-    return computeDashboardTotals(db, fy, req.user!, {
+    // Persistent, cross-instance cache — see db/reportTotalsCache.ts's own comment for
+    // why this needed its own table rather than reusing db/reportCache.ts's in-memory
+    // one: this is the query real production traffic was timing out on (a cold/different
+    // serverless instance paying the full far_calc_component() scan every time), which an
+    // in-process cache can't help with at all.
+    const cacheKey = dashboardTotalsCacheKey({
+      asAt: fy.asAt,
+      center: parsed.data.center,
+      subClassification: parsed.data.subClassification,
+      centerScope: req.user!.centerScope
+    });
+    const cached = await getCachedDashboardTotals(db, cacheKey);
+    if (cached) return cached;
+
+    const result = await computeDashboardTotals(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
+    await setCachedDashboardTotals(db, cacheKey, result);
+    return result;
   });
 
   app.get("/api/reports/dashboard-trend", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {

@@ -6,6 +6,7 @@ import reportsRoutes from "./reports.js";
 import assetsRoutes from "./assets.js";
 import { getPool } from "../db/pool.js";
 import { clearReportCacheForTests, REPORT_CACHE_TTL_MS } from "../db/reportCache.js";
+import { clearReportTotalsCacheForTests } from "../db/reportTotalsCache.js";
 import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { generateAssets, generateTransfers } from "../loadtest/generateAssets.js";
@@ -1535,6 +1536,12 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary + da
 
   beforeAll(async () => {
     const db = await getPool();
+    // Defensive — this block's own fixtures each use a unique subClassification, so
+    // there's no real collision within it, but a stale row from an earlier test FILE
+    // reusing one of these asAt/subClassification combinations would otherwise silently
+    // serve wrong numbers here (this cache is a real DB table, not in-memory state that
+    // resets between files).
+    await clearReportTotalsCacheForTests(db);
     await db.query(
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
        ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
@@ -1738,6 +1745,82 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary + da
     expect(body.totals.openingGrossBlock).toBeCloseTo(expectedOpeningGrossBlock, 2);
     expect(body.totals.additionsFytd).toBeCloseTo(expectedAdditionsFytd, 2);
     expect(expectedAdditionsFytd).toBeGreaterThan(0); // proves the mid-year-addition fixture actually exercised this path
+  });
+
+  // Coverage for db/reportTotalsCache.ts — the persistent (DB-backed, cross-instance)
+  // cache added specifically to fix an intermittent 504 on this exact route at real
+  // scale. The prior tests already prove the NUMBERS are correct; these two prove the
+  // CACHE actually engages: a repeat request skips recomputation entirely (proven by
+  // mutating the underlying row directly via SQL, bypassing the app, and confirming the
+  // response doesn't notice), and a real write through the app's own routes busts it.
+  it("a repeat dashboard-totals request is served from cache — doesn't notice a direct SQL change until the cache is busted", async () => {
+    await insertAsset({
+      far_id: "DASH-CACHE-1",
+      sub_classification: "Dashboard-Test-Cache",
+      asset_description: "Cache fixture",
+      serial_no: "DC1",
+      qty: 1,
+      useful_life_c1_years: 10,
+      c1_opening_cost: 100000,
+      location: "Dash-Center-A"
+    });
+    const db = await getPool();
+    const url = `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-Cache" })}`;
+
+    const first = await authedInject(app, { method: "GET", url });
+    expect(first.statusCode).toBe(200);
+    const firstGrossBlock = first.json().totals.grossBlock;
+    expect(firstGrossBlock).toBeCloseTo(100000, 2);
+
+    // Changes the underlying cost directly, bypassing every route this cache is
+    // invalidated from — a real recomputation would see 250000, not 100000.
+    await db.query(`UPDATE assets SET c1_opening_cost = 250000 WHERE far_id = 'DASH-CACHE-1'`);
+
+    const second = await authedInject(app, { method: "GET", url });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().totals.grossBlock).toBeCloseTo(firstGrossBlock, 2);
+  });
+
+  it("capitalizing a new asset busts the dashboard-totals cache, so the very next request sees it", async () => {
+    // Unlike every other fixture in this describe block (raw SQL INSERT, bypassing the
+    // app entirely), POST /api/assets is the real Capitalization route — it validates
+    // subClassification/status against active Masters, which nothing above needed to
+    // seed since nothing else here goes through it.
+    const db = await getPool();
+    await db.query(`INSERT INTO sub_classifications (name) VALUES ('Dashboard-Test-CacheBust') ON CONFLICT (LOWER(name)) DO NOTHING`);
+    await db.query(
+      `INSERT INTO statuses (name, system_managed) VALUES ('Active', FALSE) ON CONFLICT (LOWER(name)) DO NOTHING`
+    );
+
+    const url = `/api/reports/dashboard-totals?${new URLSearchParams({ asAt: AS_AT, subClassification: "Dashboard-Test-CacheBust" })}`;
+
+    // Populates the cache with "no matching assets" for this filter — nothing with this
+    // subClassification exists yet.
+    const before = await authedInject(app, { method: "GET", url });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().totals.grossBlock).toBe(0);
+
+    const createRes = await authedInject(app, {
+      method: "POST",
+      url: "/api/assets",
+      payload: {
+        farId: "DASH-CACHEBUST-1",
+        subClassification: "Dashboard-Test-CacheBust",
+        assetDescription: "Cache-bust fixture",
+        status: "Active",
+        dateAcquired: FY_START,
+        location: "Dash-Center-A",
+        usefulLifeC1Years: 10,
+        usefulLifeC2Years: 5,
+        c1OpeningCost: 300000,
+        c2OpeningCost: 0
+      }
+    });
+    expect(createRes.statusCode).toBe(200);
+
+    const after = await authedInject(app, { method: "GET", url });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().totals.grossBlock).toBeCloseTo(300000, 2);
   });
 
   // Regression coverage for the NBV trend's query rewrite (batching 6 per-quarter-end

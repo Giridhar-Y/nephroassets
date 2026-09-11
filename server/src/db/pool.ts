@@ -486,6 +486,17 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     -- has_component2/deleted_at above.
     ALTER TABLE export_jobs ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'REGISTER' CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG'));
     ALTER TABLE export_jobs ADD COLUMN IF NOT EXISTS resume_cursor TEXT;
+
+    -- See schema.sql's own report_totals_cache comment — mirrored here (IF NOT EXISTS)
+    -- so an already-running production database picks it up on its next cold start.
+    CREATE TABLE IF NOT EXISTS report_totals_cache (
+      cache_key    TEXT PRIMARY KEY,
+      payload      JSONB NOT NULL,
+      computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- See schema.sql's own idx_assets_calc_status comment.
+    CREATE INDEX IF NOT EXISTS idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);
   `);
 
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a

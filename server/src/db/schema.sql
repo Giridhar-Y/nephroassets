@@ -465,6 +465,20 @@ CREATE TABLE export_jobs (
 );
 CREATE INDEX idx_export_jobs_user_id ON export_jobs (user_id, created_at DESC);
 
+-- Persistent (cross-instance, survives a cold start) cache for GET /api/reports/
+-- dashboard-totals — see db/reportTotalsCache.ts for the full reasoning. Deliberately a
+-- separate table from db/reportCache.ts's in-memory cache (which covers Register
+-- Summary/Location Summary/Depreciation Posting): those stay in-memory with a short TTL
+-- and no write-based invalidation, a design forced by a real production incident (see
+-- feedback memory "never monkey-patch pg.Pool internals") — this table exists
+-- specifically so a cold Vercel serverless instance doesn't pay the full
+-- far_calc_component() scan again just because it isn't the instance that computed it.
+CREATE TABLE report_totals_cache (
+  cache_key    TEXT PRIMARY KEY,
+  payload      JSONB NOT NULL,
+  computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);
@@ -477,6 +491,14 @@ CREATE INDEX idx_assets_effective_location ON assets (COALESCE(revised_location,
 CREATE INDEX idx_assets_sub_classification ON assets (sub_classification);
 CREATE INDEX idx_assets_status ON assets (status);
 CREATE INDEX idx_assets_date_acquired ON assets (date_acquired);
+-- Composite, covering the (status, date_acquired, date_of_disposal) shape that recurs
+-- across Register/Reports WHERE clauses (date_acquired <= asAt, date_of_disposal IS NULL
+-- OR date_of_disposal >= fyStart) — a broader win than the single-column indexes above
+-- for any query filtering on more than one of these three at once. Dashboard Totals'
+-- own bottleneck is far_calc_component() running once per matching row (the same
+-- irreducible cost reportCache.ts's comment documents for the other reports), which no
+-- index touches — report_totals_cache below is what actually fixes that one's timeout.
+CREATE INDEX idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);
 -- far_id already has a btree index via its PRIMARY KEY (exact match / keyset paging).
 -- text_pattern_ops additionally makes `far_id LIKE 'prefix%'` searches index-friendly
 -- regardless of the database's default collation.
