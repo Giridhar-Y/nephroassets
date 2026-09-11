@@ -1,0 +1,23 @@
+# Local/staging convenience: points the app container at compose's own throwaway
+# Postgres (the `postgres` service in docker-compose.yml, `local-db` profile) instead of
+# needing a real database reachable from your machine just to try the app end-to-end.
+#
+# Not applied automatically — Compose only auto-merges a file named exactly
+# "docker-compose.override.yml" (no suffix). To use this one:
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   cp .env.docker.example .env   # fill in JWT_SECRET at least; DATABASE_URL below wins over it
+#   docker compose --profile local-db up -d --build
+#
+# Don't use this in any real deployment — it hardcodes a throwaway password and runs
+# Postgres in the same container network with no backup/durability guarantees beyond
+# the named volume.
+
+services:
+  app:
+    environment:
+      DATABASE_URL: postgres://nephroassets:nephroassets@postgres:5432/nephroassets
+
+  postgres:
+    ports:
+      - "55432:5432" # host:container — connect a local DB client to localhost:55432 if needed

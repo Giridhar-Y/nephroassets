@@ -1,0 +1,60 @@
+# Production-ready compose setup: the app container plus an OPTIONAL local Postgres for
+# testing/staging without a real managed database yet.
+#
+#   docker compose up -d --build                    # app only — point .env's
+#                                                     # DATABASE_URL at your own Postgres
+#   docker compose --profile local-db up -d --build  # app + a throwaway local Postgres
+#
+# See .env.docker.example for the environment file this reads (`docker compose`
+# auto-loads a `.env` file from this same directory — copy the example to `.env` and
+# fill in real values first).
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nephroassets:latest
+    container_name: nephroassets
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    healthcheck:
+      # Same check the image's own HEALTHCHECK runs (Dockerfile) — restated here so
+      # `docker compose ps`/orchestrators that read compose-level health config directly
+      # see it without needing to inspect the image.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # Local/staging convenience only — NOT started by default (see the `--profile
+  # local-db` command above). A real deployment points DATABASE_URL (.env) at your own
+  # managed or self-hosted Postgres instead; this exists purely so `docker compose up`
+  # can be tried end-to-end with zero external dependencies. Plain postgres:16-alpine —
+  # this app has no pgvector/postgis usage, so there's nothing to gain from a heavier
+  # image.
+  postgres:
+    image: postgres:16-alpine
+    container_name: nephroassets-postgres
+    restart: unless-stopped
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_USER: nephroassets
+      POSTGRES_PASSWORD: nephroassets
+      POSTGRES_DB: nephroassets
+    ports:
+      - "55432:5432"
+    volumes:
+      - nephroassets-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nephroassets"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nephroassets-pgdata:

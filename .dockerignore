@@ -10,6 +10,7 @@ server/.pgdata-scale
 **/.env
 **/.env.local
 **/*.tsbuildinfo
+**/coverage
 
 .git
 .github
