@@ -12,3 +12,5 @@ client/dist/
 client/e2e/.auth/
 client/test-results/
 client/playwright-report/
+
+.vercel
