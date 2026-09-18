@@ -22,8 +22,10 @@ export async function getPool(): Promise<pg.Pool> {
   if (databaseUrl) {
     // The test suite (vitest.config.ts) and CI also point DATABASE_URL at a local
     // Postgres — a plain, non-SSL instance — so SSL is decided from the URL's own host,
-    // not just from whether DATABASE_URL is set.
-    const isLocal = ["localhost", "127.0.0.1"].includes(new URL(databaseUrl).hostname);
+    // not just from whether DATABASE_URL is set. "postgres" covers docker-compose.yml's
+    // optional `postgres` service, reached by its compose service name (not localhost)
+    // when the app container talks to it over the compose network.
+    const isLocal = ["localhost", "127.0.0.1", "postgres"].includes(new URL(databaseUrl).hostname);
     pool = new pg.Pool({
       connectionString: databaseUrl,
       // Supabase (like most managed Postgres) requires SSL and terminates it with a

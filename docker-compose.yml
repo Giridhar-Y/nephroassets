@@ -31,12 +31,13 @@ services:
       start_period: 15s
       retries: 3
 
-  # Local/staging convenience only — NOT started by default (see the `--profile
-  # local-db` command above). A real deployment points DATABASE_URL (.env) at your own
-  # managed or self-hosted Postgres instead; this exists purely so `docker compose up`
-  # can be tried end-to-end with zero external dependencies. Plain postgres:16-alpine —
-  # this app has no pgvector/postgis usage, so there's nothing to gain from a heavier
-  # image.
+  # Optional, NOT started by default (see the `--profile local-db` command above).
+  # Self-contained Postgres for when there's no separate managed/self-hosted database —
+  # either quick local testing, or a real deployment that wants Postgres running
+  # alongside the app instead of using an external provider (Supabase, RDS, etc). Reach
+  # it from the app container as `postgres:5432` (its compose service name), not
+  # localhost — see .env.docker.example. Plain postgres:16-alpine — this app has no
+  # pgvector/postgis usage, so there's nothing to gain from a heavier image.
   postgres:
     image: postgres:16-alpine
     container_name: nephroassets-postgres
