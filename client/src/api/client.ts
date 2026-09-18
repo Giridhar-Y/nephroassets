@@ -1197,6 +1197,18 @@ export function login(username: string, password: string): Promise<{ user: AuthU
   return request("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
 }
 
+export function loginWithGoogle(credential: string): Promise<{ user: AuthUser }> {
+  return request("/api/auth/google", { method: "POST", body: JSON.stringify({ credential }) });
+}
+
+/** Whether the server has Google Sign-In configured (GOOGLE_CLIENT_ID/
+ *  GOOGLE_WORKSPACE_DOMAIN — see server/.env.example) and, if so, the GCP client ID to
+ *  initialize Google's button with. Public endpoint, no auth required — see
+ *  server/src/auth/middleware.ts's PUBLIC_PATHS. */
+export function fetchGoogleSsoConfig(): Promise<{ enabled: boolean; clientId: string | null }> {
+  return request("/api/auth/google-config");
+}
+
 export function logout(): Promise<{ ok: true }> {
   return request("/api/auth/logout", { method: "POST" });
 }

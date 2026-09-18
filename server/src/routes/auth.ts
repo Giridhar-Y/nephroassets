@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { sessionCookieOptions, SESSION_COOKIE_NAME, signSession } from "../auth/session.js";
@@ -7,8 +8,10 @@ import { isIpLockedOut, isLockedOut, LOCKOUT_WINDOW_MINUTES, recordLoginAttempt 
 import type { Role } from "../auth/middleware.js";
 import { resolveDisplayName } from "../auth/middleware.js";
 import { fetchCenterScope } from "../auth/centerScope.js";
+import { googleSsoConfig, verifyGoogleCredential } from "../auth/googleSso.js";
 
 const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
+const googleLoginSchema = z.object({ credential: z.string().min(1) });
 const changePasswordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8) });
 // 80 chars — generous for a real name/nickname, short enough to never overflow the
 // header greeting or an admin's user-list column.
@@ -18,6 +21,63 @@ const updateProfileSchema = z.object({ displayName: z.string().trim().min(1).max
 // cost as a real lookup, so a nonexistent username doesn't respond measurably faster
 // than a real one. Not a secret; it's never anyone's actual password hash.
 const DUMMY_HASH_FOR_TIMING_PARITY = "$2b$12$94tdGxkaFLTLs59nGVCceOsMy.n3m9p5kZryMMlf792m968ePkV.m";
+
+interface AuthenticatedUserRow {
+  id: string;
+  username: string;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  must_change_password: boolean;
+  created_at: Date | string;
+  last_login_at: Date | string | null;
+}
+
+/** Shared by both /login and /google once each has independently verified the caller is
+ *  who they say they are: sets the session cookie, bumps last_login_at, and builds the
+ *  response shape the client expects. `clearMustChangePassword` is set from the Google
+ *  path only — a Google-verified identity needs no local password, so there's nothing
+ *  meaningful left to force a change of (see that route for the full reasoning). */
+async function establishSession(
+  db: pg.Pool,
+  reply: FastifyReply,
+  row: AuthenticatedUserRow,
+  clearMustChangePassword: boolean
+) {
+  if (clearMustChangePassword && row.must_change_password) {
+    await db.query(`UPDATE users SET must_change_password = FALSE WHERE id = $1`, [row.id]);
+    row.must_change_password = false;
+  }
+  await db.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [row.id]);
+  const token = signSession({ sub: Number(row.id), username: row.username });
+  reply.setCookie(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+
+  // Built directly from the row just read, not via resolveUser(req) — that reads the
+  // session cookie off the *incoming* request, which is this login request itself and so
+  // never carries the cookie we just decided to set on the way out.
+  const { rows: permRows } = await db.query<{ module: string; action: string }>(
+    `SELECT module, action FROM user_permissions WHERE user_id = $1`,
+    [row.id]
+  );
+  const centerScope = await fetchCenterScope(db, Number(row.id));
+  return {
+    user: {
+      id: Number(row.id),
+      username: row.username,
+      email: row.email,
+      displayName: resolveDisplayName(row.display_name, row.email),
+      role: row.role,
+      createdAt: new Date(row.created_at).toISOString(),
+      // Read before this request's own UPDATE above — reflects the *previous* login,
+      // which is what "Last login" should show right after signing in (the value once
+      // this session's own login has landed comes back on the next /me refresh).
+      lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null,
+      mustChangePassword: row.must_change_password,
+      permissions: permRows.map((p) => `${p.module}:${p.action}`),
+      centerAccess: centerScope === null ? null : Array.from(centerScope)
+    }
+  };
+}
 
 export default async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/login", async (req, reply) => {
@@ -72,35 +132,53 @@ export default async function authRoutes(app: FastifyInstance) {
       return { error: "Invalid username or password." };
     }
 
-    await db.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [row!.id]);
-    const token = signSession({ sub: Number(row!.id), username: row!.username });
-    reply.setCookie(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+    return establishSession(db, reply, row!, false);
+  });
 
-    // Built directly from the row just read, not via resolveUser(req) — that reads the
-    // session cookie off the *incoming* request, which is this login request itself and
-    // so never carries the cookie we just decided to set on the way out.
-    const { rows: permRows } = await db.query<{ module: string; action: string }>(
-      `SELECT module, action FROM user_permissions WHERE user_id = $1`,
-      [row!.id]
+  // Public (see auth/middleware.ts's PUBLIC_PATHS) — tells the login page whether to
+  // render the Google button at all, and what GCP client ID to initialize it with. IT
+  // provisions GOOGLE_CLIENT_ID/GOOGLE_WORKSPACE_DOMAIN independently of a code deploy
+  // (see .env.example), so this can flip on/off without a redeploy.
+  app.get("/api/auth/google-config", async () => googleSsoConfig());
+
+  // Public (see auth/middleware.ts's PUBLIC_PATHS) — nothing to check a session against
+  // yet, same as /login. `credential` is the ID token a Google Identity Services Sign In
+  // With Google button hands back client-side; verifyGoogleCredential checks its
+  // signature, audience, and Workspace domain, so by the time this handler trusts
+  // `email` it's already a Google-authenticated identity, not caller-supplied input.
+  //
+  // Deliberately does NOT auto-create an account (see the accompanying IT request's own
+  // decision on this) — Google Sign-In only replaces typing a password for an account an
+  // admin already created (Admin → Users), matched by email. An unrecognized Google
+  // account is rejected with the same generic message as a bad password, so this can't
+  // be used to enumerate which company emails do/don't have a NephroAssets account.
+  app.post("/api/auth/google", async (req, reply) => {
+    const parsed = googleLoginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "Missing Google credential." };
+    }
+    const verified = await verifyGoogleCredential(parsed.data.credential);
+    if (!verified) {
+      reply.code(401);
+      return { error: "Google sign-in failed. Make sure you're using your company Google account." };
+    }
+
+    const db = await getPool();
+    const { rows } = await db.query<AuthenticatedUserRow & { status: string }>(
+      `SELECT id, username, email, display_name, role, must_change_password, status, created_at, last_login_at
+       FROM users WHERE LOWER(email) = LOWER($1)`,
+      [verified.email]
     );
-    const centerScope = await fetchCenterScope(db, Number(row!.id));
-    return {
-      user: {
-        id: Number(row!.id),
-        username: row!.username,
-        email: row!.email,
-        displayName: resolveDisplayName(row!.display_name, row!.email),
-        role: row!.role,
-        createdAt: new Date(row!.created_at).toISOString(),
-        // Read before this request's own UPDATE above — reflects the *previous* login,
-        // which is what "Last login" should show right after signing in (the value
-        // once this session's own login has landed comes back on the next /me refresh).
-        lastLoginAt: row!.last_login_at ? new Date(row!.last_login_at).toISOString() : null,
-        mustChangePassword: row!.must_change_password,
-        permissions: permRows.map((p) => `${p.module}:${p.action}`),
-        centerAccess: centerScope === null ? null : Array.from(centerScope)
-      }
-    };
+    const row = rows[0];
+    if (!row || row.status !== "active") {
+      reply.code(401);
+      return { error: "No NephroAssets account found for this Google account. Contact an admin." };
+    }
+
+    // A Google-verified identity needs no local password, so there's nothing left to
+    // force a change of — see establishSession's own comment.
+    return establishSession(db, reply, row, true);
   });
 
   app.post("/api/auth/logout", async (req, reply) => {

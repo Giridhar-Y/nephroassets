@@ -61,6 +61,12 @@ declare module "fastify" {
  *  - "/api/health" — an uptime/monitoring endpoint has to be reachable without a
  *    session, that's the entire point of one.
  *  - "/api/auth/login" — nothing to check a session against yet.
+ *  - "/api/auth/google" — same as /login, just a different way of proving who you are
+ *    (see routes/auth.ts).
+ *  - "/api/auth/google-config" — read-only feature-flag lookup the login page needs
+ *    before anyone is signed in, to decide whether to render the Google button at all.
+ *    Reveals nothing sensitive (just enabled/clientId, and the GCP client ID isn't a
+ *    secret — it's meant to be public, same as it would be embedded in any client app).
  *  - "/api/auth/logout" — must stay reachable *without* a valid session too, not just
  *    with one: someone whose cookie already expired, was cleared, or was disabled by an
  *    admin should still be able to hit "Sign Out" and land cleanly on the login page,
@@ -69,7 +75,13 @@ declare module "fastify" {
  *    safe — there's nothing here for an unauthenticated caller to learn or change.
  *  Everything else under /api requires a valid session; ALLOWED_WHILE_MUST_CHANGE_PASSWORD
  *  (below) further restricts what a not-yet-changed-password session can reach. */
-const PUBLIC_PATHS = new Set(["/api/health", "/api/auth/login", "/api/auth/logout"]);
+const PUBLIC_PATHS = new Set([
+  "/api/health",
+  "/api/auth/login",
+  "/api/auth/google",
+  "/api/auth/google-config",
+  "/api/auth/logout"
+]);
 
 /** Endpoints a `mustChangePassword` session may still reach — just enough to change the
  *  password and to check who they are (/me). /logout doesn't need to be listed here too

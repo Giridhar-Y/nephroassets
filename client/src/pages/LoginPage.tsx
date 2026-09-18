@@ -4,6 +4,7 @@ import { useAuth } from "../lib/AuthContext.js";
 import { ErrorIcon, InfoIcon } from "../lib/icons.js";
 import { LogoSymbol, Wordmark } from "../components/Logo.js";
 import { PasswordInput } from "../components/PasswordInput.js";
+import { GoogleSignInButton } from "../components/GoogleSignInButton.js";
 
 export function LoginPage() {
   const { user, login } = useAuth();
@@ -89,6 +90,8 @@ export function LoginPage() {
               {submitting ? "Signing in…" : "Sign In"}
             </button>
           </form>
+
+          <GoogleSignInButton onError={setError} />
         </div>
       </div>
     </div>

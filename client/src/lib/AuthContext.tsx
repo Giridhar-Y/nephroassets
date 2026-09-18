@@ -3,6 +3,7 @@ import {
   ApiError,
   fetchCurrentUser,
   login as apiLogin,
+  loginWithGoogle as apiLoginWithGoogle,
   logout as apiLogout,
   type AuthUser
 } from "../api/client.js";
@@ -14,6 +15,9 @@ interface AuthContextValue {
    *  RequireAuth avoid a flash of the login page for someone with a valid session. */
   loading: boolean;
   login: (username: string, password: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** `credential` is the ID token a Google Identity Services Sign In With Google button
+   *  hands back — see components/GoogleSignInButton.tsx. */
+  loginWithGoogle: (credential: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   logout: () => Promise<void>;
   /** Re-reads /api/auth/me — used after changing a temporary password, so the
    *  session's mustChangePassword flag (read fresh from the DB by the server on every
@@ -80,6 +84,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const loginWithGoogle = async (credential: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const { user } = await apiLoginWithGoogle(credential);
+      setUser(user);
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Google sign-in failed. Please try again.";
+      return { ok: false, error: message };
+    }
+  };
+
   const logout = async () => {
     // Best-effort: clear local state regardless of whether the request itself succeeds
     // — a network hiccup shouldn't leave the UI stuck showing a "signed in" state for
@@ -96,7 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, logout, refreshUser }}>
+      {children}
+    </AuthContext.Provider>
   );
 }
 

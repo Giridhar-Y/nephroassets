@@ -64,6 +64,22 @@ describe("Auth: login/logout/me/change-password", () => {
     expect(res.json().user.username).toBe("alice");
   });
 
+  it("reports Google Sign-In as disabled when GOOGLE_CLIENT_ID/GOOGLE_WORKSPACE_DOMAIN aren't set (the test env's default, same as an unconfigured production deploy)", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/auth/google-config" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ enabled: false, clientId: null });
+  });
+
+  it("rejects /api/auth/google with a clean 401 (not a 500) when the feature isn't configured", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/google",
+      payload: { credential: "whatever-token" }
+    });
+    expect(res.statusCode).toBe(401);
+    expect(extractCookie(res)).toBeUndefined();
+  });
+
   it("rejects a wrong password with a generic message", async () => {
     await createTestUser({ username: "bob", password: "correct-password-123" });
     const res = await app.inject({
