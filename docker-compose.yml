@@ -21,6 +21,15 @@ services:
       - "${PORT:-3000}:3000"
     env_file:
       - .env
+    # Lets the container resolve `host.docker.internal` to the Docker host — needed if
+    # DATABASE_URL points at a Postgres installed directly on this same server (not
+    # containerized). Docker Desktop (Mac/Windows) provides this DNS name automatically;
+    # Docker Engine on Linux does not, so without this line that setup fails on boot with
+    # `getaddrinfo ENOTFOUND host.docker.internal`. Harmless no-op if DATABASE_URL points
+    # elsewhere (a managed DB, or the `postgres` compose service below) — see
+    # docs/IT_DEPLOYMENT_GUIDE.md's "Postgres on the host, app in Docker" section.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       # Same check the image's own HEALTHCHECK runs (Dockerfile) — restated here so
       # `docker compose ps`/orchestrators that read compose-level health config directly

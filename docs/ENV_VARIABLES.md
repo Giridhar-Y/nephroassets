@@ -40,6 +40,15 @@ plain `apt install postgresql` — needs `?sslmode=disable` appended to `DATABAS
 the connection will fail outright. `?sslmode=require` forces SSL on if you do configure
 it, even against a recognized-local hostname.
 
+**Three valid host patterns for `DATABASE_URL`, depending on where Postgres actually
+runs:**
+
+| Postgres location | Host to use | `sslmode=disable` needed? |
+|---|---|---|
+| Managed (Supabase, RDS, etc.) | its real hostname | No — SSL is expected and configured on their end |
+| `docker compose --profile local-db` (bundled Postgres container) | `postgres` (compose service name) | No — already in the recognized-local list |
+| Installed directly on the same host, app running in a separate Docker container | `host.docker.internal` | **Yes** — this hostname isn't in the recognized-local list, and a host-installed Postgres almost never has SSL configured. See `docs/IT_DEPLOYMENT_GUIDE.md` section 5.4 for the full setup (also needs an `extra_hosts` compose entry on Linux, plus `listen_addresses`/`pg_hba.conf` changes on the Postgres side). |
+
 ---
 
 ## Auth

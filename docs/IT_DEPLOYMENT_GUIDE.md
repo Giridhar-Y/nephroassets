@@ -85,7 +85,10 @@ Set these on the container (or your platform's environment/secrets configuration
 to set it separately.
 
 `.env.docker.example` at the repo root has all of the above as a fill-in-the-blanks
-template — copy it to `.env` and edit before running (section 5).
+template — copy it to `.env` and edit before running (section 5). `docs/ENV_VARIABLES.md`
+has the complete, current list (including Google Sign-In and AI Search's variables, added
+after this table) with example formats and what happens if each optional one is left
+unset.
 
 Do **not** put real values for `DATABASE_URL` or `JWT_SECRET` in any file that gets
 committed to source control or left in a plain-text deploy script — use your platform's
@@ -147,7 +150,65 @@ docker compose --profile local-db up -d --build
 `DATABASE_URL` at your own managed or self-hosted database for real deployments (section
 2, prerequisite 1).
 
-### 5.4 Optional: Nginx in front
+### 5.4 Postgres on the host, app in Docker
+
+A third deployment shape, distinct from both "managed Postgres elsewhere" (section 3)
+and "Postgres via `--profile local-db`" (5.3): **Postgres installed directly on the same
+server**, outside Docker, with the app running containerized. This is a normal, valid
+setup — but it needs two things neither of the other two shapes require.
+
+**1. `DATABASE_URL` needs `host.docker.internal`, not `localhost`.** From inside the app
+container, `localhost` refers to the container itself, not the host machine — it will
+never reach a Postgres running directly on the server. Docker provides a special DNS
+name for exactly this, `host.docker.internal`, which resolves to the host machine's own
+IP from inside any container:
+
+```
+DATABASE_URL=postgres://user:password@host.docker.internal:5432/dbname?sslmode=disable
+```
+
+The `?sslmode=disable` isn't optional here either: the app defaults to requiring SSL for
+any host it doesn't recognize as local (`localhost`/`127.0.0.1`/the compose `postgres`
+service name — see `docs/ENV_VARIABLES.md`'s Database section), and
+`host.docker.internal` isn't on that list. Without it, once the DNS issue below is
+fixed, the connection fails a second time on an SSL handshake against a Postgres that
+almost certainly has no SSL configured.
+
+**2. On Linux, that DNS name needs help — `docker-compose.yml` already has this wired
+up.** Docker Desktop (Mac/Windows) makes `host.docker.internal` resolve automatically.
+**Docker Engine on Linux does not** — without extra configuration, the container fails
+to even resolve the name, and the app crashes on boot with
+`getaddrinfo ENOTFOUND host.docker.internal`. This is exactly the kind of thing that
+works perfectly in local testing on a Mac and then breaks on the Linux server it actually
+gets deployed to, looking like an unrelated regression. The fix is one `extra_hosts` line
+on the `app` service, already present in `docker-compose.yml`:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+If you're running the container directly with `docker run` instead of Compose (section
+5.2), add the equivalent flag: `--add-host=host.docker.internal:host-gateway`.
+
+**3. Postgres itself has to actually accept the connection.** Getting the DNS name to
+resolve only gets the container to Postgres's front door — a default install still won't
+open it:
+
+- `listen_addresses` in `postgresql.conf` defaults to `localhost` only, which rejects
+  any connection that isn't from the machine's own loopback interface — including one
+  from a Docker container, which arrives over the Docker bridge network, not loopback.
+  Set it to `listen_addresses = '*'` (or at least the Docker bridge interface's address).
+- `pg_hba.conf` needs a line allowing that connection's source, e.g.
+  `host all all 172.17.0.0/16 md5` (`172.17.0.0/16` is Docker's default bridge subnet —
+  confirm yours with `docker network inspect bridge` if it's been customized).
+
+Both restart Postgres (`sudo systemctl restart postgresql`) to take effect. Skipping
+either one produces a different failure than the DNS issue above — a connection
+timeout/refused rather than `ENOTFOUND` — so if `host.docker.internal` resolves but the
+app still can't connect, this is the next thing to check.
+
+### 5.5 Optional: Nginx in front
 
 If your organization's convention is an Nginx tier in front of every container service
 (rather than terminating TLS at a cloud load balancer directly), `nginx.conf` at the
@@ -158,7 +219,7 @@ compose service block to add if you want it. TLS itself isn't configured in the
 template — either terminate it upstream and leave this on plain HTTP internally, or add
 your own certificate directives if this becomes your TLS termination point.
 
-### 5.5 Building from source without the provided image
+### 5.6 Building from source without the provided image
 
 If your platform prefers to build from source directly, the equivalent commands the
 Dockerfile runs are:
@@ -171,7 +232,7 @@ cd server && node dist/index.js
 
 (Node.js 20.11 or later is required either way.)
 
-### 5.6 AWS deployment notes
+### 5.7 AWS deployment notes
 
 The image has no AWS-specific assumptions — it's a plain container that reads
 `DATABASE_URL`/`JWT_SECRET`/`PORT` from the environment and listens on one port. That
@@ -185,7 +246,7 @@ makes it a direct fit for:
   `DATABASE_URL`/`JWT_SECRET`, a Service + Ingress for routing, and the same
   `/api/health` path for a liveness/readiness probe.
 - **EC2 (plain Docker host)** — install Docker, then the exact commands in 5.1/5.2/5.3
-  apply unchanged; put an ALB or your own Nginx (section 5.4) in front for TLS.
+  apply unchanged; put an ALB or your own Nginx (section 5.5) in front for TLS.
 
 In every case, Postgres itself is expected to be a real managed database (RDS is the
 natural choice on AWS) — the compose file's bundled Postgres is local-testing only
