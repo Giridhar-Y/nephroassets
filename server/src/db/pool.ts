@@ -10,6 +10,18 @@ pg.types.setTypeParser(1082, (value: string) => value);
 
 let pool: pg.Pool | undefined;
 
+/** Whether to use SSL for a given DATABASE_URL — pulled out of getPool() so it's
+ *  testable without an actual DB connection. See getPool()'s own comment for the two
+ *  ways to opt out. */
+export function shouldUseSsl(databaseUrl: string): boolean {
+  const parsedUrl = new URL(databaseUrl);
+  const sslMode = parsedUrl.searchParams.get("sslmode");
+  if (sslMode === "disable") return false;
+  if (sslMode === "require") return true;
+  const isLocal = ["localhost", "127.0.0.1", "postgres"].includes(parsedUrl.hostname);
+  return !isLocal;
+}
+
 /** Resolves the database connection: a real DATABASE_URL in any deployed environment,
  *  or an auto-provisioned local embedded Postgres for dev/test. `embedded-postgres` is a
  *  devDependency with a large platform-native binary — importing it lazily, only on the
@@ -21,17 +33,23 @@ export async function getPool(): Promise<pg.Pool> {
   const databaseUrl = process.env.DATABASE_URL;
   if (databaseUrl) {
     // The test suite (vitest.config.ts) and CI also point DATABASE_URL at a local
-    // Postgres — a plain, non-SSL instance — so SSL is decided from the URL's own host,
-    // not just from whether DATABASE_URL is set. "postgres" covers docker-compose.yml's
-    // optional `postgres` service, reached by its compose service name (not localhost)
-    // when the app container talks to it over the compose network.
-    const isLocal = ["localhost", "127.0.0.1", "postgres"].includes(new URL(databaseUrl).hostname);
+    // Postgres — a plain, non-SSL instance — so SSL is decided from the URL itself, not
+    // just from whether DATABASE_URL is set. Two ways to opt out of SSL (see
+    // shouldUseSsl above):
+    //  - An explicit `?sslmode=disable` query param — the standard libpq convention, for
+    //    any self-hosted Postgres reachable at a real host/IP that simply doesn't have
+    //    SSL configured (a plain `apt install postgresql` doesn't, by default). This is
+    //    the one DevOps/IT should reach for on their own infrastructure.
+    //  - A hostname of "localhost"/"127.0.0.1"/"postgres" (this app's own
+    //    docker-compose.yml service name) — same-machine connections where SSL adds
+    //    nothing.
+    const useSsl = shouldUseSsl(databaseUrl);
     pool = new pg.Pool({
       connectionString: databaseUrl,
       // Supabase (like most managed Postgres) requires SSL and terminates it with a
       // certificate `pg`'s default CA bundle doesn't trust — this is the standard,
       // documented setting for connecting from a serverless environment.
-      ssl: isLocal ? undefined : { rejectUnauthorized: false },
+      ssl: useSsl ? { rejectUnauthorized: false } : undefined,
       // Supabase's transaction pooler (port 6543) already multiplexes many client
       // connections into few real Postgres backends; each serverless function instance
       // should hold at most a handful of its own on top of that, and should release idle
