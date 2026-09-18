@@ -261,21 +261,35 @@ monitoring.
 ## 7. Creating the first admin user
 
 The app ships with no users. After the database is up and the app has booted at least
-once (so the schema exists), create the first admin account by running one script with
-the same `DATABASE_URL`:
+once (so the schema exists), create the first admin account by running one script.
+It's safe to re-run — it just updates that one admin account if it already exists. Once
+logged in, the admin can create further users from the app's own Admin screen — no more
+script runs needed after this one. Two ways to run it, depending on where you're doing
+it from:
+
+**Option A — `docker exec` into the already-running app container** (the natural choice
+if you're SSH'd into the deployment host itself). Use the *compiled* script with plain
+`node`, not `npx tsx` on the TypeScript source — the running container only has
+`server/dist` (compiled output) and production dependencies; `server/src` and dev
+tooling like `tsx` are deliberately not in the image (section 5.1). `DATABASE_URL`
+doesn't need to be passed again — it's already in the container's environment from
+`docker-compose.yml`'s `env_file`:
 
 ```bash
-cd server
+docker exec -it <container-name-or-id> sh -c \
+  "cd /app/server && ADMIN_USERNAME=admin ADMIN_EMAIL=admin@yourcompany.com ADMIN_PASSWORD='<a strong password>' node dist/scripts/seedAdmin.js"
+```
+
+**Option B — from a full repo checkout** (a laptop, a one-off container/job, a CI
+runner) that can reach the database directly — doesn't need to run on the production
+host at all:
+
+```bash
+cd server && npm install   # only if node_modules isn't already there
 ADMIN_USERNAME=admin ADMIN_EMAIL=admin@yourcompany.com ADMIN_PASSWORD="<a strong password>" \
   DATABASE_URL="postgres://user:password@your-db-host:5432/nephroassets" \
   npx tsx src/scripts/seedAdmin.ts
 ```
-
-This can be run from any machine that can reach the database (a laptop with the repo
-checked out, a one-off container/job, a CI runner) — it doesn't need to run on the
-production host itself. It's safe to re-run; it just updates that one admin account if
-it already exists. Once logged in, the admin can create further users from the app's
-own Admin screen — no more script runs needed after this one.
 
 ## 8. What's deliberately NOT in this zip
 
