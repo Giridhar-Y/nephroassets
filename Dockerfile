@@ -15,9 +15,19 @@
 # IT_DEPLOYMENT_GUIDE.md for build/run commands and docker-compose.yml for a ready-made
 # compose setup.
 
+# node:22-alpine's bundled npm (10.9.8 as of this writing) has a real resolver bug
+# against this repo's client dependency graph specifically (vitest's own nested,
+# loosely-ranged vite/esbuild) — `npm ci` fails there with either a false "Missing from
+# lock file"/EBADPLATFORM (mishandling an optionalDependency's os/cpu platform check as
+# a hard failure instead of a silent skip) or an internal crash
+# ("Cannot read properties of null (reading 'edgesOut')") when trying to resolve fresh.
+# A modern npm (verified: 11.19.1) handles the exact same lockfile correctly and
+# deterministically. Upgrading first, in every stage that runs `npm ci`, is cheaper and
+# more robust than fighting the dependency graph itself to avoid triggering the bug.
 # ---------- Stage 1: client build ----------
 FROM node:22-alpine AS client-builder
 WORKDIR /app/client
+RUN npm install -g npm@11
 
 # package.json/lockfile first, isolated from the rest of the source — so an application
 # code change doesn't bust Docker's layer cache for the (slow) npm ci step.
@@ -30,6 +40,7 @@ RUN npm run build
 # ---------- Stage 2: server build ----------
 FROM node:22-alpine AS server-builder
 WORKDIR /app/server
+RUN npm install -g npm@11
 
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
@@ -41,6 +52,7 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+RUN npm install -g npm@11
 
 COPY server/package.json server/package-lock.json ./server/
 RUN cd server && npm ci --omit=dev
