@@ -1,5 +1,6 @@
 import { applySchema, getPool } from "../db/pool.js";
 import { hashPassword } from "../auth/password.js";
+import { seedPermissionsFromRole } from "../auth/permissions.js";
 
 // Creates the first admin user. Deliberately takes credentials from environment
 // variables rather than a CLI prompt with echo-off masking (not worth a dependency for
@@ -36,6 +37,15 @@ const { rows } = await db.query(
    RETURNING id, username, email`,
   [username, email, passwordHash]
 );
+
+// This INSERT bypasses adminUsers.ts's createUser() (the normal account-creation path,
+// which seeds user_permissions from the role's template as part of the same
+// transaction) — without this, a seeded admin logs in fine but req.user.permissions is
+// permanently empty, and every requirePermission() check in the app 403s. Applied
+// unconditionally, including on a re-run against an existing admin: seedPermissionsFromRole
+// only ever fills gaps (ON CONFLICT DO NOTHING), never removes or overwrites permissions
+// a Super Admin may have since customized via the Permissions UI.
+await seedPermissionsFromRole(db, Number(rows[0].id), "admin", null);
 
 console.log(`Admin user ready: ${rows[0].username} <${rows[0].email}> (id ${rows[0].id})`);
 process.exit(0);
