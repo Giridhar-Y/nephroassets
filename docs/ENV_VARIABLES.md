@@ -114,8 +114,15 @@ to hit a request timeout.**
 |---|---|---|---|
 | `PORT` | Optional | Port the server listens on inside the container. Must match whatever you map in `docker run -p` / `docker-compose.yml`. Defaults to `3000` in the provided Docker image (`4000` if running `server/src/index.ts` directly outside Docker). | `3000` |
 | `NODE_ENV` | Optional | Already baked into the provided Docker image as `production` (see `Dockerfile`) — you don't need to set it separately. Also flips the session cookie's `Secure` flag on, which **requires HTTPS** in front of the app — see below. | `production` |
-| `SEED_ON_BOOT` | Optional | ⚠️ **Defaults to `true` on this entry point** — the app seeds ~3,000 synthetic demo assets on first boot unless this is explicitly set to `false`. Set `SEED_ON_BOOT=false` for a real deployment that shouldn't start with fake data. | `false` |
-| `SEED_COUNT` | Optional | How many synthetic assets to generate if seeding is on. Only relevant if `SEED_ON_BOOT` isn't `false`. Defaults to `3000`. | `3000` |
+| `SEED_ON_BOOT` | Optional | **Opt-in — defaults to off on every entry point.** Set to `"true"` only for a throwaway demo/test database: it seeds ~3,000 synthetic fake assets into the Register on first boot if the `assets` table is empty. Leave unset (or `"false"`) for any real deployment — a fresh/migrated production database is never auto-populated with fake data. | `false` |
+| `SEED_COUNT` | Optional | How many synthetic assets to generate if seeding is on. Only relevant if `SEED_ON_BOOT=true`. Defaults to `3000`. | `3000` |
+
+**Why `SEED_ON_BOOT` defaults to off:** it used to default to *on* for the local/Render/
+Docker entry point (opt-out, not opt-in) — convenient for a solo `npm run dev` with zero
+setup, but that same default silently populated a real production deployment's Register
+with 3,000 fake assets on its first boot, discovered only after the fact. Flipped to
+opt-in everywhere so this can't happen again; set it explicitly to `true` if you actually
+want the synthetic dataset (local dev, a demo environment, load testing).
 
 **HTTPS note:** with `NODE_ENV=production` (baked into the image), the session cookie
 is set `Secure`, which browsers silently drop over plain HTTP on anything but

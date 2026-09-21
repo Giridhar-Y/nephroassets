@@ -31,7 +31,7 @@ async function getApp() {
     const buildPromise = (async () => {
       const app = await buildApp();
       await applySchema();
-      // Unlike the local/Render entry (index.ts), this defaults to NOT seeding — a
+      // Opt-in, same convention as the local/Render/Docker entry (index.ts) — a
       // production Supabase database is expected to already hold the migrated data, and
       // silently seeding 3,000 synthetic demo rows into it on first cold start would be
       // exactly the kind of surprise a migration shouldn't produce. Set SEED_ON_BOOT=true
