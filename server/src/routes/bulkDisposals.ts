@@ -16,7 +16,7 @@ import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { logAssetActivity } from "./assetActivityLog.js";
-import { invalidateDashboardTotalsCache } from "../db/reportTotalsCache.js";
+import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
@@ -263,10 +263,10 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       }
     }
 
-    // Awaited — see assets.ts's bustDashboardTotalsCache for why. getPool() fresh rather
+    // Awaited — see assets.ts's bustReportTotalsCache for why. getPool() fresh rather
     // than reusing a `db` local — the existing one in this route is scoped to a
     // narrower if-block that doesn't reach this final return.
-    if (processed > 0) await invalidateDashboardTotalsCache(await getPool()).catch(() => {});
+    if (processed > 0) await invalidateReportTotalsCache(await getPool()).catch(() => {});
 
     // Disposals never create a new asset — every processed row is an update. Commit path
     // keeps its existing response shape — data is preview-only.

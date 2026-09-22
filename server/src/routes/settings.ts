@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getPool } from "../db/pool.js";
 import { mapSettingsRow, type SettingsRow } from "../db/mappers.js";
 import { requirePermission } from "../auth/middleware.js";
+import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 
 const updateSettingsSchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -55,6 +56,19 @@ export default async function settingsRoutes(app: FastifyInstance) {
        ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
       [asAt, fyStart, fyEnd, daysInFy]
     );
+    // dashboard-totals/dashboard-trend/audit-reconciliation all derive their figures
+    // from FY Start/End/Days-in-FY (via requireFySettings), but none of that is part of
+    // their cache key (only asAt/center/subClassification/fyStart/fyEnd-override are) —
+    // a structural FY change has to bust the whole cache explicitly, the same way an
+    // asset write already does (see assets.ts's bustReportTotalsCache), or a cached
+    // entry for the same asAt keeps reflecting the PRE-change FY window indefinitely
+    // (well past the 15-minute TTL, since nothing here would naturally expire it sooner
+    // — this isn't the same "bounded by TTL" gap the other missed call sites are). The
+    // lightweight AS_AT-only route below does NOT need this: asAt is already part of
+    // every cache key, so a new AS_AT is a cache miss on its own, no explicit bust
+    // needed — busting there too would defeat the cache on the header's daily picker,
+    // which is used far more often than this structural form.
+    await invalidateReportTotalsCache(db).catch(() => {});
     return { asAt, fyStart, fyEnd, daysInFy };
   });
 
@@ -127,6 +141,10 @@ export default async function settingsRoutes(app: FastifyInstance) {
     } finally {
       client.release();
     }
+    // Same reasoning as the plain PUT /api/settings above — DAYS_FY feeds directly into
+    // every far_calc_component() call these cached reports make, and isn't itself part
+    // of any of their cache keys.
+    await invalidateReportTotalsCache(db).catch(() => {});
     return mapSettingsRow({ ...rows[0], days_in_fy: parsed.data.daysInFy });
   });
 

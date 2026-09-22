@@ -23,7 +23,15 @@ export async function startTestPostgres(): Promise<void> {
     port: PORT,
     user: USER,
     password: PASSWORD,
-    persistent: false
+    persistent: false,
+    // Without this, initdb inherits the host OS's default locale/codepage — on a
+    // Windows dev machine that's often WIN1252, not UTF8. Real Postgres deployments
+    // (Supabase, RDS, any standard Linux initdb) default to UTF8, so this was invisible
+    // until a real payload containing a non-ASCII character (a genuine Unicode minus
+    // sign "−" in Audit Reconciliation's check messages, not a plain hyphen) got stored
+    // — INSERT then fails with "character ... has no equivalent in encoding WIN1252".
+    // Forcing UTF8 here matches what every real deployment already gets for free.
+    initdbFlags: ["--encoding=UTF8", "--locale=C"]
   });
   await instance.initialise();
   await instance.start();

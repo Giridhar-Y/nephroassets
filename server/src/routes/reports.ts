@@ -4,7 +4,13 @@ import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
 import { getCachedReport, reportCacheKey, setCachedReport } from "../db/reportCache.js";
-import { dashboardTotalsCacheKey, getCachedDashboardTotals, setCachedDashboardTotals } from "../db/reportTotalsCache.js";
+import {
+  auditReconciliationCacheKey,
+  dashboardTotalsCacheKey,
+  dashboardTrendCacheKey,
+  getCachedReportTotals,
+  setCachedReportTotals
+} from "../db/reportTotalsCache.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { centerScopeSql, isCenterInScope } from "../auth/centerScope.js";
 import { mapAssetRow, mapTransferRow } from "../db/mappers.js";
@@ -1692,6 +1698,11 @@ export default async function reportsRoutes(app: FastifyInstance) {
     return locationResult;
   });
 
+  // Same persistent cross-instance cache as dashboard-totals/dashboard-trend above and
+  // the same reason: computeReconciliationItems runs a full far_calc_component() scan
+  // with no other selective filter (every Sub Classification's figures, every asset in
+  // scope) — the same class of query that measured minutes at real scale, now paid
+  // fresh on every Audit Reconciliation load instead of just once per 15-minute window.
   app.get("/api/reports/audit-reconciliation", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -1705,8 +1716,22 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
+    const cacheKey = auditReconciliationCacheKey({
+      asAt: fy.asAt,
+      fyStart: fy.fyStart,
+      fyEnd: fy.fyEnd,
+      centerScope: req.user!.centerScope
+    });
+    const cached = await getCachedReportTotals<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: unknown }>(
+      db,
+      cacheKey
+    );
+    if (cached) return cached;
+
     const items = await computeReconciliationItems(db, fy, req.user!);
-    return { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
+    const result = { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
+    await setCachedReportTotals(db, cacheKey, result);
+    return result;
   });
 
   // Audit Reconciliation — Export to Excel: same three-block (C1 / C2 / Combined)
@@ -2026,17 +2051,22 @@ export default async function reportsRoutes(app: FastifyInstance) {
       subClassification: parsed.data.subClassification,
       centerScope: req.user!.centerScope
     });
-    const cached = await getCachedDashboardTotals(db, cacheKey);
+    const cached = await getCachedReportTotals(db, cacheKey);
     if (cached) return cached;
 
     const result = await computeDashboardTotals(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    await setCachedDashboardTotals(db, cacheKey, result);
+    await setCachedReportTotals(db, cacheKey, result);
     return result;
   });
 
+  // Same persistent cross-instance cache as dashboard-totals above, same reason: this
+  // is the OTHER query that measured minutes at real scale with no other selective
+  // filter to fall back on (see computeDashboardTrend's own comment) — recomputing it
+  // fresh on every single Dashboard load was the actual bottleneck a real production
+  // deployment hit once real data volume grew, not anything an index could fix.
   app.get("/api/reports/dashboard-trend", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = dashboardSummaryQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -2049,9 +2079,20 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: "Financial year settings have not been configured yet." };
     }
-    return computeDashboardTrend(db, fy, req.user!, {
+    const cacheKey = dashboardTrendCacheKey({
+      asAt: fy.asAt,
+      center: parsed.data.center,
+      subClassification: parsed.data.subClassification,
+      centerScope: req.user!.centerScope
+    });
+    const cached = await getCachedReportTotals(db, cacheKey);
+    if (cached) return cached;
+
+    const result = await computeDashboardTrend(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
+    await setCachedReportTotals(db, cacheKey, result);
+    return result;
   });
 }

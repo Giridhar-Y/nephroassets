@@ -23,7 +23,13 @@ export async function ensureDevPostgres(): Promise<string> {
     port: PORT,
     user: USER,
     password: PASSWORD,
-    persistent: true
+    persistent: true,
+    // Same reasoning as testPostgres.ts's identical flag — without it, initdb inherits
+    // the host OS's default locale/codepage (often WIN1252 on Windows, not UTF8),
+    // unlike every real deployment. Only takes effect on a genuinely fresh DATA_DIR —
+    // see alreadyInitialised above; an existing local .pgdata keeps whatever encoding
+    // it was originally created with.
+    initdbFlags: ["--encoding=UTF8", "--locale=C"]
   });
 
   if (!alreadyInitialised) {

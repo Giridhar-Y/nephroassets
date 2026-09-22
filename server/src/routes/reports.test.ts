@@ -90,6 +90,14 @@ describe("Audit Reconciliation report", () => {
 
   beforeAll(async () => {
     const db = await getPool();
+    // Defensive, same reasoning as the Dashboard block's own beforeAll below — this
+    // block's fixtures are fixed for its whole lifetime (beforeAll, not beforeEach), so
+    // there's no risk of it going stale against ITSELF, but audit-reconciliation now
+    // shares the persistent report_totals_cache table (a real DB table, not in-memory
+    // state that resets between files/blocks) — a stale row left by an earlier test
+    // reusing the same asAt/fyStart/fyEnd/centerScope combination would otherwise serve
+    // wrong figures here.
+    await clearReportTotalsCacheForTests(db);
     await db.query(
       `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, $4)
        ON CONFLICT (id) DO UPDATE SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4`,
@@ -695,10 +703,14 @@ describe("Audit Reconciliation report", () => {
 
         // Roll Settings forward: 2025-26 becomes the (new) current FY — requireFySettings
         // re-fetches settings fresh on every request, no caching, so this must be picked
-        // up on the very next call with no server restart needed.
+        // up on the very next call with no server restart needed. Raw SQL, not the real
+        // PUT /api/settings route, so — unlike a real Settings edit — this doesn't bust
+        // report_totals_cache on its own; clearing it explicitly here is the test-only
+        // equivalent (see clearReportTotalsCacheForTests's own doc comment).
         await db.query(
           `UPDATE settings SET as_at = '2026-03-31', fy_start = '2025-04-01', fy_end = '2026-03-31', days_in_fy = 365 WHERE id = TRUE`
         );
+        await clearReportTotalsCacheForTests(db);
 
         const afterRollover = await authedInject(app, {
           method: "GET",
@@ -714,11 +726,15 @@ describe("Audit Reconciliation report", () => {
         expect(formerlyCurrentNow.json().isCurrentFy).toBe(false);
       } finally {
         // Restore — every other test in this describe block assumes FY_START/FY_END/AS_AT
-        // (2026-27) are the current Settings FY.
+        // (2026-27) are the current Settings FY. Same reasoning as above: raw SQL, so
+        // the persistent cache needs an explicit test-only clear too, or a later test
+        // reusing this exact asAt/fyStart/fyEnd would get one of THIS test's cached
+        // (now-stale-again) figures instead of recomputing against the restored settings.
         await db.query(
           `UPDATE settings SET as_at = $1, fy_start = $2, fy_end = $3, days_in_fy = $4 WHERE id = TRUE`,
           [AS_AT, FY_START, FY_END, DAYS_IN_FY]
         );
+        await clearReportTotalsCacheForTests(db);
       }
     });
 
@@ -2393,6 +2409,11 @@ describe("Audit Reconciliation: deliberately still includes assets disposed befo
     await db.query(`DELETE FROM transfers`);
     await db.query(`DELETE FROM assets`);
     clearReportCacheForTests();
+    // audit-reconciliation now caches in report_totals_cache (a real DB table, not
+    // in-memory) — this block deletes and re-inserts assets every test but reuses the
+    // same default asAt/fyStart/fyEnd, so without this a later test would get an
+    // earlier test's stale cached figures instead of reflecting its own fresh fixture.
+    await clearReportTotalsCacheForTests(db);
   });
 
   it("still reconciles a Sub Classification whose only asset was disposed before FY Start (unlike the Register/other reports)", async () => {
