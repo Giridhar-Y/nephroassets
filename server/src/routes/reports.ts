@@ -34,7 +34,7 @@ import {
 import { buildExceptionPredicate, EPSILON, EXCEPTION_KEYS, type ExceptionKey } from "./exceptionPredicates.js";
 import { csvLine, EXPORT_COLUMNS, resolveLabel, SQL_SUM_EXPRESSIONS, type LabelContext } from "./assetsExport.js";
 
-async function requireFySettings(
+export async function requireFySettings(
   db: Awaited<ReturnType<typeof getPool>>,
   overrides?: { asAt?: string; fyStart?: string; fyEnd?: string }
 ) {
@@ -674,7 +674,7 @@ interface TransferDepreciationLocationRow {
   totalDepreciation: number;
 }
 
-type Fy = { asAt: string; fyStart: string; fyEnd: string; daysInFy: number };
+export type Fy = { asAt: string; fyStart: string; fyEnd: string; daysInFy: number };
 type Db = Awaited<ReturnType<typeof getPool>>;
 
 /** Validates every condition once (against a scratch params array, discarded) so a bad
@@ -1287,7 +1287,7 @@ async function computeDashboardFast(db: Db, fy: Fy, user: Pick<AuthedUser, "cent
 /** Slow piece 1: the full far_calc_component() totals scan (Gross Block, Acc Dep, NBV,
  *  Disposal P&L, exception counts) — everything that genuinely needs the calc engine,
  *  now its own request instead of racing the trend query for the same CPU. */
-async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+export async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
   const totalsBase = buildDashboardCalcCte(fy, user, filters);
   const fyStartIdx = totalsBase.params.push(fy.fyStart);
   const asAtIdx = totalsBase.params.push(fy.asAt);
@@ -1399,7 +1399,7 @@ async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUser, "ce
  *  same real calc engine, just read outside the window it was designed to be precise
  *  for. If this needs to be exact, or stays too slow for comfort as data keeps growing,
  *  revisit with a monthly snapshot table — not needed for v1. */
-async function computeDashboardTrend(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
+export async function computeDashboardTrend(db: Db, fy: Fy, user: Pick<AuthedUser, "centerScope">, filters: DashboardFilters) {
   const trendDates = trailingQuarterEnds(fy.asAt, 6);
   const { sql, params } = buildDashboardTrendSql(trendDates, fy, user, filters);
   const { rows } = await db.query<{ as_at: string; nbv: string }>(sql, params);

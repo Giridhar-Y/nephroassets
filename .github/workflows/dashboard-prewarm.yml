@@ -1,0 +1,46 @@
+# Keeps Dashboard's report_totals_cache warm on the Vercel deployment — see
+# server/src/scripts/prewarmDashboard.ts's own header comment for why this has to run
+# OUTSIDE Vercel entirely (verified: even an isolated dashboard-totals call already
+# hits Vercel's own function timeout on real production data, so a Vercel Cron job
+# would fail the exact same way). A GitHub Actions runner has no comparable time
+# limit for a job this short, so it's a natural fit for a trigger that just needs to
+# run occasionally with no execution-time pressure.
+#
+# Requires two repository secrets (Settings → Secrets and variables → Actions):
+#   DATABASE_URL — the same Supabase database the Vercel deployment uses.
+#   JWT_SECRET   — any value works (this script never signs/verifies a real session,
+#                  but it's transitively required at import time — see
+#                  prewarmDashboard.ts's own comment). Reusing the real deployment's
+#                  value is fine, a throwaway one works equally well.
+# This workflow does nothing useful without both set — a missing one fails the run
+# loudly (visible in the Actions tab), not a silent no-op.
+#
+# Every 10 minutes, same cadence as the Docker deployment's in-process scheduler
+# (server/src/index.ts) — comfortably inside the cache's 15-minute TTL. GitHub's
+# own docs note scheduled workflows aren't guaranteed to fire exactly on time
+# (queued behind other scheduled jobs during high load) — fine here, since a few
+# minutes' delay just means a slightly later warm, not a failure; the 15-minute TTL
+# already has margin built in for this.
+name: Dashboard cache pre-warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  prewarm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+        working-directory: server
+      - run: npx tsx src/scripts/prewarmDashboard.ts
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
