@@ -21,12 +21,28 @@
 # (queued behind other scheduled jobs during high load) — fine here, since a few
 # minutes' delay just means a slightly later warm, not a failure; the 15-minute TTL
 # already has margin built in for this.
+#
+# concurrency below: measured live against real production (219,329+ assets) — a
+# fully-cold run (every date/endpoint combination missing at once) took 6m16s, well
+# over half the 10-minute schedule interval. Without a guard, a slow run could still
+# be going when the next scheduled tick fires, and two instances hitting the same
+# Supabase compute concurrently is exactly the kind of contention this whole feature
+# exists to avoid (see reports.ts's own history of that exact problem). Same goal as
+# server/src/index.ts's in-process `prewarmRunning` guard, closest GitHub-native
+# equivalent: `cancel-in-progress: false` queues a same-group run instead of starting
+# it in parallel — the underlying job is idempotent and cheap to re-run (skips
+# anything already cached), so queuing behind the current run is safe and simpler
+# than the alternative (cancelling whichever one is older).
 name: Dashboard cache pre-warm
 
 on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch: {}
+
+concurrency:
+  group: dashboard-prewarm
+  cancel-in-progress: false
 
 jobs:
   prewarm:
