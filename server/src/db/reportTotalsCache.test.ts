@@ -102,19 +102,19 @@ describe("report_totals_cache: get/set/TTL/invalidate", () => {
     expect(await getCachedReportTotals<{ v: number }>(db, key)).toEqual({ v: 2 });
   });
 
-  it("a row older than the 15-minute TTL is treated as a miss, not served stale", async () => {
+  it("a row older than the 6-hour TTL is treated as a miss, not served stale", async () => {
     const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
     await db.query(
-      `INSERT INTO report_totals_cache (cache_key, payload, computed_at) VALUES ($1, $2, NOW() - INTERVAL '16 minutes')`,
+      `INSERT INTO report_totals_cache (cache_key, payload, computed_at) VALUES ($1, $2, NOW() - INTERVAL '6 hours 1 minute')`,
       [key, JSON.stringify({ stale: true })]
     );
     expect(await getCachedReportTotals(db, key)).toBeUndefined();
   });
 
-  it("a row just inside the 15-minute TTL is still served", async () => {
+  it("a row just inside the 6-hour TTL is still served", async () => {
     const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
     await db.query(
-      `INSERT INTO report_totals_cache (cache_key, payload, computed_at) VALUES ($1, $2, NOW() - INTERVAL '14 minutes')`,
+      `INSERT INTO report_totals_cache (cache_key, payload, computed_at) VALUES ($1, $2, NOW() - INTERVAL '5 hours 59 minutes')`,
       [key, JSON.stringify({ fresh: true })]
     );
     expect(await getCachedReportTotals(db, key)).toEqual({ fresh: true });

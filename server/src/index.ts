@@ -27,8 +27,10 @@ await app.listen({ port, host: "0.0.0.0" });
 // comment for why this matters at real scale) — only meaningful on a long-running
 // process like this one, not the Vercel entry (api/index.ts), where a fresh
 // serverless instance per invocation would never see a setInterval actually persist.
-// 10 minutes: comfortably inside the cache's 15-minute TTL, so a real user's request
-// should essentially never be the one paying the cold-compute cost. In-flight guard
+// 10 minutes: this deployment's own scheduler, not subject to the GitHub Actions
+// scheduling unreliability that motivated raising the cache TTL to 6 hours (see
+// db/reportTotalsCache.ts) — a long-running process's setInterval fires exactly when
+// it says it will. In-flight guard
 // (`running`) so a slow pre-warm pass can't overlap with the next tick; errors are
 // logged and swallowed, same as every other best-effort cache-maintenance call in
 // this app (see assets.ts's bustReportTotalsCache) — a failed pre-warm just means the

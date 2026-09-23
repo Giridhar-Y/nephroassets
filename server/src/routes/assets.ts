@@ -177,7 +177,7 @@ function encodeCursor(sortValue: string, farId: string): string {
  *  DELETE against the same pool the request already holds; not awaiting it would race
  *  the very next dashboard/report load against a DELETE that may not have committed
  *  yet. Best-effort only in the sense that a failure here doesn't fail the write it
- *  followed (swallowed, not rethrown) — the 15-minute TTL (db/reportTotalsCache.ts)
+ *  followed (swallowed, not rethrown) — the TTL (db/reportTotalsCache.ts)
  *  still bounds how stale a failed invalidation can leave the cache. Clears
  *  dashboard-totals, dashboard-trend, and audit-reconciliation's cached figures alike —
  *  one shared table, one blanket clear (see reportTotalsCache.ts's own comment). */

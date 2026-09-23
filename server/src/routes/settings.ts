@@ -62,8 +62,9 @@ export default async function settingsRoutes(app: FastifyInstance) {
     // a structural FY change has to bust the whole cache explicitly, the same way an
     // asset write already does (see assets.ts's bustReportTotalsCache), or a cached
     // entry for the same asAt keeps reflecting the PRE-change FY window indefinitely
-    // (well past the 15-minute TTL, since nothing here would naturally expire it sooner
-    // — this isn't the same "bounded by TTL" gap the other missed call sites are). The
+    // (well past the TTL — now 6 hours, see reportTotalsCache.ts — since nothing here
+    // would naturally expire it sooner; this isn't the same "bounded by TTL" gap the
+    // other missed call sites are, it's actively wrong for as long as it lasts). The
     // lightweight AS_AT-only route below does NOT need this: asAt is already part of
     // every cache key, so a new AS_AT is a cache miss on its own, no explicit bust
     // needed — busting there too would defeat the cache on the header's daily picker,

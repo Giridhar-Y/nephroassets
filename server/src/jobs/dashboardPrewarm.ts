@@ -13,9 +13,9 @@ import {
 } from "../db/reportTotalsCache.js";
 
 // Populates report_totals_cache BEFORE a real user's request needs it — see this
-// project's own incident history: dashboard-totals/dashboard-trend's cache (15-minute
-// TTL, see reportTotalsCache.ts) only ever helps the *second* request for a given
-// asAt. The *first* request for a never-before-cached asAt still pays the full
+// project's own incident history: dashboard-totals/dashboard-trend's cache (see
+// reportTotalsCache.ts) only ever helps the *second* request for a given asAt. The
+// *first* request for a never-before-cached asAt still pays the full
 // far_calc_component() scan inline, and at real production scale (219,329+ assets)
 // that scan measured 60s+ against real Supabase Pro — past Vercel's function timeout.
 // A cache that's never actually warm before a real user hits it doesn't help at all.

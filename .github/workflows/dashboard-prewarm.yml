@@ -15,12 +15,19 @@
 # This workflow does nothing useful without both set — a missing one fails the run
 # loudly (visible in the Actions tab), not a silent no-op.
 #
-# Every 10 minutes, same cadence as the Docker deployment's in-process scheduler
-# (server/src/index.ts) — comfortably inside the cache's 15-minute TTL. GitHub's
-# own docs note scheduled workflows aren't guaranteed to fire exactly on time
-# (queued behind other scheduled jobs during high load) — fine here, since a few
-# minutes' delay just means a slightly later warm, not a failure; the 15-minute TTL
-# already has margin built in for this.
+# Configured for every 10 minutes, matching the Docker deployment's in-process
+# scheduler — but GitHub's own `schedule:` trigger does NOT actually honor that on
+# this account/plan. Measured directly (2026-09-23 incident): real gaps between
+# scheduled runs of 2.5-4.5 hours, not 10 minutes — confirmed via `gh run list`
+# showing this workflow's own run history, not just GitHub's general "may be delayed"
+# disclaimer. This is why db/reportTotalsCache.ts's TTL is 6 hours, not the original
+# 15 minutes: at 15 minutes, the cache reliably expired between real runs of THIS
+# schedule, so the next live request paid the full cold-compute cost anyway — which
+# then cascaded into pool.ts's connection limit saturating and degrading every other
+# route, not just Dashboard. The cron expression is left at */10 (harmless — GitHub
+# just runs it whenever it actually gets around to it) while a genuinely reliable
+# trigger (an external cron service calling this workflow's dispatch API, or
+# Supabase's own pg_cron) is still being evaluated, not yet decided.
 #
 # concurrency below: measured live against real production (219,329+ assets) — a
 # fully-cold run (every date/endpoint combination missing at once) took 6m16s, well

@@ -1702,7 +1702,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
   // the same reason: computeReconciliationItems runs a full far_calc_component() scan
   // with no other selective filter (every Sub Classification's figures, every asset in
   // scope) — the same class of query that measured minutes at real scale, now paid
-  // fresh on every Audit Reconciliation load instead of just once per 15-minute window.
+  // fresh on every Audit Reconciliation load instead of just once per TTL window.
   app.get("/api/reports/audit-reconciliation", { preHandler: requirePermission("reports", "view") }, async (req, reply) => {
     const parsed = reconciliationPeriodQuerySchema.safeParse(req.query);
     if (!parsed.success) {

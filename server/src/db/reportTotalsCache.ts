@@ -17,10 +17,30 @@ import type pg from "pg";
 // comment for why a shared "just clear everything" is the right tradeoff here, not
 // per-endpoint invalidation.
 //
-// TTL-based expiry, same 15-minute window this was requested with, is checked in SQL
-// (`computed_at > NOW() - INTERVAL '15 minutes'`) rather than read back and compared in
-// JS, so a stale row never round-trips out of the database at all.
-const TTL_INTERVAL_SQL = "15 minutes";
+// TTL-based expiry is checked in SQL (`computed_at > NOW() - INTERVAL '...'`) rather
+// than read back and compared in JS, so a stale row never round-trips out of the
+// database at all.
+//
+// Was 15 minutes, matching jobs/dashboardPrewarm.ts's intended 10-minute refresh
+// cadence — raised to 6 hours after a real production incident (2026-09-23) exposed a
+// gap between that INTENDED cadence and GitHub Actions' ACTUAL one: the scheduled
+// trigger backing the pre-warm job (dashboard-prewarm.yml) is real but unreliable at
+// short intervals — measured gaps of 2.5-4.5 hours between successive runs on this
+// account/plan, not the configured 10 minutes (a documented GitHub Actions platform
+// characteristic for `schedule:` on non-Enterprise plans, not a bug in the workflow
+// config — see that file's own comment). At 15 minutes, the cache reliably expired
+// between real pre-warm runs, so the very next live request for that date paid the
+// same 60s+ cold-compute cost the pre-warm job exists to avoid — which then cascades
+// into pool.ts's `max: 5` connection limit saturating and degrading EVERY other route,
+// not just this one (the exact incident class this file's own header already
+// describes). 6 hours gives real margin over the worst gap observed so far while an
+// actually-reliable trigger (an external cron service or Supabase's own pg_cron
+// calling this repo's GitHub Actions dispatch API, still undecided — see the incident
+// writeup) is evaluated; every write-route invalidation (bustReportTotalsCache) still
+// fires immediately regardless of this TTL, so a stale read only happens when NOTHING
+// has changed AND the pre-warm job also hasn't managed to run — not "up to 6 hours
+// behind a real edit."
+const TTL_INTERVAL_SQL = "6 hours";
 
 /** Stable, order-independent key for one (asAt, center, subClassification, centerScope)
  *  combination — centerScope is part of the key (not just the named filters) because two
