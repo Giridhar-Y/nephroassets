@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage.js";
 import type { DashboardFastSummary, DashboardTotals, DashboardTrend } from "../api/client.js";
-import { formatCurrency, formatCurrencyCompact } from "../lib/format.js";
+import { formatCurrency, formatCurrencyCompact, formatDateTime } from "../lib/format.js";
 
 // Expected currency text always comes from the app's own formatCurrency, never
 // hand-typed — Intl's actual digit grouping for large values isn't the plain
@@ -64,7 +64,9 @@ const TOTALS: DashboardTotals = {
     allTime: {
       gains: 250000,
       losses: -80000,
-      disposalCount: 5
+      disposalCount: 5,
+      totalDeletions: 900000,
+      saleProceeds: 1100000
     }
   },
   exceptions: {
@@ -72,15 +74,17 @@ const TOTALS: DashboardTotals = {
     fullyDepreciatedActive: EXCEPTION_ZERO,
     pastUsefulLifeActive: EXCEPTION_ZERO,
     bigDisposalSwings: EXCEPTION_ZERO,
-    missingData: EXCEPTION_ZERO
-  }
+    missingData: { count: 213853 }
+  },
+  computedAt: "2026-09-23T08:30:00.000Z"
 };
 
 const TREND: DashboardTrend = {
   nbvTrend: [
     { asAt: "2025-12-31", nbv: 58000000000 },
     { asAt: "2026-06-30", nbv: 59241165800 }
-  ]
+  ],
+  computedAt: "2026-09-23T08:15:00.000Z"
 };
 
 afterEach(() => {
@@ -185,17 +189,17 @@ describe("DashboardPage: new KPI fields", () => {
     expect(screen.queryByText("2 disposals")).toBeNull();
   });
 
-  it("always shows FYTD Deletions and Sale Proceeds regardless of the scope toggle", async () => {
+  it("switches Deletions and Sale Proceeds with the scope toggle too", async () => {
     await renderDashboard();
-    const deletions = new RegExp(`Deletions \\(Cost, FYTD\\) ${escapeRegExp(formatCurrency(TOTALS.disposalPL.totalDeletions))}`);
-    const proceeds = new RegExp(`Sale Proceeds \\(FYTD\\) ${escapeRegExp(formatCurrency(TOTALS.disposalPL.saleProceeds))}`);
-    expect(screen.getByText(deletions)).toBeTruthy();
-    expect(screen.getByText(proceeds)).toBeTruthy();
+    const deletions = (v: number) => new RegExp(`Deletions \\(Cost\\) ${escapeRegExp(formatCurrency(v))}`);
+    const proceeds = (v: number) => new RegExp(`Sale Proceeds ${escapeRegExp(formatCurrency(v))}`);
+    expect(screen.getByText(deletions(TOTALS.disposalPL.totalDeletions))).toBeTruthy();
+    expect(screen.getByText(proceeds(TOTALS.disposalPL.saleProceeds))).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Since Inception" }));
 
-    expect(screen.getByText(deletions)).toBeTruthy();
-    expect(screen.getByText(proceeds)).toBeTruthy();
+    expect(screen.getByText(deletions(TOTALS.disposalPL.allTime.totalDeletions))).toBeTruthy();
+    expect(screen.getByText(proceeds(TOTALS.disposalPL.allTime.saleProceeds))).toBeTruthy();
   });
 });
 
@@ -245,5 +249,44 @@ describe("DashboardPage: Sub Classification/Location breakdown panels removed", 
     await renderDashboard();
     expect(screen.queryByText(/By Sub Classification/)).toBeNull();
     expect(screen.queryByText(/By Location/)).toBeNull();
+  });
+});
+
+describe("DashboardPage: header, Missing Data tile, refresh and loading", () => {
+  it("has no page title/subtitle and no Missing Data tile, but keeps the other 4 exception tiles", async () => {
+    await renderDashboard();
+    expect(screen.queryByText("Finance FAR Dashboard")).toBeNull();
+    expect(screen.queryByText(/single-screen overview/)).toBeNull();
+    expect(screen.queryByText("Missing Data")).toBeNull();
+    expect(screen.queryByText("213853")).toBeNull();
+    for (const label of ["Negative NBV", "Fully Depreciated, Still Active", "Past Useful Life, Still Active", "Big Disposal Swings (> ₹1L)"]) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+  });
+
+  it("shows the older cached timestamp as Last updated", async () => {
+    await renderDashboard();
+    expect(screen.getByText(`Last updated: ${formatDateTime(TREND.computedAt)}`)).toBeTruthy();
+  });
+
+  it("Refresh re-fetches all 3 pieces and never shows the old figures while the new ones load", async () => {
+    const fetchMock = await renderDashboard();
+    let releaseTotals!: () => void;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes("dashboard-totals"))
+        return new Promise((resolve) => (releaseTotals = () => resolve(jsonResponse(TOTALS))));
+      if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+      return Promise.resolve(jsonResponse(FAST));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    // Totals request is in flight: the old Gross Block must not be on screen.
+    expect(screen.queryByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeNull();
+    expect(screen.getByText("Loading…")).toBeTruthy();
+
+    releaseTotals();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    await waitFor(() => expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy());
   });
 });

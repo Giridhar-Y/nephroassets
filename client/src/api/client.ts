@@ -800,7 +800,7 @@ function reconciliationParams(period: ReconciliationPeriod): URLSearchParams {
 
 export function fetchAuditReconciliation(
   period: ReconciliationPeriod
-): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[] }> {
+): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[]; computedAt: string }> {
   return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`);
 }
 
@@ -930,6 +930,8 @@ export interface DashboardTotals {
       gains: number;
       losses: number;
       disposalCount: number;
+      totalDeletions: number;
+      saleProceeds: number;
     };
   };
   // Counts only — a tile's drill-through opens Register itself
@@ -937,11 +939,14 @@ export interface DashboardTotals {
   // with real pagination/sorting/export, rather than this endpoint carrying a second,
   // capped copy of them.
   exceptions: Record<import("../lib/exceptions.js").ExceptionKey, DashboardExceptionResult>;
+  /** When the server's persistent cache computed this payload (ISO) — "Last updated". */
+  computedAt: string;
 }
 
 /** Slow piece 2 — the batched 6-trailing-quarter-end NBV trend. */
 export interface DashboardTrend {
   nbvTrend: DashboardNbvTrendPoint[];
+  computedAt: string;
 }
 
 interface DashboardQueryOpts {

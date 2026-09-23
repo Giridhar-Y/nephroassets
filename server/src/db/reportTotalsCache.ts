@@ -55,7 +55,9 @@ export function dashboardTotalsCacheKey(parts: {
   centerScope: Set<string> | null;
 }): string {
   const scopeKey = parts.centerScope === null ? null : [...parts.centerScope].sort();
-  return `dashboard-totals:${JSON.stringify({
+  // v2: disposalPL.allTime gained totalDeletions/saleProceeds — the bump keeps an
+  // old-shape row from being served to a client that expects the new fields.
+  return `dashboard-totals:v2:${JSON.stringify({
     asAt: parts.asAt,
     center: parts.center ?? null,
     subClassification: parts.subClassification ?? null,
@@ -102,21 +104,28 @@ export function auditReconciliationCacheKey(parts: {
   })}`;
 }
 
-export async function getCachedReportTotals<T>(db: pg.Pool, cacheKey: string): Promise<T | undefined> {
-  const { rows } = await db.query<{ payload: T }>(
-    `SELECT payload FROM report_totals_cache WHERE cache_key = $1 AND computed_at > NOW() - INTERVAL '${TTL_INTERVAL_SQL}'`,
+/** The payload comes back with the row's own `computedAt` merged in — what the
+ *  Dashboard/Audit Reconciliation "Last updated" label shows. */
+export async function getCachedReportTotals<T>(db: pg.Pool, cacheKey: string): Promise<(T & { computedAt: string }) | undefined> {
+  const { rows } = await db.query<{ payload: T & { computedAt: string } }>(
+    // Same "…T…Z" ISO shape setCachedReportTotals returns (toISOString), not the
+    // session-timezone offset form jsonb would give a raw timestamptz.
+    `SELECT payload || jsonb_build_object('computedAt', to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) AS payload FROM report_totals_cache WHERE cache_key = $1 AND computed_at > NOW() - INTERVAL '${TTL_INTERVAL_SQL}'`,
     [cacheKey]
   );
   return rows[0]?.payload;
 }
 
-export async function setCachedReportTotals(db: pg.Pool, cacheKey: string, payload: unknown): Promise<void> {
-  await db.query(
+/** Returns the stored `computed_at` (ISO string), same value a later cache hit reports. */
+export async function setCachedReportTotals(db: pg.Pool, cacheKey: string, payload: unknown): Promise<string> {
+  const { rows } = await db.query<{ computed_at: Date }>(
     `INSERT INTO report_totals_cache (cache_key, payload, computed_at)
      VALUES ($1, $2, NOW())
-     ON CONFLICT (cache_key) DO UPDATE SET payload = $2, computed_at = NOW()`,
+     ON CONFLICT (cache_key) DO UPDATE SET payload = $2, computed_at = NOW()
+     RETURNING computed_at`,
     [cacheKey, JSON.stringify(payload)]
   );
+  return rows[0]!.computed_at.toISOString();
 }
 
 /** Full clear, not a per-key bust — called from every write route that can change what

@@ -13,6 +13,7 @@ import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodB
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { EmptyIcon, ErrorIcon, FailIcon, InfoIcon, PassIcon, RetryIcon, ReconciliationIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { RefreshControl } from "../components/ui/RefreshControl.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
@@ -125,6 +126,7 @@ export function AuditReconciliationPage() {
   const [isCurrentFy, setIsCurrentFy] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [computedAt, setComputedAt] = useState<string | null>(null);
 
   // Independent of the app-wide "Figures as of" setting — seeded from it once, on
   // first load, but from then on only this page's own period selector drives what gets
@@ -142,10 +144,13 @@ export function AuditReconciliationPage() {
     if (!period) return;
     setLoading(true);
     setError(null);
+    setItems(null);
+    setComputedAt(null);
     fetchAuditReconciliation(period)
       .then((res) => {
         setItems(res.items);
         setIsCurrentFy(res.isCurrentFy);
+        setComputedAt(res.computedAt);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the reconciliation."))
       .finally(() => setLoading(false));
@@ -164,7 +169,12 @@ export function AuditReconciliationPage() {
           forward correctly: Opening + Additions − Deletions should equal Closing cost, Opening Depreciation + This
           Period's Depreciation − Depreciation Removed should equal Closing Depreciation, and Closing Gross Block −
           Closing Depreciation should equal Closing NBV."
-        actions={<ExportButton url={period ? getAuditReconciliationExportUrl(period) : undefined} />}
+        actions={
+          <div className="flex items-center gap-3">
+            <RefreshControl computedAt={computedAt} loading={loading} onRefresh={load} />
+            <ExportButton url={period ? getAuditReconciliationExportUrl(period) : undefined} />
+          </div>
+        }
       >
         {period && (
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">

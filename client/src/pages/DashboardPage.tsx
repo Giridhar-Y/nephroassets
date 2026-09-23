@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   fetchDashboardSummary,
   fetchDashboardTotals,
@@ -12,11 +12,14 @@ import {
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { formatCurrency, formatCurrencyCompact, formatDateDDMMYYYY } from "../lib/format.js";
-import { ChevronDownIcon, ChevronUpIcon, DashboardIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
-import { PageHeader } from "../components/ui/PageHeader.js";
+import { ChevronDownIcon, ChevronUpIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { RefreshControl } from "../components/ui/RefreshControl.js";
 import { Card } from "../components/ui/Card.js";
 import { StatusBadge } from "../components/ui/Badge.js";
 import { EXCEPTION_KEYS, EXCEPTION_LABELS, EXCEPTION_TONES } from "../lib/exceptions.js";
+
+// Missing Data stays a Register drill-through filter (exceptions.ts), just not a tile here.
+const DASHBOARD_EXCEPTION_KEYS = EXCEPTION_KEYS.filter((key) => key !== "missingData");
 
 // Every card on this page shares the same hover-lift the exception tiles already had
 // (translate up 2px + a slightly deeper shadow) — a small, consistent "alive" touch
@@ -277,38 +280,55 @@ export function DashboardPage() {
   // database CPU at once, at the cost of a slightly later trend render — an easy trade,
   // since fast/totals/trend each already render into their own section as soon as they
   // individually arrive, rather than the page waiting on all three together.
+  //
+  // Every load (first paint, Refresh, an AS_AT change) clears all three pieces first, so
+  // a tile only ever shows figures from the request that's actually current — never the
+  // previous date's numbers dressed up as this one's while the new ones are in flight.
+  // `runId` drops the results of a load a newer one has superseded.
+  const runId = useRef(0);
   const load = useCallback(async () => {
     if (!settings) return;
     const asAt = settings.asAt;
+    const run = ++runId.current;
+    const current = () => run === runId.current;
 
-    setLoadingFast(true);
+    setFast(null);
+    setTotals(null);
+    setTrend(null);
     setFastError(null);
-    try {
-      setFast(await fetchDashboardSummary(asAt));
-    } catch (err) {
-      setFastError(err instanceof Error ? err.message : "Could not load the dashboard.");
-    } finally {
-      setLoadingFast(false);
-    }
-
-    setLoadingTotals(true);
     setTotalsError(null);
+    setTrendError(null);
+    setLoadingFast(true);
+    setLoadingTotals(true);
+    setLoadingTrend(true);
+
     try {
-      setTotals(await fetchDashboardTotals(asAt));
+      const res = await fetchDashboardSummary(asAt);
+      if (current()) setFast(res);
     } catch (err) {
-      setTotalsError(err instanceof Error ? err.message : "Could not load the totals.");
+      if (current()) setFastError(err instanceof Error ? err.message : "Could not load the dashboard.");
     } finally {
-      setLoadingTotals(false);
+      if (current()) setLoadingFast(false);
     }
 
-    setLoadingTrend(true);
-    setTrendError(null);
+    if (!current()) return;
     try {
-      setTrend(await fetchDashboardTrend(asAt));
+      const res = await fetchDashboardTotals(asAt);
+      if (current()) setTotals(res);
     } catch (err) {
-      setTrendError(err instanceof Error ? err.message : "Could not load the trend.");
+      if (current()) setTotalsError(err instanceof Error ? err.message : "Could not load the totals.");
     } finally {
-      setLoadingTrend(false);
+      if (current()) setLoadingTotals(false);
+    }
+
+    if (!current()) return;
+    try {
+      const res = await fetchDashboardTrend(asAt);
+      if (current()) setTrend(res);
+    } catch (err) {
+      if (current()) setTrendError(err instanceof Error ? err.message : "Could not load the trend.");
+    } finally {
+      if (current()) setLoadingTrend(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.asAt, settingsKey]);
@@ -325,12 +345,15 @@ export function DashboardPage() {
   }, [fast, mounted]);
 
   const disposalPL = totals ? (disposalScope === "fytd" ? totals.disposalPL : totals.disposalPL.allTime) : null;
+  // The older of the two cached pieces — the honest "these figures are as fresh as" time.
+  const computedAt = totals && trend ? (totals.computedAt < trend.computedAt ? totals.computedAt : trend.computedAt) : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
-      <PageHeader icon={DashboardIcon} title="Finance FAR Dashboard" subtitle="A single-screen overview of the Fixed Asset Register." />
-
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+        <div className="mb-4 flex justify-end">
+          <RefreshControl computedAt={computedAt} loading={loadingFast || loadingTotals || loadingTrend} onRefresh={load} />
+        </div>
         {[
           { message: fastError, retry: load },
           { message: totalsError, retry: load },
@@ -443,13 +466,9 @@ export function DashboardPage() {
                         Net {formatCurrency(disposalPL.gains + disposalPL.losses)}
                       </span>
                     </div>
-                    {/* Deletions/Sale Proceeds are only tracked FYTD (the export's own
-                        Disposal Inputs group has no all-time total either) — shown fixed
-                        regardless of the gains/losses toggle above, labelled so that's
-                        unambiguous. */}
                     <div className="mt-3 flex justify-between border-t border-gray-100 pt-3 text-[11px] text-gray-500">
-                      <span>Deletions (Cost, FYTD) {formatCurrency(totals.disposalPL.totalDeletions)}</span>
-                      <span>Sale Proceeds (FYTD) {formatCurrency(totals.disposalPL.saleProceeds)}</span>
+                      <span>Deletions (Cost) {formatCurrency(disposalPL.totalDeletions)}</span>
+                      <span>Sale Proceeds {formatCurrency(disposalPL.saleProceeds)}</span>
                     </div>
                   </>
                 ) : (
@@ -486,10 +505,10 @@ export function DashboardPage() {
               </Card>
             </div>
 
-            <div className="grid grid-cols-5 gap-5">
+            <div className="grid grid-cols-4 gap-5">
               {!totals
-                ? Array.from({ length: 5 }).map((_, i) => <SkeletonBar key={i} className="h-20 w-full rounded-xl" />)
-                : EXCEPTION_KEYS.map((key) => {
+                ? DASHBOARD_EXCEPTION_KEYS.map((key) => <SkeletonBar key={key} className="h-20 w-full rounded-xl" />)
+                : DASHBOARD_EXCEPTION_KEYS.map((key) => {
                     const category = totals.exceptions[key];
                     const toneClasses = EXCEPTION_TILE_TONE_CLASSES[EXCEPTION_TONES[key]];
                     const tileContent = (

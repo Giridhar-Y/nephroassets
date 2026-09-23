@@ -1318,6 +1318,8 @@ export async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUs
       disposal_count_all_time: string;
       gains_all_time: string;
       losses_all_time: string;
+      total_deletions_all_time: string;
+      sale_proceeds_all_time: string;
     } & Record<string, string>
   >(
     `${totalsBase.cteSql}
@@ -1348,6 +1350,8 @@ export async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUs
        COUNT(*) FILTER (WHERE date_of_disposal <= $${asAtIdx}::date) AS disposal_count_all_time,
        COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss > 0 AND date_of_disposal <= $${asAtIdx}::date), 0) AS gains_all_time,
        COALESCE(SUM(profit_loss) FILTER (WHERE profit_loss < 0 AND date_of_disposal <= $${asAtIdx}::date), 0) AS losses_all_time,
+       COALESCE(SUM(deletions_c1 + deletions_c2) FILTER (WHERE date_of_disposal <= $${asAtIdx}::date), 0) AS total_deletions_all_time,
+       COALESCE(SUM(sale_value) FILTER (WHERE date_of_disposal <= $${asAtIdx}::date), 0) AS sale_proceeds_all_time,
        ${exceptionCountColumns}
      FROM calc`,
     totalsBase.params
@@ -1374,7 +1378,9 @@ export async function computeDashboardTotals(db: Db, fy: Fy, user: Pick<AuthedUs
       allTime: {
         gains: Number(t.gains_all_time),
         losses: Number(t.losses_all_time),
-        disposalCount: Number(t.disposal_count_all_time)
+        disposalCount: Number(t.disposal_count_all_time),
+        totalDeletions: Number(t.total_deletions_all_time),
+        saleProceeds: Number(t.sale_proceeds_all_time)
       }
     },
     // Counts only — the sample rows this used to carry are gone: a tile's drill-through
@@ -1730,8 +1736,8 @@ export default async function reportsRoutes(app: FastifyInstance) {
 
     const items = await computeReconciliationItems(db, fy, req.user!);
     const result = { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
-    await setCachedReportTotals(db, cacheKey, result);
-    return result;
+    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    return { ...result, computedAt };
   });
 
   // Audit Reconciliation — Export to Excel: same three-block (C1 / C2 / Combined)
@@ -2058,8 +2064,8 @@ export default async function reportsRoutes(app: FastifyInstance) {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    await setCachedReportTotals(db, cacheKey, result);
-    return result;
+    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    return { ...result, computedAt };
   });
 
   // Same persistent cross-instance cache as dashboard-totals above, same reason: this
@@ -2092,7 +2098,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    await setCachedReportTotals(db, cacheKey, result);
-    return result;
+    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    return { ...result, computedAt };
   });
 }

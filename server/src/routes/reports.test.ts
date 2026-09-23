@@ -1909,6 +1909,8 @@ describe("Finance FAR Dashboard summary (GET /api/reports/dashboard-summary + da
     const expectedAllTimeLosses = (inFyPL < 0 ? inFyPL : 0) + (priorFyPL < 0 ? priorFyPL : 0);
     expect(disposalPL.allTime.gains).toBeCloseTo(expectedAllTimeGains, 2);
     expect(disposalPL.allTime.losses).toBeCloseTo(expectedAllTimeLosses, 2);
+    expect(disposalPL.allTime.totalDeletions).toBeCloseTo(100000 + 50000, 2);
+    expect(disposalPL.allTime.saleProceeds).toBeCloseTo(120000 + 40000, 2);
     // The prior-FY disposal is the entire reason allTime and FYTD diverge here — assert
     // that split is real, not a fixture that happened to net to the same number.
     expect(disposalPL.allTime.disposalCount).not.toBe(disposalPL.disposalCount);
