@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTestPool } from "./testClient.js";
 import {
   auditReconciliationCacheKey,
@@ -6,6 +6,7 @@ import {
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
+  getReportDataRevision,
   invalidateReportTotalsCache,
   setCachedReportTotals
 } from "./reportTotalsCache.js";
@@ -55,22 +56,28 @@ describe("dashboardTrendCacheKey", () => {
 
 describe("auditReconciliationCacheKey", () => {
   it("never collides with dashboardTotalsCacheKey/dashboardTrendCacheKey for the same asAt", () => {
-    const recon = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", centerScope: null });
+    const recon = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: null });
     const totals = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
     const trend = dashboardTrendCacheKey({ asAt: "2026-09-11", centerScope: null });
     expect(recon).not.toBe(totals);
     expect(recon).not.toBe(trend);
   });
 
+  it("differs by the resolved daysInFy — a configured 360 and a calendar 365 for the same dates never share a row", () => {
+    const configured = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 360, centerScope: null });
+    const calendar = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: null });
+    expect(configured).not.toBe(calendar);
+  });
+
   it("differs by a fyStart/fyEnd period override, not just asAt", () => {
-    const base = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", centerScope: null });
-    const otherPeriod = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2025-04-01", fyEnd: "2026-03-31", centerScope: null });
+    const base = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: null });
+    const otherPeriod = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2025-04-01", fyEnd: "2026-03-31", daysInFy: 365, centerScope: null });
     expect(base).not.toBe(otherPeriod);
   });
 
   it("is stable regardless of centerScope array order, same as the other two key builders", () => {
-    const a = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", centerScope: new Set(["A", "B"]) });
-    const b = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", centerScope: new Set(["B", "A"]) });
+    const a = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: new Set(["A", "B"]) });
+    const b = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: new Set(["B", "A"]) });
     expect(a).toBe(b);
   });
 });
@@ -86,19 +93,19 @@ describe("report_totals_cache: get/set/TTL/invalidate", () => {
     const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
     expect(await getCachedReportTotals(db, key)).toBeUndefined();
 
-    const setAt = await setCachedReportTotals(db, key, { totals: { grossBlock: 12345 } });
+    const setAt = await setCachedReportTotals(db, key, { totals: { grossBlock: 12345 } }, await getReportDataRevision(db));
 
     const cached = await getCachedReportTotals<{ totals: { grossBlock: number } }>(db, key);
     expect(cached?.totals.grossBlock).toBe(12345);
     // computedAt is the row's own timestamp, identical on the set and every later hit.
-    expect(new Date(cached!.computedAt).getTime()).toBe(new Date(setAt).getTime());
+    expect(new Date(cached!.computedAt).getTime()).toBe(new Date(setAt!).getTime());
     expect(cached!.computedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 
   it("a re-set of the same key overwrites the payload and refreshes computed_at (upsert, not a duplicate row)", async () => {
     const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
-    await setCachedReportTotals(db, key, { v: 1 });
-    await setCachedReportTotals(db, key, { v: 2 });
+    await setCachedReportTotals(db, key, { v: 1 }, await getReportDataRevision(db));
+    await setCachedReportTotals(db, key, { v: 2 }, await getReportDataRevision(db));
 
     const { rows } = await db.query(`SELECT COUNT(*) AS count FROM report_totals_cache WHERE cache_key = $1`, [key]);
     expect(Number(rows[0].count)).toBe(1);
@@ -126,8 +133,8 @@ describe("report_totals_cache: get/set/TTL/invalidate", () => {
   it("invalidateReportTotalsCache clears every key, not just one", async () => {
     const keyA = dashboardTotalsCacheKey({ asAt: "2026-09-11", center: "Center-A", centerScope: null });
     const keyB = dashboardTotalsCacheKey({ asAt: "2026-09-11", center: "Center-B", centerScope: null });
-    await setCachedReportTotals(db, keyA, { a: true });
-    await setCachedReportTotals(db, keyB, { b: true });
+    await setCachedReportTotals(db, keyA, { a: true }, await getReportDataRevision(db));
+    await setCachedReportTotals(db, keyB, { b: true }, await getReportDataRevision(db));
 
     await invalidateReportTotalsCache(db);
 
@@ -138,15 +145,50 @@ describe("report_totals_cache: get/set/TTL/invalidate", () => {
   it("invalidateReportTotalsCache clears dashboard-totals, dashboard-trend, and audit-reconciliation keys alike — one shared table, one blanket clear", async () => {
     const totalsKey = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
     const trendKey = dashboardTrendCacheKey({ asAt: "2026-09-11", centerScope: null });
-    const reconKey = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", centerScope: null });
-    await setCachedReportTotals(db, totalsKey, { totals: true });
-    await setCachedReportTotals(db, trendKey, { trend: true });
-    await setCachedReportTotals(db, reconKey, { recon: true });
+    const reconKey = auditReconciliationCacheKey({ asAt: "2026-09-11", fyStart: "2026-04-01", fyEnd: "2027-03-31", daysInFy: 365, centerScope: null });
+    await setCachedReportTotals(db, totalsKey, { totals: true }, await getReportDataRevision(db));
+    await setCachedReportTotals(db, trendKey, { trend: true }, await getReportDataRevision(db));
+    await setCachedReportTotals(db, reconKey, { recon: true }, await getReportDataRevision(db));
 
     await invalidateReportTotalsCache(db);
 
     expect(await getCachedReportTotals(db, totalsKey)).toBeUndefined();
     expect(await getCachedReportTotals(db, trendKey)).toBeUndefined();
     expect(await getCachedReportTotals(db, reconKey)).toBeUndefined();
+  });
+
+  it("a computation that started before an invalidation is NOT published (mutation during calculation)", async () => {
+    const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
+    const revisionAtStart = await getReportDataRevision(db); // worker starts computing…
+    await invalidateReportTotalsCache(db); // …a write lands and invalidates meanwhile…
+
+    expect(await setCachedReportTotals(db, key, { stale: true }, revisionAtStart)).toBeNull(); // …its late publish is refused
+    expect(await getCachedReportTotals(db, key)).toBeUndefined();
+
+    // A fresh computation against the new revision publishes normally.
+    expect(await setCachedReportTotals(db, key, { fresh: true }, await getReportDataRevision(db))).not.toBeNull();
+    expect(await getCachedReportTotals(db, key)).toMatchObject({ fresh: true });
+  });
+
+  it("an invalidation racing a publish can't leave the stale row behind (FOR SHARE serializes them)", async () => {
+    const key = dashboardTotalsCacheKey({ asAt: "2026-09-11", centerScope: null });
+    for (let i = 0; i < 20; i++) {
+      await clearReportTotalsCacheForTests(db);
+      const rev = await getReportDataRevision(db);
+      const [published] = await Promise.all([setCachedReportTotals(db, key, { i }, rev), invalidateReportTotalsCache(db)]);
+      // Whichever order they ran in, the end state must never be "published AND still
+      // cached after the invalidation finished".
+      const cached = await getCachedReportTotals(db, key);
+      if (cached) expect(published).not.toBeNull();
+      expect(cached).toBeUndefined();
+    }
+  });
+
+  it("invalidation failures are logged loudly and reported, never thrown or silently swallowed", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = { connect: async () => { throw new Error("db down"); } } as unknown as typeof db;
+    await expect(invalidateReportTotalsCache(broken)).resolves.toBe(false);
+    expect(err.mock.calls[0]![0]).toMatch(/INVALIDATION FAILED/);
+    err.mockRestore();
   });
 });

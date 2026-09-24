@@ -59,6 +59,40 @@ describe("Transfers", () => {
     expect(rows[0].revised_location).toBe("Center-B");
   });
 
+  // Review finding 2026-09-24: transfers move revised_location (which center's scoped
+  // report totals an asset counts toward) but never invalidated report_totals_cache, so a
+  // moved asset kept showing under its old center for up to the 6-hour TTL.
+  it("creating AND deleting a transfer each clear the cached reports", async () => {
+    await insertAsset("XFER-CACHE");
+    const db = await getPool();
+    const seedCache = () =>
+      db.query(`INSERT INTO report_totals_cache (cache_key, payload) VALUES ('dashboard-totals:v2:test', '{}')
+                ON CONFLICT (cache_key) DO UPDATE SET computed_at = NOW()`);
+    const cacheRows = async () => Number((await db.query(`SELECT COUNT(*) AS n FROM report_totals_cache`)).rows[0].n);
+    const revision = async () => Number((await db.query(`SELECT revision FROM report_cache_revision`)).rows[0].revision);
+
+    await seedCache();
+    const before = await revision();
+    const created = await authedInject(app, {
+      method: "POST",
+      url: "/api/transfers",
+      payload: { farIds: ["XFER-CACHE"], toLocation: "Center-B", transactionDate: "2026-05-01" }
+    });
+    expect(created.statusCode).toBe(200);
+    expect(await cacheRows()).toBe(0);
+    expect(await revision()).toBe(before + 1);
+
+    await seedCache();
+    const { rows } = await db.query(`SELECT id FROM transfers WHERE far_id = 'XFER-CACHE'`);
+    const deleted = await authedInject(app, {
+      method: "DELETE",
+      url: `/api/transfers/${rows[0].id}`,
+      payload: { reason: "cache invalidation test" }
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(await cacheRows()).toBe(0);
+  });
+
   it("still records transfer history for a backdated transfer, but does not regress the denormalized current location", async () => {
     await insertAsset("XFER-BACKDATE");
     const later = await authedInject(app, {

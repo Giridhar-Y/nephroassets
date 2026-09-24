@@ -87,12 +87,15 @@ export function dashboardTrendCacheKey(parts: {
 
 /** Audit Reconciliation takes a period override (fyStart/fyEnd), not
  *  center/subClassification filters (it returns every Sub Classification's figures at
- *  once) — so its key shape is asAt + fyStart + fyEnd + centerScope instead. Same
- *  centerScope-leak reasoning as the two key builders above. */
+ *  once) — so its key shape is asAt + fyStart + fyEnd + daysInFy + centerScope instead.
+ *  daysInFy is the RESOLVED day count (requireFySettings), part of the key because it's
+ *  a real calculation input: the configured Days-in-FY for the current FY vs. the
+ *  calendar count for any other FY. Same centerScope-leak reasoning as above. */
 export function auditReconciliationCacheKey(parts: {
   asAt: string;
   fyStart: string;
   fyEnd: string;
+  daysInFy: number;
   centerScope: Set<string> | null;
 }): string {
   const scopeKey = parts.centerScope === null ? null : [...parts.centerScope].sort();
@@ -100,6 +103,7 @@ export function auditReconciliationCacheKey(parts: {
     asAt: parts.asAt,
     fyStart: parts.fyStart,
     fyEnd: parts.fyEnd,
+    daysInFy: parts.daysInFy,
     centerScope: scopeKey
   })}`;
 }
@@ -116,36 +120,71 @@ export async function getCachedReportTotals<T>(db: pg.Pool, cacheKey: string): P
   return rows[0]?.payload;
 }
 
-/** Returns the stored `computed_at` (ISO string), same value a later cache hit reports. */
-export async function setCachedReportTotals(db: pg.Pool, cacheKey: string, payload: unknown): Promise<string> {
-  const { rows } = await db.query<{ computed_at: Date }>(
-    `INSERT INTO report_totals_cache (cache_key, payload, computed_at)
-     VALUES ($1, $2, NOW())
-     ON CONFLICT (cache_key) DO UPDATE SET payload = $2, computed_at = NOW()
-     RETURNING computed_at`,
-    [cacheKey, JSON.stringify(payload)]
-  );
-  return rows[0]!.computed_at.toISOString();
+/** The data revision a computation is based on — read it BEFORE computing and pass it
+ *  to setCachedReportTotals. Every invalidation bumps it (see below). */
+export async function getReportDataRevision(db: pg.Pool | pg.PoolClient): Promise<number> {
+  const { rows } = await db.query<{ revision: string }>(`SELECT revision FROM report_cache_revision WHERE id = TRUE`);
+  return Number(rows[0]?.revision ?? 0);
 }
 
-/** Full clear, not a per-key bust — called from every write route that can change what
- *  Dashboard Totals/Trend or Audit Reconciliation report (asset create/edit/disposal/
- *  addition/delete, bulk asset upload/disposal commits). A blanket DELETE is the
- *  deliberately simple choice here: the alternative (computing exactly which
- *  asAt/center/subClassification/fyStart/fyEnd/centerScope keys, across three different
- *  key shapes, a given write could affect) is real, ongoing complexity for a table this
- *  small and cheap to fully repopulate — the 15-minute TTL above already bounds how
- *  stale an uninvalidated key can get, so a missed CALL SITE (a route that should call
- *  this but doesn't) degrades to "stale for up to 15 minutes," never silently wrong
- *  forever. Every asset-mutating call site DOES await this one, though (see assets.ts's
- *  bustReportTotalsCache) — it's one cheap query against the same pool the request
- *  already holds, and not awaiting it would race the very next dashboard/report load
- *  against a DELETE that may not have committed yet. Note: a Settings change
- *  (FY Start/End, Days in FY) does NOT call this — same pre-existing gap
- *  dashboard-totals already had, bounded by the same 15-minute TTL, not something this
- *  change introduces. */
-export async function invalidateReportTotalsCache(db: pg.Pool): Promise<void> {
-  await db.query(`DELETE FROM report_totals_cache`);
+/** Publishes a computed payload — but only if no invalidation has happened since
+ *  `revision` was read. Without this, a slow computation that started before a write
+ *  (an old pre-warm worker, a long cold scan) could finish after that write's
+ *  invalidation and put its now-stale result back into the cache for up to the full TTL.
+ *  FOR SHARE on the revision row makes this wait out an in-flight invalidation and then
+ *  re-check against the bumped revision, so there's no window between the check and the
+ *  insert. Returns the stored computed_at (ISO), or null when skipped as stale. */
+export async function setCachedReportTotals(
+  db: pg.Pool,
+  cacheKey: string,
+  payload: unknown,
+  revision: number
+): Promise<string | null> {
+  const { rows } = await db.query<{ computed_at: Date }>(
+    `WITH rev AS (SELECT 1 FROM report_cache_revision WHERE id = TRUE AND revision = $3 FOR SHARE)
+     INSERT INTO report_totals_cache (cache_key, payload, computed_at)
+     SELECT $1, $2, NOW() FROM rev
+     ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, computed_at = NOW()
+     RETURNING computed_at`,
+    [cacheKey, JSON.stringify(payload), revision]
+  );
+  return rows[0]?.computed_at.toISOString() ?? null;
+}
+
+/** Full clear, not a per-key bust — called after every write that can change what
+ *  Dashboard Totals/Trend or Audit Reconciliation report (asset writes, transfers,
+ *  bulk upload/disposal/transfer/merge, Settings, and Masters renames/has_component2).
+ *  A blanket clear is the deliberately simple choice: working out exactly which
+ *  asAt/filter/scope/period keys a given write affects is real, ongoing complexity for a
+ *  table this cheap to repopulate.
+ *
+ *  Bump the revision FIRST, in its own statement, then delete: the UPDATE waits for any
+ *  publish holding FOR SHARE on the row to commit, so the DELETE (a fresh snapshot)
+ *  removes that just-published row too, and any publish that starts afterwards sees the
+ *  new revision and skips.
+ *
+ *  Never throws — the write it follows has already committed, so failing the response
+ *  would just invite the user to repeat a write that worked. It logs loudly instead: a
+ *  failed invalidation means reports can be stale for up to the cache TTL. */
+export async function invalidateReportTotalsCache(db: pg.Pool): Promise<boolean> {
+  const client = await db.connect().catch((err: unknown) => {
+    console.error("[report cache] INVALIDATION FAILED (could not connect) — reports may be stale until TTL expiry:", err);
+    return null;
+  });
+  if (!client) return false;
+  try {
+    await client.query("BEGIN");
+    await client.query(`UPDATE report_cache_revision SET revision = revision + 1 WHERE id = TRUE`);
+    await client.query(`DELETE FROM report_totals_cache`);
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("[report cache] INVALIDATION FAILED — reports may be stale until TTL expiry:", err);
+    return false;
+  } finally {
+    client.release();
+  }
 }
 
 /** Test-only reset — same purpose as db/reportCache.ts's clearReportCacheForTests, just

@@ -11,9 +11,10 @@ import {
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
+  getReportDataRevision,
   setCachedReportTotals
 } from "../db/reportTotalsCache.js";
-import { clearPrewarmRequest, pendingPrewarmRequests } from "./prewarmRequests.js";
+import { claimPrewarmRequest, completePrewarmRequest, failPrewarmRequest } from "./prewarmRequests.js";
 
 // Populates report_totals_cache BEFORE a real user's request needs it — see this
 // project's own incident history: dashboard-totals/dashboard-trend's cache (see
@@ -92,19 +93,19 @@ export async function prewarmDashboardCaches(db: pg.Pool): Promise<void> {
     }
   }
 
-  // Then every date a user asked for that wasn't cached (jobs/prewarmRequests.ts) —
-  // re-read until empty, so a date requested while this run was busy isn't left for the
-  // next (possibly hours-away) scheduled run. Each row goes after one attempt.
-  for (let pending = await pendingPrewarmRequests(db); pending.length > 0; pending = await pendingPrewarmRequests(db)) {
-    for (const req of pending) {
-      try {
-        const isCurrentFy = req.fyStart === fyBase.fyStart && req.fyEnd === fyBase.fyEnd;
-        await warmOne(db, req.asAt, isCurrentFy ? undefined : { fyStart: req.fyStart, fyEnd: req.fyEnd });
-      } catch (err) {
-        console.error(`Pre-warm failed for requested asAt=${req.asAt} (${req.fyStart}..${req.fyEnd}):`, err);
-      } finally {
-        await clearPrewarmRequest(db, req);
-      }
+  // Then every date a user asked for that wasn't cached (jobs/prewarmRequests.ts),
+  // claimed one at a time until nothing is claimable — so a date requested while this
+  // run was busy isn't left for the next (possibly hours-away) scheduled run. A success
+  // removes the row; a failure keeps it in a 10-minute backoff (so this loop moves on
+  // rather than retrying it back-to-back, and polls can't re-dispatch it early).
+  for (let req = await claimPrewarmRequest(db); req; req = await claimPrewarmRequest(db)) {
+    try {
+      const isCurrentFy = req.fyStart === fyBase.fyStart && req.fyEnd === fyBase.fyEnd;
+      await warmOne(db, req.asAt, isCurrentFy ? undefined : { fyStart: req.fyStart, fyEnd: req.fyEnd });
+      await completePrewarmRequest(db, req);
+    } catch (err) {
+      console.error(`Pre-warm failed for requested asAt=${req.asAt} (${req.fyStart}..${req.fyEnd}):`, err);
+      await failPrewarmRequest(db, req, err);
     }
   }
 }
@@ -138,14 +139,16 @@ async function warmOne(db: pg.Pool, asAt: string, reconPeriod?: { fyStart: strin
   const fy: Fy = (await requireFySettings(db, { asAt }))!;
   const totalsKey = dashboardTotalsCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, totalsKey))) {
+    const revision = await getReportDataRevision(db);
     const totals = await withoutStatementTimeout(db, (c) => computeDashboardTotals(c, fy, UNSCOPED_USER, UNFILTERED));
-    await setCachedReportTotals(db, totalsKey, totals);
+    await setCachedReportTotals(db, totalsKey, totals, revision);
   }
 
   const trendKey = dashboardTrendCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, trendKey))) {
+    const revision = await getReportDataRevision(db);
     const trend = await withoutStatementTimeout(db, (c) => computeDashboardTrend(c, fy, UNSCOPED_USER, UNFILTERED));
-    await setCachedReportTotals(db, trendKey, trend);
+    await setCachedReportTotals(db, trendKey, trend, revision);
   }
 
   await warmAuditReconciliation(db, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd });
@@ -155,9 +158,16 @@ async function warmAuditReconciliation(db: pg.Pool, asAt: string, period: { fySt
   // Resolved exactly like the route does for the client's request (it always sends
   // fyStart/fyEnd alongside asAt), so the key and payload match.
   const reconFy = (await requireFySettings(db, { asAt, ...period }))!;
-  const reconKey = auditReconciliationCacheKey({ asAt, fyStart: reconFy.fyStart, fyEnd: reconFy.fyEnd, centerScope: null });
+  const reconKey = auditReconciliationCacheKey({
+    asAt,
+    fyStart: reconFy.fyStart,
+    fyEnd: reconFy.fyEnd,
+    daysInFy: reconFy.daysInFy,
+    centerScope: null
+  });
   if (!(await getCachedReportTotals(db, reconKey))) {
+    const revision = await getReportDataRevision(db);
     const recon = await withoutStatementTimeout(db, (c) => computeAuditReconciliation(c, reconFy, UNSCOPED_USER));
-    await setCachedReportTotals(db, reconKey, recon);
+    await setCachedReportTotals(db, reconKey, recon, revision);
   }
 }

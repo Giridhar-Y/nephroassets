@@ -461,7 +461,7 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
     // Awaited — see assets.ts's bustReportTotalsCache for why. getPool() fresh rather
     // than reusing a `db` local — every existing one in this route is scoped to a
     // narrower if-block that doesn't reach this final return.
-    if (processed > 0) await invalidateReportTotalsCache(await getPool()).catch(() => {});
+    if (processed > 0) await invalidateReportTotalsCache(await getPool());
 
     // Commit path keeps its existing response shape — data is preview-only, so it's
     // dropped here rather than sent back on a commit-time error.

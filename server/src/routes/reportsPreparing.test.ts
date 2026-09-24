@@ -7,7 +7,14 @@ import { clearReportTotalsCacheForTests } from "../db/reportTotalsCache.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { prewarmDashboardCaches } from "../jobs/dashboardPrewarm.js";
-import { requestPrewarm } from "../jobs/prewarmRequests.js";
+import {
+  claimPrewarmRequest,
+  completePrewarmRequest,
+  failPrewarmRequest,
+  MAX_PREWARM_ATTEMPTS,
+  requestPrewarm
+} from "../jobs/prewarmRequests.js";
+import { requireFySettings } from "./reports.js";
 
 // Option B (2026-09-24): on Vercel a cold heavy report answers 202 "preparing" and
 // queues the date for the out-of-Vercel pre-warm job, instead of an inline scan that can
@@ -158,5 +165,109 @@ describe("requestPrewarm dispatch throttling", () => {
       `%"asAt":"${other.asAt}"%`
     ]);
     expect(rows.map((r) => r.cache_key.split(":")[0])).toEqual(["audit-reconciliation"]);
+  });
+});
+
+describe("worker lease / retry / backoff (review 2026-09-24)", () => {
+  const req = { asAt: HISTORICAL, ...FY };
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(async () => {
+    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("concurrent duplicate requests for one date insert one row and dispatch exactly once", async () => {
+    const db = await getPool();
+    await Promise.all(Array.from({ length: 8 }, () => requestPrewarm(db, req)));
+    expect(await pending()).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a claimed row is leased: a second worker can't claim it while the first is working", async () => {
+    const db = await getPool();
+    await requestPrewarm(db, req);
+    expect(await claimPrewarmRequest(db)).toEqual(req);
+    expect(await claimPrewarmRequest(db)).toBeNull();
+    // A worker that died mid-job: its lease expires after the cooldown and another can take over.
+    await db.query(`UPDATE report_prewarm_requests SET last_attempt_at = NOW() - INTERVAL '11 minutes'`);
+    expect(await claimPrewarmRequest(db)).toEqual(req);
+  });
+
+  it("a failed job keeps its row in backoff — client polls during the backoff do NOT re-dispatch", async () => {
+    const db = await getPool();
+    await requestPrewarm(db, req);
+    const claimed = (await claimPrewarmRequest(db))!;
+    await failPrewarmRequest(db, claimed, new Error("statement timeout"));
+
+    const [row] = (await db.query(`SELECT attempts, last_error FROM report_prewarm_requests`)).rows;
+    expect(row).toEqual({ attempts: 1, last_error: "statement timeout" });
+
+    // 15s polls for the next few minutes: still pending, no new GitHub dispatch, not claimable.
+    for (let i = 0; i < 5; i++) await requestPrewarm(db, req);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await claimPrewarmRequest(db)).toBeNull();
+
+    // Backoff over: the next poll re-dispatches once, and a worker can retry it.
+    await db.query(
+      `UPDATE report_prewarm_requests SET last_attempt_at = NOW() - INTERVAL '11 minutes', requested_at = NOW() - INTERVAL '12 minutes'`
+    );
+    await requestPrewarm(db, req);
+    await requestPrewarm(db, req); // the very next poll must not dispatch again
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await claimPrewarmRequest(db)).toEqual(req);
+  });
+
+  it(`gives up (drops the row) after ${MAX_PREWARM_ATTEMPTS} failed attempts instead of retrying forever`, async () => {
+    const db = await getPool();
+    await requestPrewarm(db, req);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 1; i <= MAX_PREWARM_ATTEMPTS; i++) {
+      await db.query(`UPDATE report_prewarm_requests SET last_attempt_at = NOW() - INTERVAL '11 minutes'`);
+      const claimed = (await claimPrewarmRequest(db))!;
+      await failPrewarmRequest(db, claimed, new Error(`boom ${i}`));
+      expect(await pending()).toHaveLength(i < MAX_PREWARM_ATTEMPTS ? 1 : 0);
+    }
+    expect(err).toHaveBeenCalledWith(expect.stringMatching(/giving up/));
+    err.mockRestore();
+  });
+
+  it("a success removes the row", async () => {
+    const db = await getPool();
+    await requestPrewarm(db, req);
+    await completePrewarmRequest(db, (await claimPrewarmRequest(db))!);
+    expect(await pending()).toEqual([]);
+  });
+});
+
+describe("custom Days-in-FY: one canonical resolution (review 2026-09-24)", () => {
+  beforeAll(async () => {
+    const db = await getPool();
+    await db.query(`UPDATE settings SET days_in_fy = 360`);
+  });
+  afterAll(async () => {
+    const db = await getPool();
+    await db.query(`UPDATE settings SET days_in_fy = 365`);
+  });
+
+  it("the current FY resolves to the configured 360 whether or not fyStart/fyEnd are passed explicitly; another FY uses its calendar count", async () => {
+    const db = await getPool();
+    expect((await requireFySettings(db))!.daysInFy).toBe(360);
+    expect((await requireFySettings(db, { asAt: HISTORICAL, ...FY }))!.daysInFy).toBe(360);
+    expect((await requireFySettings(db, { asAt: "2025-09-30", fyStart: "2025-04-01", fyEnd: "2026-03-31" }))!.daysInFy).toBe(365);
+  });
+
+  it("Audit Reconciliation with explicit vs. implicit current-FY dates computes with the same inputs and shares one cache row", async () => {
+    vi.stubEnv("VERCEL", "");
+    const db = await getPool();
+    const explicit = await authedInject(app, {
+      method: "GET",
+      url: `/api/reports/audit-reconciliation?asAt=${HISTORICAL}&fyStart=${FY.fyStart}&fyEnd=${FY.fyEnd}`
+    });
+    const implicit = await authedInject(app, { method: "GET", url: `/api/reports/audit-reconciliation?asAt=${HISTORICAL}` });
+    expect(explicit.statusCode).toBe(200);
+    expect(implicit.json()).toEqual(explicit.json()); // the second was a cache hit on the first's row
+    const { rows } = await db.query<{ cache_key: string }>(`SELECT cache_key FROM report_totals_cache WHERE cache_key LIKE 'audit-reconciliation:%'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.cache_key).toContain('"daysInFy":360');
   });
 });

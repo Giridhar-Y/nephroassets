@@ -69,7 +69,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
     // every cache key, so a new AS_AT is a cache miss on its own, no explicit bust
     // needed — busting there too would defeat the cache on the header's daily picker,
     // which is used far more often than this structural form.
-    await invalidateReportTotalsCache(db).catch(() => {});
+    await invalidateReportTotalsCache(db);
     return { asAt, fyStart, fyEnd, daysInFy };
   });
 
@@ -145,7 +145,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
     // Same reasoning as the plain PUT /api/settings above — DAYS_FY feeds directly into
     // every far_calc_component() call these cached reports make, and isn't itself part
     // of any of their cache keys.
-    await invalidateReportTotalsCache(db).catch(() => {});
+    await invalidateReportTotalsCache(db);
     return mapSettingsRow({ ...rows[0], days_in_fy: parsed.data.daysInFy });
   });
 

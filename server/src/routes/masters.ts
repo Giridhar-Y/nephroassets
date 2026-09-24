@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 import { requirePermission } from "../auth/middleware.js";
 import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
 import { logMasterActivity } from "./masterActivityLog.js";
@@ -640,6 +641,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     const db = await getPool();
     try {
       const result = await updateCenterById(db, paramsParsed.data.id, bodyParsed.data);
+      // A rename rewrites assets.location/revised_location + transfers.location.
+      await invalidateReportTotalsCache(db);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "center_update",
@@ -701,6 +704,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     const db = await getPool();
     try {
       const result = await updateSubClassificationById(db, paramsParsed.data.id, bodyParsed.data);
+      // A rename rewrites assets.sub_classification; has_component2 changes C2 figures.
+      await invalidateReportTotalsCache(db);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "sub_classification_update",
@@ -750,6 +755,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     const db = await getPool();
     try {
       const result = await updateStatusById(db, paramsParsed.data.id, bodyParsed.data);
+      // A rename rewrites assets.status, which the exception counts filter on.
+      await invalidateReportTotalsCache(db);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "status_update",

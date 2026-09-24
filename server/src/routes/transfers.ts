@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
+import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 import type { SettingsRow } from "../db/mappers.js";
 import { isoToDDMMYYYY, loadActiveMasterMaps, lookupCanonical, todayIsoIST } from "./bulkParse.js";
 import { findDirectChildActionViolations } from "./parentLink.js";
@@ -207,6 +208,9 @@ export default async function transfersRoutes(app: FastifyInstance) {
     } finally {
       client.release();
     }
+    // A transfer moves revised_location — which center's scoped totals an asset counts
+    // toward — so every cached report is now potentially wrong.
+    await invalidateReportTotalsCache(db);
     for (const farId of farIds) {
       // previous.location: the asset's effective location read above, before this
       // transfer's UPDATE ran — the one field this route actually changes.
@@ -454,6 +458,7 @@ export default async function transfersRoutes(app: FastifyInstance) {
     } finally {
       client.release();
     }
+    await invalidateReportTotalsCache(db); // revised_location reverts — see the create route
 
     await logAssetDelete(db, {
       actorUserId: req.user!.id,

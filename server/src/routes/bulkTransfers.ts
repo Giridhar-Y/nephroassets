@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type pg from "pg";
 import { getPool } from "../db/pool.js";
+import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 import {
   bulkDate,
   isoToDDMMYYYY,
@@ -321,6 +322,9 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
         client.release();
       }
     }
+
+    // Same reason as the single-transfer route: revised_location moved.
+    if (processed > 0) await invalidateReportTotalsCache(await getPool());
 
     // Transfers never create a new asset — every processed row is an update. Commit path
     // keeps its existing response shape — data is preview-only.

@@ -484,12 +484,25 @@ CREATE TABLE report_totals_cache (
 -- dispatch's own inputs) because GitHub keeps only one pending run per workflow, so two
 -- quick picks would otherwise drop one; the job drains every row here instead.
 CREATE TABLE report_prewarm_requests (
-  as_at         DATE NOT NULL,
-  fy_start      DATE NOT NULL,
-  fy_end        DATE NOT NULL,
-  requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  as_at            DATE NOT NULL,
+  fy_start         DATE NOT NULL,
+  fy_end           DATE NOT NULL,
+  requested_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Set when a worker claims the row (a 10-minute lease) and kept on failure as the
+  -- retry backoff — see jobs/prewarmRequests.ts.
+  last_attempt_at  TIMESTAMPTZ,
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_error       TEXT,
   PRIMARY KEY (as_at, fy_start, fy_end)
 );
+
+-- Bumped by every report_totals_cache invalidation; a computation publishes only if
+-- it's unchanged since the computation started — see db/reportTotalsCache.ts.
+CREATE TABLE report_cache_revision (
+  id        BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+  revision  BIGINT NOT NULL DEFAULT 0
+);
+INSERT INTO report_cache_revision (id) VALUES (TRUE);
 
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.

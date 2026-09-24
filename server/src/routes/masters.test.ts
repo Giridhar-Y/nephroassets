@@ -83,12 +83,16 @@ describe("Masters", () => {
         "CTR-2"
       ]);
 
+      await db.query(`INSERT INTO report_totals_cache (cache_key, payload) VALUES ('dashboard-totals:v2:rename-test', '{}')
+                      ON CONFLICT (cache_key) DO NOTHING`);
       const patch = await authedInject(app, {
         method: "PATCH",
         url: `/api/masters/centers/${id}`,
         payload: { code: "Center-NEW" }
       });
       expect(patch.statusCode).toBe(200);
+      // The rename rewrote asset locations — cached reports must be cleared (review 2026-09-24).
+      expect(Number((await db.query(`SELECT COUNT(*) AS n FROM report_totals_cache`)).rows[0].n)).toBe(0);
       const body = patch.json();
       expect(body.assetsUpdated).toBe(2);
       expect(body.transfersUpdated).toBe(1);

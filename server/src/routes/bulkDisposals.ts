@@ -266,7 +266,7 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
     // Awaited — see assets.ts's bustReportTotalsCache for why. getPool() fresh rather
     // than reusing a `db` local — the existing one in this route is scoped to a
     // narrower if-block that doesn't reach this final return.
-    if (processed > 0) await invalidateReportTotalsCache(await getPool()).catch(() => {});
+    if (processed > 0) await invalidateReportTotalsCache(await getPool());
 
     // Disposals never create a new asset — every processed row is an update. Commit path
     // keeps its existing response shape — data is preview-only.

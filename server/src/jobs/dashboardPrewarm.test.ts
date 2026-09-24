@@ -45,7 +45,7 @@ describe("prewarmDashboardCaches (against the test database)", () => {
     for (const key of [
       cache.dashboardTotalsCacheKey({ asAt: today, centerScope: null }),
       cache.dashboardTrendCacheKey({ asAt: today, centerScope: null }),
-      cache.auditReconciliationCacheKey({ asAt: today, fyStart: fy.fyStart, fyEnd: fy.fyEnd, centerScope: null }),
+      cache.auditReconciliationCacheKey({ asAt: today, fyStart: fy.fyStart, fyEnd: fy.fyEnd, daysInFy: 365, centerScope: null }),
       cache.dashboardTotalsCacheKey({ asAt: "2026-08-17", centerScope: null })
     ]) {
       expect(await cache.getCachedReportTotals(db, key), key).toBeDefined();

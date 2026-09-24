@@ -559,6 +559,16 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (as_at, fy_start, fy_end)
     );
+    ALTER TABLE report_prewarm_requests ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
+    ALTER TABLE report_prewarm_requests ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE report_prewarm_requests ADD COLUMN IF NOT EXISTS last_error TEXT;
+
+    -- See schema.sql's own report_cache_revision comment.
+    CREATE TABLE IF NOT EXISTS report_cache_revision (
+      id        BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+      revision  BIGINT NOT NULL DEFAULT 0
+    );
+    INSERT INTO report_cache_revision (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
 
     -- See schema.sql's own idx_assets_calc_status comment.
     CREATE INDEX IF NOT EXISTS idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);

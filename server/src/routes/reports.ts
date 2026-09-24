@@ -11,6 +11,7 @@ import {
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
+  getReportDataRevision,
   setCachedReportTotals
 } from "../db/reportTotalsCache.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
@@ -45,16 +46,18 @@ export async function requireFySettings(
   );
   const settings = rows[0];
   if (!settings) return null;
-  // fyStart/fyEnd only ever come from Audit Reconciliation's period selector — every
-  // other report route calls this with just an asAt override, same as before, and gets
-  // the stored days_in_fy verbatim (not recomputed) so nothing about their totals can
-  // shift by a rounding/leap-year difference. Reconciling a genuinely different FY only
-  // makes sense with both fyStart AND fyEnd supplied together — the client always sends
-  // them as a pair.
+  // fyStart/fyEnd only ever come from Audit Reconciliation's period selector (always as
+  // a pair). daysInFy is resolved from the RESOLVED dates alone, never from whether they
+  // were passed explicitly: the configured Days-in-FY whenever they are Settings' current
+  // FY, the calendar day count for any other FY. It used to recompute from the calendar
+  // whenever fyStart/fyEnd were supplied — so Audit Reconciliation (which always sends
+  // them) used e.g. 365 for the current FY while Dashboard/Posting used a configured 360,
+  // and an explicit vs. implicit request for the same FY shared one cache key with
+  // different inputs (2026-09-24 review finding).
   const fyStart = overrides?.fyStart ?? settings.fy_start;
   const fyEnd = overrides?.fyEnd ?? settings.fy_end;
-  const daysInFy =
-    overrides?.fyStart && overrides?.fyEnd ? daysHeldInclusive(fyStart, fyEnd) : settings.days_in_fy;
+  const isCurrentFy = fyStart === settings.fy_start && fyEnd === settings.fy_end;
+  const daysInFy = isCurrentFy ? settings.days_in_fy : daysHeldInclusive(fyStart, fyEnd);
   return {
     asAt: overrides?.asAt ?? settings.as_at,
     fyStart,
@@ -72,7 +75,7 @@ export async function requireFySettings(
     // this data model cannot actually support — confirmed via a controlled single-asset
     // reproduction (2026-09-03): pushing fyStart back exactly one year, same accDepOpening,
     // same asAt, shifts closingAccDep by exactly one year's straight-line depreciation.
-    isCurrentFy: fyStart === settings.fy_start && fyEnd === settings.fy_end
+    isCurrentFy
   };
 }
 
@@ -1765,6 +1768,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
       asAt: fy.asAt,
       fyStart: fy.fyStart,
       fyEnd: fy.fyEnd,
+      daysInFy: fy.daysInFy,
       centerScope: req.user!.centerScope
     });
     const cached = await getCachedReportTotals<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: unknown }>(
@@ -1776,8 +1780,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
+    const revision = await getReportDataRevision(db);
     const result = await computeAuditReconciliation(db, fy, req.user!);
-    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 
@@ -2104,11 +2109,14 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
+    const revision = await getReportDataRevision(db);
     const result = await computeDashboardTotals(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    // null = a write invalidated the cache mid-compute: still answer this request, just
+    // don't cache a result that may predate that write.
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 
@@ -2141,11 +2149,12 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
+    const revision = await getReportDataRevision(db);
     const result = await computeDashboardTrend(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    const computedAt = await setCachedReportTotals(db, cacheKey, result);
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 }

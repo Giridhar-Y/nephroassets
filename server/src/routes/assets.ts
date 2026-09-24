@@ -177,12 +177,12 @@ function encodeCursor(sortValue: string, farId: string): string {
  *  DELETE against the same pool the request already holds; not awaiting it would race
  *  the very next dashboard/report load against a DELETE that may not have committed
  *  yet. Best-effort only in the sense that a failure here doesn't fail the write it
- *  followed (swallowed, not rethrown) — the TTL (db/reportTotalsCache.ts)
- *  still bounds how stale a failed invalidation can leave the cache. Clears
+ *  followed — invalidateReportTotalsCache logs a failure loudly instead of throwing,
+ *  and the TTL (db/reportTotalsCache.ts) still bounds how stale that can leave it. Clears
  *  dashboard-totals, dashboard-trend, and audit-reconciliation's cached figures alike —
  *  one shared table, one blanket clear (see reportTotalsCache.ts's own comment). */
 async function bustReportTotalsCache(db: Awaited<ReturnType<typeof getPool>>): Promise<void> {
-  await invalidateReportTotalsCache(db).catch(() => {});
+  await invalidateReportTotalsCache(db);
 }
 
 export default async function assetsRoutes(app: FastifyInstance) {
