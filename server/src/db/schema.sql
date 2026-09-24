@@ -479,6 +479,18 @@ CREATE TABLE report_totals_cache (
   computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Dates a user asked for that weren't cached, waiting for the out-of-Vercel pre-warm
+-- job to compute them — see jobs/prewarmRequests.ts. A table (not the workflow
+-- dispatch's own inputs) because GitHub keeps only one pending run per workflow, so two
+-- quick picks would otherwise drop one; the job drains every row here instead.
+CREATE TABLE report_prewarm_requests (
+  as_at         DATE NOT NULL,
+  fy_start      DATE NOT NULL,
+  fy_end        DATE NOT NULL,
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (as_at, fy_start, fy_end)
+);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

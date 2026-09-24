@@ -13,6 +13,7 @@ import {
   getCachedReportTotals,
   setCachedReportTotals
 } from "../db/reportTotalsCache.js";
+import { clearPrewarmRequest, pendingPrewarmRequests } from "./prewarmRequests.js";
 
 // Populates report_totals_cache BEFORE a real user's request needs it — see this
 // project's own incident history: dashboard-totals/dashboard-trend's cache (see
@@ -90,6 +91,22 @@ export async function prewarmDashboardCaches(db: pg.Pool): Promise<void> {
       console.error(`Dashboard pre-warm failed for asAt=${asAt}:`, err);
     }
   }
+
+  // Then every date a user asked for that wasn't cached (jobs/prewarmRequests.ts) —
+  // re-read until empty, so a date requested while this run was busy isn't left for the
+  // next (possibly hours-away) scheduled run. Each row goes after one attempt.
+  for (let pending = await pendingPrewarmRequests(db); pending.length > 0; pending = await pendingPrewarmRequests(db)) {
+    for (const req of pending) {
+      try {
+        const isCurrentFy = req.fyStart === fyBase.fyStart && req.fyEnd === fyBase.fyEnd;
+        await warmOne(db, req.asAt, isCurrentFy ? undefined : { fyStart: req.fyStart, fyEnd: req.fyEnd });
+      } catch (err) {
+        console.error(`Pre-warm failed for requested asAt=${req.asAt} (${req.fyStart}..${req.fyEnd}):`, err);
+      } finally {
+        await clearPrewarmRequest(db, req);
+      }
+    }
+  }
 }
 
 // This is a background job, not an interactive request: the database role's own
@@ -114,7 +131,10 @@ async function withoutStatementTimeout<T>(db: pg.Pool, fn: (client: pg.PoolClien
   }
 }
 
-async function warmOne(db: pg.Pool, asAt: string): Promise<void> {
+/** `reconPeriod`: an Audit Reconciliation request for an FY other than Settings' current
+ *  one — warms only that report, since Dashboard always uses the current FY. */
+async function warmOne(db: pg.Pool, asAt: string, reconPeriod?: { fyStart: string; fyEnd: string }): Promise<void> {
+  if (reconPeriod) return warmAuditReconciliation(db, asAt, reconPeriod);
   const fy: Fy = (await requireFySettings(db, { asAt }))!;
   const totalsKey = dashboardTotalsCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, totalsKey))) {
@@ -128,9 +148,13 @@ async function warmOne(db: pg.Pool, asAt: string): Promise<void> {
     await setCachedReportTotals(db, trendKey, trend);
   }
 
+  await warmAuditReconciliation(db, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+}
+
+async function warmAuditReconciliation(db: pg.Pool, asAt: string, period: { fyStart: string; fyEnd: string }): Promise<void> {
   // Resolved exactly like the route does for the client's request (it always sends
-  // Settings' own fyStart/fyEnd alongside asAt), so the key and payload match.
-  const reconFy = (await requireFySettings(db, { asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd }))!;
+  // fyStart/fyEnd alongside asAt), so the key and payload match.
+  const reconFy = (await requireFySettings(db, { asAt, ...period }))!;
   const reconKey = auditReconciliationCacheKey({ asAt, fyStart: reconFy.fyStart, fyEnd: reconFy.fyEnd, centerScope: null });
   if (!(await getCachedReportTotals(db, reconKey))) {
     const recon = await withoutStatementTimeout(db, (c) => computeAuditReconciliation(c, reconFy, UNSCOPED_USER));

@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { fetchUntilReady } from "../lib/preparing.js";
 import {
   fetchAuditReconciliation,
   getAuditReconciliationExportUrl,
@@ -7,7 +8,7 @@ import {
   type ReconciliationPeriod
 } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
-import { formatCurrency } from "../lib/format.js";
+import { formatCurrency, formatDateDDMMYYYY } from "../lib/format.js";
 import { Tooltip } from "../components/Tooltip.js";
 import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { FIELD_INFO } from "../lib/fieldInfo.js";
@@ -128,6 +129,8 @@ export function AuditReconciliationPage() {
   const [error, setError] = useState<string | null>(null);
   const [computedAt, setComputedAt] = useState<string | null>(null);
   const [attemptedAt, setAttemptedAt] = useState<string | null>(null);
+  const [preparingAsAt, setPreparingAsAt] = useState<string | null>(null);
+  const runId = useRef(0);
 
   // Independent of the app-wide "Figures as of" setting — seeded from it once, on
   // first load, but from then on only this page's own period selector drives what gets
@@ -141,27 +144,43 @@ export function AuditReconciliationPage() {
 
   const isCustomPeriod = !!(settings && period && (period.fyStart !== settings.fyStart || period.fyEnd !== settings.fyEnd));
 
-  const load = useCallback(() => {
+  // Polls while the server says "preparing" (a date that isn't cached yet, on Vercel —
+  // see lib/preparing.ts). `runId` drops a superseded run (period changed, Refresh,
+  // unmount) so an older response can never overwrite a newer one.
+  const load = useCallback(async () => {
     if (!period) return;
+    const run = ++runId.current;
+    const current = () => run === runId.current;
     setLoading(true);
     setError(null);
     setItems(null);
     setComputedAt(null);
-    fetchAuditReconciliation(period)
-      .then((res) => {
-        setItems(res.items);
-        setIsCurrentFy(res.isCurrentFy);
-        setComputedAt(res.computedAt);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load the reconciliation."))
-      .finally(() => {
-        setLoading(false);
-        setAttemptedAt(new Date().toISOString());
+    setPreparingAsAt(null);
+    try {
+      const res = await fetchUntilReady(() => fetchAuditReconciliation(period), {
+        onPreparing: () => setPreparingAsAt(period.asAt),
+        isCurrent: current
       });
+      if (!res || !current()) return;
+      setItems(res.items);
+      setIsCurrentFy(res.isCurrentFy);
+      setComputedAt(res.computedAt);
+    } catch (err) {
+      if (current()) setError(err instanceof Error ? err.message : "Could not load the reconciliation.");
+    } finally {
+      if (current()) {
+        setLoading(false);
+        setPreparingAsAt(null);
+        setAttemptedAt(new Date().toISOString());
+      }
+    }
   }, [period]);
 
   useEffect(() => {
     load();
+    return () => {
+      runId.current++;
+    };
   }, [load]);
 
   return (
@@ -241,6 +260,13 @@ export function AuditReconciliationPage() {
             <RetryIcon fontSize={13} />
             Retry
           </button>
+        </div>
+      )}
+
+      {preparingAsAt && (
+        <div className="flex items-center gap-1.5 border-b border-brand-blue/20 bg-brand-blue/5 px-6 py-2 text-sm text-brand-deepBlue">
+          <InfoIcon fontSize={15} className="shrink-0" />
+          Preparing figures for {formatDateDDMMYYYY(preparingAsAt)}. Dates not viewed recently take about 2–4 minutes.
         </div>
       )}
 

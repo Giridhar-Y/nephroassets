@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage.js";
 import type { DashboardFastSummary, DashboardTotals, DashboardTrend } from "../api/client.js";
@@ -335,6 +335,38 @@ describe("DashboardPage: a failed request resolves to an error state, never an e
       await waitFor(() => expect(screen.getByText(new RegExp(escapeRegExp(second)))).toBeTruthy());
       expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(2);
       expect(fetchMock).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("DashboardPage: a date that isn't cached yet (202 preparing on Vercel)", () => {
+  it("shows the Preparing banner with no error, polls every 15s, and loads automatically once ready", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      let totalsReady = false;
+      const preparing = { ok: true, status: 202, json: async () => ({ status: "preparing", asAt: "2026-08-17" }) } as Response;
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes("dashboard-totals")) return Promise.resolve(totalsReady ? jsonResponse(TOTALS) : preparing);
+        if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+        return Promise.resolve(jsonResponse(FAST));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DashboardPage />);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(screen.getByText(/Preparing figures for 17-08-2026\. Dates not viewed recently take about 2–4 minutes\./)).toBeTruthy();
+      expect(screen.queryByText(/couldn't load/)).toBeNull();
+      expect(screen.queryByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeNull(); // skeleton, not a number
+
+      totalsReady = true;
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+
+      expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(2);
+      expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy();
+      expect(screen.queryByText(/Preparing figures/)).toBeNull();
+      expect(screen.getByText(`Last updated: ${formatDateTime(TREND.computedAt)}`)).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

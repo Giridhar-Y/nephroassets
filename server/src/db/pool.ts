@@ -551,6 +551,15 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    -- See schema.sql's own report_prewarm_requests comment.
+    CREATE TABLE IF NOT EXISTS report_prewarm_requests (
+      as_at         DATE NOT NULL,
+      fy_start      DATE NOT NULL,
+      fy_end        DATE NOT NULL,
+      requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (as_at, fy_start, fy_end)
+    );
+
     -- See schema.sql's own idx_assets_calc_status comment.
     CREATE INDEX IF NOT EXISTS idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);
   `);

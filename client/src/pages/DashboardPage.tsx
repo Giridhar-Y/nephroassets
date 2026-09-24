@@ -12,7 +12,8 @@ import {
 import { useSettings } from "../lib/SettingsContext.js";
 import { fySettingsKey } from "../lib/settingsKey.js";
 import { formatCurrency, formatCurrencyCompact, formatDateDDMMYYYY } from "../lib/format.js";
-import { ChevronDownIcon, ChevronUpIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
+import { ChevronDownIcon, ChevronUpIcon, ErrorIcon, InfoIcon, RetryIcon } from "../lib/icons.js";
+import { fetchUntilReady } from "../lib/preparing.js";
 import { RefreshControl } from "../components/ui/RefreshControl.js";
 import { Card } from "../components/ui/Card.js";
 import { StatusBadge } from "../components/ui/Badge.js";
@@ -269,6 +270,9 @@ export function DashboardPage() {
   const [trendError, setTrendError] = useState<string | null>(null);
   const [disposalScope, setDisposalScope] = useState<DisposalScope>("fytd");
   const [attemptedAt, setAttemptedAt] = useState<string | null>(null);
+  // Set while the server says "preparing" (a date that isn't cached yet, on Vercel —
+  // see lib/preparing.ts); the pieces keep their skeletons and the page polls.
+  const [preparingAsAt, setPreparingAsAt] = useState<string | null>(null);
   // Entrance fade/slide-in, once — a plain two-state CSS transition (no keyframes, no
   // animation library) rather than a per-tile stagger, restrained on purpose: this is a
   // screen finance scans for numbers, not a marketing page.
@@ -309,6 +313,8 @@ export function DashboardPage() {
     setLoadingFast(true);
     setLoadingTotals(true);
     setLoadingTrend(true);
+    setPreparingAsAt(null);
+    const untilReady = { onPreparing: () => setPreparingAsAt(asAt), isCurrent: current };
 
     try {
       const res = await fetchDashboardSummary(asAt);
@@ -321,8 +327,8 @@ export function DashboardPage() {
 
     if (!current()) return;
     try {
-      const res = await fetchDashboardTotals(asAt);
-      if (current()) setTotals(res);
+      const res = await fetchUntilReady(() => fetchDashboardTotals(asAt), untilReady);
+      if (res && current()) setTotals(res);
     } catch (err) {
       if (current()) setTotalsError(err instanceof Error ? err.message : "Could not load the totals.");
     } finally {
@@ -331,13 +337,14 @@ export function DashboardPage() {
 
     if (!current()) return;
     try {
-      const res = await fetchDashboardTrend(asAt);
-      if (current()) setTrend(res);
+      const res = await fetchUntilReady(() => fetchDashboardTrend(asAt), untilReady);
+      if (res && current()) setTrend(res);
     } catch (err) {
       if (current()) setTrendError(err instanceof Error ? err.message : "Could not load the trend.");
     } finally {
       if (current()) {
         setLoadingTrend(false);
+        setPreparingAsAt(null);
         setAttemptedAt(new Date().toISOString());
       }
     }
@@ -346,6 +353,10 @@ export function DashboardPage() {
 
   useEffect(() => {
     load();
+    // Unmount (or a newer load) stops any still-running "preparing" poll.
+    return () => {
+      runId.current++;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
@@ -362,6 +373,12 @@ export function DashboardPage() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+        {preparingAsAt && (
+          <p className="mb-4 flex items-center gap-1.5 rounded-lg border border-brand-blue/20 bg-brand-blue/5 px-3 py-2 text-sm text-brand-deepBlue">
+            <InfoIcon fontSize={15} className="shrink-0" />
+            Preparing figures for {formatDateDDMMYYYY(preparingAsAt)}. Dates not viewed recently take about 2–4 minutes.
+          </p>
+        )}
         <div className="mb-4 flex justify-end">
           <RefreshControl
             computedAt={computedAt}

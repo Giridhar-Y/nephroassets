@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
 import { getPool } from "../db/pool.js";
+import { deferColdReportCompute, requestPrewarm } from "../jobs/prewarmRequests.js";
 import { getCachedReport, reportCacheKey, setCachedReport } from "../db/reportCache.js";
 import {
   auditReconciliationCacheKey,
@@ -203,6 +204,30 @@ function buildComponentFigures(r: ReconciliationRow) {
 // That's a self-check on the *workbook's formula chain* (would only ever catch a typo
 // in the reference's own Combined-block formulas) — here, Combined is summed directly
 // from the same per-asset figures as C1/C2, so an equivalent check would be tautological.
+/** Cold cache on Vercel → queue the date for the out-of-Vercel pre-warm job and answer
+ *  202 right away, instead of an inline scan that can only 504 (see
+ *  jobs/prewarmRequests.ts). The client polls the same URL until it gets the real
+ *  payload. */
+async function preparing(
+  reply: { code: (status: number) => unknown },
+  db: Awaited<ReturnType<typeof getPool>>,
+  req: { asAt: string; fyStart: string; fyEnd: string }
+) {
+  await requestPrewarm(db, req);
+  reply.code(202);
+  return { status: "preparing" as const, asAt: req.asAt };
+}
+
+/** Only the view the pre-warm job actually fills (unfiltered, unscoped — see
+ *  dashboardPrewarm.ts) can be deferred; a filtered or center-scoped view narrows the
+ *  scan and is left to compute inline as before, or it would wait forever. */
+function isPrewarmableDashboardView(
+  user: Pick<AuthedUser, "centerScope">,
+  filters: { center?: string; subClassification?: string }
+): boolean {
+  return user.centerScope === null && !filters.center && !filters.subClassification;
+}
+
 /** The audit-reconciliation route's cached payload — shared with jobs/dashboardPrewarm.ts
  *  so a pre-warmed row is byte-for-byte what the route itself would have cached. */
 export async function computeAuditReconciliation(
@@ -1747,6 +1772,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
       cacheKey
     );
     if (cached) return cached;
+    if (req.user!.centerScope === null && deferColdReportCompute()) {
+      return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+    }
 
     const result = await computeAuditReconciliation(db, fy, req.user!);
     const computedAt = await setCachedReportTotals(db, cacheKey, result);
@@ -2072,6 +2100,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
     });
     const cached = await getCachedReportTotals(db, cacheKey);
     if (cached) return cached;
+    if (isPrewarmableDashboardView(req.user!, parsed.data) && deferColdReportCompute()) {
+      return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+    }
 
     const result = await computeDashboardTotals(db, fy, req.user!, {
       center: parsed.data.center,
@@ -2106,6 +2137,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
     });
     const cached = await getCachedReportTotals(db, cacheKey);
     if (cached) return cached;
+    if (isPrewarmableDashboardView(req.user!, parsed.data) && deferColdReportCompute()) {
+      return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+    }
 
     const result = await computeDashboardTrend(db, fy, req.user!, {
       center: parsed.data.center,

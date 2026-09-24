@@ -1,3 +1,4 @@
+import type { ReportPreparing } from "../lib/preparing.js";
 import type {
   AssetCalculationResult,
   AssetCreateInput,
@@ -804,7 +805,7 @@ function reconciliationParams(period: ReconciliationPeriod): URLSearchParams {
 
 export function fetchAuditReconciliation(
   period: ReconciliationPeriod
-): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[]; computedAt: string }> {
+): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[]; computedAt: string } | ReportPreparing> {
   return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`, undefined, { noTimeoutRetry: true });
 }
 
@@ -969,11 +970,12 @@ export function fetchDashboardSummary(asAt: string, opts?: DashboardQueryOpts): 
   return request(`/api/reports/dashboard-summary?${dashboardParams(asAt, opts)}`);
 }
 
-export function fetchDashboardTotals(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTotals> {
+/** Or 202 "preparing" on Vercel for a date that isn't cached — see lib/preparing.ts. */
+export function fetchDashboardTotals(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTotals | ReportPreparing> {
   return request(`/api/reports/dashboard-totals?${dashboardParams(asAt, opts)}`, undefined, { noTimeoutRetry: true });
 }
 
-export function fetchDashboardTrend(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTrend> {
+export function fetchDashboardTrend(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTrend | ReportPreparing> {
   return request(`/api/reports/dashboard-trend?${dashboardParams(asAt, opts)}`, undefined, { noTimeoutRetry: true });
 }
 

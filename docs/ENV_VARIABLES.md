@@ -87,6 +87,18 @@ client-side, the endpoint returns a clean 503, nothing else in the app is affect
 
 ---
 
+## On-demand report pre-warm (Vercel only)
+
+On Vercel, a Dashboard/Audit Reconciliation date that isn't cached answers "preparing" and triggers the `dashboard-prewarm.yml` GitHub Actions workflow to compute it (Vercel's 60s limit can't fit the calculation). **Not needed on Docker/self-hosted** — those compute directly and never use these. Without them on Vercel, requested dates still get computed, but only by the next scheduled workflow run (which GitHub may delay by hours).
+
+| Variable | Required? | Purpose | Example |
+|---|---|---|---|
+| `GITHUB_DISPATCH_TOKEN` | Vercel only | Fine-grained GitHub PAT, this repository only, permission **Actions: Read and write**. Used only to trigger the pre-warm workflow. | `github_pat_...` |
+| `GITHUB_DISPATCH_REPO` | Vercel only | `owner/name` of the repo holding the workflow. | `Giridhar-Y/nephroassets` |
+| `GITHUB_DISPATCH_REF` | Optional | Branch to run the workflow on. Defaults to `master`. | `master` |
+
+---
+
 ## Background Export to S3-compatible storage
 
 Large/filtered Register or Activity Log exports run as a resumable multipart upload
