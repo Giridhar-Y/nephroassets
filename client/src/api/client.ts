@@ -29,7 +29,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** `noTimeoutRetry`: for the full far_calc_component() scan endpoints (dashboard-totals/
+ *  trend, audit-reconciliation). Their 504 is Vercel killing a 60s+ cold compute before
+ *  it could cache anything, while the Postgres query behind it keeps running — a retry
+ *  only stacks another identical scan on top (the 2026-09-24 Dashboard incident). */
+async function request<T>(path: string, init?: RequestInit, opts?: { noTimeoutRetry?: boolean }): Promise<T> {
   // A safety net for transient 5xx (e.g. a cold-start/connection blip resolved by the
   // *next* request) — never on a body-carrying request, since retrying a POST/PATCH
   // risks double-submitting a mutation. The real fix for the known cause of this is
@@ -61,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     if (res.ok) return res.json() as Promise<T>;
     lastRes = res;
-    if (isRetryable && res.status >= 500 && attempt < RETRYABLE_ATTEMPTS) {
+    if (isRetryable && res.status >= 500 && !(res.status === 504 && opts?.noTimeoutRetry) && attempt < RETRYABLE_ATTEMPTS) {
       await sleep(RETRY_DELAY_MS * attempt);
       continue;
     }
@@ -801,7 +805,7 @@ function reconciliationParams(period: ReconciliationPeriod): URLSearchParams {
 export function fetchAuditReconciliation(
   period: ReconciliationPeriod
 ): Promise<{ asAt: string; fyStart: string; isCurrentFy: boolean; items: ReconciliationItem[]; computedAt: string }> {
-  return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`);
+  return request(`/api/reports/audit-reconciliation?${reconciliationParams(period)}`, undefined, { noTimeoutRetry: true });
 }
 
 // Same pattern as the Register's getExportUrl — the browser downloads it directly via
@@ -966,11 +970,11 @@ export function fetchDashboardSummary(asAt: string, opts?: DashboardQueryOpts): 
 }
 
 export function fetchDashboardTotals(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTotals> {
-  return request(`/api/reports/dashboard-totals?${dashboardParams(asAt, opts)}`);
+  return request(`/api/reports/dashboard-totals?${dashboardParams(asAt, opts)}`, undefined, { noTimeoutRetry: true });
 }
 
 export function fetchDashboardTrend(asAt: string, opts?: DashboardQueryOpts): Promise<DashboardTrend> {
-  return request(`/api/reports/dashboard-trend?${dashboardParams(asAt, opts)}`);
+  return request(`/api/reports/dashboard-trend?${dashboardParams(asAt, opts)}`, undefined, { noTimeoutRetry: true });
 }
 
 export interface MovementScheduleRow {

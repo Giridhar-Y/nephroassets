@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchCenters } from "./client.js";
+import { fetchCenters, fetchDashboardTotals } from "./client.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -38,6 +38,14 @@ describe("request() retry behavior", () => {
 
     expect(result).toEqual(["Center-A"]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry a 504 on a heavy calc endpoint — a retry just stacks another cold scan", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: "Gateway Timeout" }, 504));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchDashboardTotals("2026-09-24")).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("throws once every retry attempt is exhausted, rather than retrying forever", async () => {

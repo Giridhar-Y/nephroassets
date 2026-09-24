@@ -290,3 +290,25 @@ describe("DashboardPage: header, Missing Data tile, refresh and loading", () => 
     await waitFor(() => expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy());
   });
 });
+
+describe("DashboardPage: a failed request resolves to an error state, never an endless skeleton", () => {
+  it("dashboard-totals 504 → figures show as unavailable, header says so, and the timeout isn't retried", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("dashboard-totals"))
+        return Promise.resolve({ ok: false, status: 504, json: async () => ({ error: "Gateway Timeout" }) } as Response);
+      if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+      return Promise.resolve(jsonResponse(FAST));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardPage />);
+
+    await waitFor(() => expect(screen.getByText("Some figures couldn't load")).toBeTruthy());
+    expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(1);
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(0);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3); // Gross Block, Acc Dep, Net Block
+    // Pieces that did load still render — the trend and asset count aren't held hostage.
+    expect(screen.getByText(String(FAST.totals.assetCount))).toBeTruthy();
+    expect(screen.getByText("Net Block Trend")).toBeTruthy();
+  });
+});

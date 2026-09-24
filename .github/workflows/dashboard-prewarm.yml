@@ -54,7 +54,9 @@ concurrency:
 jobs:
   prewarm:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20, not 10: audit-reconciliation is warmed too now (2026-09-24), adding a third
+    # full scan per cold date on top of the ~6 min totals+trend already measured.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

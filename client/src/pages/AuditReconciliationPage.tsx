@@ -171,7 +171,7 @@ export function AuditReconciliationPage() {
           Closing Depreciation should equal Closing NBV."
         actions={
           <div className="flex items-center gap-3">
-            <RefreshControl computedAt={computedAt} loading={loading} onRefresh={load} />
+            <RefreshControl computedAt={computedAt} loading={loading} failed={!!error} onRefresh={load} />
             <ExportButton url={period ? getAuditReconciliationExportUrl(period) : undefined} />
           </div>
         }

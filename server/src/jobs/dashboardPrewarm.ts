@@ -1,11 +1,13 @@
 import type pg from "pg";
 import {
+  computeAuditReconciliation,
   computeDashboardTotals,
   computeDashboardTrend,
   requireFySettings,
   type Fy
 } from "../routes/reports.js";
 import {
+  auditReconciliationCacheKey,
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
@@ -41,54 +43,97 @@ import {
 const UNSCOPED_USER = { centerScope: null };
 const UNFILTERED = {};
 
-/** How many trailing days (inclusive of the anchor date) to keep warm — "today" (in
- *  the sense every real request actually means: whatever Settings' AS_AT currently
- *  is) plus a couple of days back, in case someone navigates the header's date picker
- *  a little into the recent past. Small on purpose: each date costs two real
- *  far_calc_component() scans (totals + trend) to warm, so this isn't "warm every
- *  possible date," just the handful someone is actually likely to load soon. */
-const TRAILING_DAYS = 3;
+// The client doesn't request Settings' stored AS_AT — SettingsContext resets it to the
+// browser's own "today" on every fresh load, and only THAT write moves the stored value.
+// Anchoring on the stored AS_AT (as this used to) meant a run before the day's first
+// visit warmed yesterday, and the first real Dashboard load of the day hit a cold cache:
+// a live 504 incident on 2026-09-24. So anchor on today as the users' browsers see it.
+// ponytail: single fixed timezone (every user is in India); make it configurable if
+// users ever span timezones.
+const USER_TIMEZONE = "Asia/Kolkata";
 
-function trailingDates(anchor: string, count: number): string[] {
-  const dates: string[] = [];
-  const d = new Date(`${anchor}T00:00:00Z`);
-  for (let i = 0; i < count; i++) {
-    dates.push(d.toISOString().slice(0, 10));
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
-  return dates;
+function isoDateInTimezone(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-/** Warms report_totals_cache for dashboard-totals and dashboard-trend, for AS_AT and
- *  the TRAILING_DAYS-1 days before it — skips anything already cached and unexpired
- *  (the common case once this has run once), so a repeat call is cheap. No-ops
- *  cleanly if Settings hasn't been configured yet (same condition the routes
- *  themselves 409 on). Never throws on an individual date's failure — logs and moves
- *  on to the next, so one bad date can't block the others from warming. */
+function shiftIsoDate(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The dates worth warming, most urgent first: users' today (clamped to the FY, the
+ *  same clamp SettingsContext applies), the stored AS_AT if someone picked another date,
+ *  and yesterday (date-picker nudges). Deduplicated. Exported for its test. */
+export function prewarmDates(now: Date, fy: { asAt: string; fyStart: string; fyEnd: string }): string[] {
+  const today = isoDateInTimezone(now, USER_TIMEZONE);
+  const clamped = today < fy.fyStart ? fy.fyStart : today > fy.fyEnd ? fy.fyEnd : today;
+  const yesterday = shiftIsoDate(clamped, -1);
+  const dates = [clamped, fy.asAt, ...(yesterday >= fy.fyStart ? [yesterday] : [])];
+  return [...new Set(dates)];
+}
+
+/** Warms report_totals_cache for dashboard-totals, dashboard-trend and
+ *  audit-reconciliation, for each of prewarmDates() in order — skips anything already
+ *  cached and unexpired (the common case once this has run once), so a repeat call is
+ *  cheap. No-ops cleanly if Settings hasn't been configured yet (same condition the
+ *  routes themselves 409 on). Never throws on an individual date's failure — logs and
+ *  moves on to the next, so one bad date can't block the others from warming. */
 export async function prewarmDashboardCaches(db: pg.Pool): Promise<void> {
   const fyBase = await requireFySettings(db);
   if (!fyBase) return;
 
-  for (const asAt of trailingDates(fyBase.asAt, TRAILING_DAYS)) {
-    const fy: Fy = { ...fyBase, asAt };
+  for (const asAt of prewarmDates(new Date(), fyBase)) {
     try {
-      await warmOne(db, fy);
+      await warmOne(db, asAt);
     } catch (err) {
       console.error(`Dashboard pre-warm failed for asAt=${asAt}:`, err);
     }
   }
 }
 
-async function warmOne(db: pg.Pool, fy: Fy): Promise<void> {
-  const totalsKey = dashboardTotalsCacheKey({ asAt: fy.asAt, centerScope: null });
+// This is a background job, not an interactive request: the database role's own
+// statement_timeout (Supabase's default, ~2 min) is right for a user-facing query but
+// killed a cold totals scan here under load (2026-09-24 manual run: "canceling statement
+// due to statement timeout"). SET LOCAL inside a transaction lifts it for this job's
+// queries only, and — unlike a session-level SET or a startup `options` param — works
+// through Supabase's transaction-mode pooler too.
+async function withoutStatementTimeout<T>(db: pg.Pool, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout = 0");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function warmOne(db: pg.Pool, asAt: string): Promise<void> {
+  const fy: Fy = (await requireFySettings(db, { asAt }))!;
+  const totalsKey = dashboardTotalsCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, totalsKey))) {
-    const totals = await computeDashboardTotals(db, fy, UNSCOPED_USER, UNFILTERED);
+    const totals = await withoutStatementTimeout(db, (c) => computeDashboardTotals(c, fy, UNSCOPED_USER, UNFILTERED));
     await setCachedReportTotals(db, totalsKey, totals);
   }
 
-  const trendKey = dashboardTrendCacheKey({ asAt: fy.asAt, centerScope: null });
+  const trendKey = dashboardTrendCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, trendKey))) {
-    const trend = await computeDashboardTrend(db, fy, UNSCOPED_USER, UNFILTERED);
+    const trend = await withoutStatementTimeout(db, (c) => computeDashboardTrend(c, fy, UNSCOPED_USER, UNFILTERED));
     await setCachedReportTotals(db, trendKey, trend);
+  }
+
+  // Resolved exactly like the route does for the client's request (it always sends
+  // Settings' own fyStart/fyEnd alongside asAt), so the key and payload match.
+  const reconFy = (await requireFySettings(db, { asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd }))!;
+  const reconKey = auditReconciliationCacheKey({ asAt, fyStart: reconFy.fyStart, fyEnd: reconFy.fyEnd, centerScope: null });
+  if (!(await getCachedReportTotals(db, reconKey))) {
+    const recon = await withoutStatementTimeout(db, (c) => computeAuditReconciliation(c, reconFy, UNSCOPED_USER));
+    await setCachedReportTotals(db, reconKey, recon);
   }
 }

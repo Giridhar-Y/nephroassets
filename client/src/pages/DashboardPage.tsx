@@ -47,6 +47,13 @@ function SkeletonBar({ className = "h-6 w-24" }: { className?: string }) {
   return <div className={`animate-pulse rounded bg-gray-200 ${className}`} />;
 }
 
+// Shown in place of a figure once its request has actually failed (the error line at
+// the top of the page has the reason + Retry) — a skeleton that never resolves would
+// read as "still loading" forever.
+function Unavailable() {
+  return <p className="mt-3 text-xs text-gray-400">Couldn&apos;t load — see the message above.</p>;
+}
+
 function KpiTile({
   label,
   value,
@@ -352,7 +359,12 @@ export function DashboardPage() {
     <div className="flex h-full flex-col overflow-hidden bg-white">
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
         <div className="mb-4 flex justify-end">
-          <RefreshControl computedAt={computedAt} loading={loadingFast || loadingTotals || loadingTrend} onRefresh={load} />
+          <RefreshControl
+            computedAt={computedAt}
+            loading={loadingFast || loadingTotals || loadingTrend}
+            failed={!!(fastError || totalsError || trendError)}
+            onRefresh={load}
+          />
         </div>
         {[
           { message: fastError, retry: load },
@@ -386,10 +398,10 @@ export function DashboardPage() {
             <div className="grid grid-cols-4 gap-5">
               <KpiTile
                 label="Gross Block"
-                value={totals ? formatCurrencyCompact(totals.totals.grossBlock) : ""}
+                value={totals ? formatCurrencyCompact(totals.totals.grossBlock) : "—"}
                 fullValue={totals ? formatCurrency(totals.totals.grossBlock) : undefined}
                 tone="cost"
-                loading={!totals}
+                loading={loadingTotals}
               >
                 {totals && (
                   <OpeningAdditionsBar opening={totals.totals.openingGrossBlock} additions={totals.totals.additionsFytd} />
@@ -397,18 +409,18 @@ export function DashboardPage() {
               </KpiTile>
               <KpiTile
                 label="Accumulated Depreciation"
-                value={totals ? formatCurrencyCompact(totals.totals.closingAccDep) : ""}
+                value={totals ? formatCurrencyCompact(totals.totals.closingAccDep) : "—"}
                 fullValue={totals ? formatCurrency(totals.totals.closingAccDep) : undefined}
                 tone="depreciation"
-                loading={!totals}
+                loading={loadingTotals}
               />
               <KpiTile
                 label="Net Block"
-                value={totals ? formatCurrencyCompact(totals.totals.nbv) : ""}
+                value={totals ? formatCurrencyCompact(totals.totals.nbv) : "—"}
                 fullValue={totals ? formatCurrency(totals.totals.nbv) : undefined}
                 tone="net"
                 size="lg"
-                loading={!totals}
+                loading={loadingTotals}
               >
                 {trend && <NetBlockDelta trend={trend.nbvTrend} />}
               </KpiTile>
@@ -439,10 +451,12 @@ export function DashboardPage() {
                       />
                     </div>
                   </>
-                ) : (
+                ) : loadingTotals ? (
                   <div className="mt-2">
                     <SkeletonBar className="h-8 w-32" />
                   </div>
+                ) : (
+                  <Unavailable />
                 )}
               </Card>
 
@@ -471,10 +485,12 @@ export function DashboardPage() {
                       <span>Sale Proceeds {formatCurrency(disposalPL.saleProceeds)}</span>
                     </div>
                   </>
-                ) : (
+                ) : loadingTotals ? (
                   <div className="mt-3">
                     <SkeletonBar className="h-16 w-full" />
                   </div>
+                ) : (
+                  <Unavailable />
                 )}
               </Card>
 
@@ -497,17 +513,28 @@ export function DashboardPage() {
                       ))}
                     </div>
                   </>
-                ) : (
+                ) : loadingTrend ? (
                   <div className="mt-3">
                     <SkeletonBar className="h-11 w-full" />
                   </div>
+                ) : (
+                  <Unavailable />
                 )}
               </Card>
             </div>
 
             <div className="grid grid-cols-4 gap-5">
               {!totals
-                ? DASHBOARD_EXCEPTION_KEYS.map((key) => <SkeletonBar key={key} className="h-20 w-full rounded-xl" />)
+                ? DASHBOARD_EXCEPTION_KEYS.map((key) =>
+                    loadingTotals ? (
+                      <SkeletonBar key={key} className="h-20 w-full rounded-xl" />
+                    ) : (
+                      <div key={key} className="rounded-xl bg-gray-50 p-5 text-left">
+                        <div className="font-heading text-3xl font-extrabold text-gray-300">—</div>
+                        <div className="mt-1 text-xs font-medium text-gray-600">{EXCEPTION_LABELS[key]}</div>
+                      </div>
+                    )
+                  )
                 : DASHBOARD_EXCEPTION_KEYS.map((key) => {
                     const category = totals.exceptions[key];
                     const toneClasses = EXCEPTION_TILE_TONE_CLASSES[EXCEPTION_TONES[key]];

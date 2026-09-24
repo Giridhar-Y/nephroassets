@@ -12,16 +12,25 @@ import { Button } from "./Button.js";
 export function RefreshControl({
   computedAt,
   loading,
+  failed = false,
   onRefresh
 }: {
   computedAt: string | null;
   loading: boolean;
+  /** Some request failed — says so instead of silently showing no timestamp. */
+  failed?: boolean;
   onRefresh: () => void;
 }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-xs text-gray-500" aria-live="polite">
-        {loading ? "Loading…" : computedAt ? `Last updated: ${formatDateTime(computedAt)}` : null}
+      <span className={`text-xs ${!loading && failed ? "text-red-600" : "text-gray-500"}`} aria-live="polite">
+        {loading
+          ? "Loading…"
+          : failed
+            ? "Some figures couldn't load"
+            : computedAt
+              ? `Last updated: ${formatDateTime(computedAt)}`
+              : null}
       </span>
       <Button variant="secondary" size="sm" onClick={onRefresh} disabled={loading}>
         <RetryIcon fontSize={14} className={loading ? "animate-spin" : undefined} />

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
 import ExcelJS from "exceljs";
@@ -202,8 +203,19 @@ function buildComponentFigures(r: ReconciliationRow) {
 // That's a self-check on the *workbook's formula chain* (would only ever catch a typo
 // in the reference's own Combined-block formulas) — here, Combined is summed directly
 // from the same per-asset figures as C1/C2, so an equivalent check would be tautological.
+/** The audit-reconciliation route's cached payload — shared with jobs/dashboardPrewarm.ts
+ *  so a pre-warmed row is byte-for-byte what the route itself would have cached. */
+export async function computeAuditReconciliation(
+  db: Db,
+  fy: NonNullable<Awaited<ReturnType<typeof requireFySettings>>>,
+  user: Pick<AuthedUser, "centerScope">
+) {
+  const items = await computeReconciliationItems(db, fy, user);
+  return { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
+}
+
 async function computeReconciliationItems(
-  db: Awaited<ReturnType<typeof getPool>>,
+  db: Db,
   fy: { asAt: string; fyStart: string; fyEnd: string; daysInFy: number },
   user: Pick<AuthedUser, "centerScope">
 ) {
@@ -675,7 +687,9 @@ interface TransferDepreciationLocationRow {
 }
 
 export type Fy = { asAt: string; fyStart: string; fyEnd: string; daysInFy: number };
-type Db = Awaited<ReturnType<typeof getPool>>;
+// A PoolClient too, so jobs/dashboardPrewarm.ts can run these inside its own
+// transaction (SET LOCAL statement_timeout) — see withoutStatementTimeout there.
+type Db = Awaited<ReturnType<typeof getPool>> | PoolClient;
 
 /** Validates every condition once (against a scratch params array, discarded) so a bad
  *  column/op combination fails fast with a 400 before any query — including before a
@@ -1734,8 +1748,7 @@ export default async function reportsRoutes(app: FastifyInstance) {
     );
     if (cached) return cached;
 
-    const items = await computeReconciliationItems(db, fy, req.user!);
-    const result = { asAt: fy.asAt, fyStart: fy.fyStart, isCurrentFy: fy.isCurrentFy, items };
+    const result = await computeAuditReconciliation(db, fy, req.user!);
     const computedAt = await setCachedReportTotals(db, cacheKey, result);
     return { ...result, computedAt };
   });
