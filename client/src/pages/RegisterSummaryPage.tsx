@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchCenters,
   fetchRegisterSummary,
@@ -57,8 +57,14 @@ export function RegisterSummaryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Same superseded-response guard as Dashboard/Audit Reconciliation: filters can change
+  // faster than a request returns, and an older, slower response must never overwrite
+  // the newer selection's figures.
+  const runId = useRef(0);
   function load() {
     if (!asAt) return;
+    const run = ++runId.current;
+    const current = () => run === runId.current;
     setLoading(true);
     setError(null);
     fetchRegisterSummary({
@@ -69,9 +75,15 @@ export function RegisterSummaryPage() {
       dateAcquiredFrom: dateAcquiredFrom || undefined,
       dateAcquiredTo: dateAcquiredTo || undefined
     })
-      .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load the register summary."))
-      .finally(() => setLoading(false));
+      .then((res) => {
+        if (current()) setData(res);
+      })
+      .catch((err) => {
+        if (current()) setError(err instanceof Error ? err.message : "Could not load the register summary.");
+      })
+      .finally(() => {
+        if (current()) setLoading(false);
+      });
   }
 
   // Reruns on every filter change, same reactive convention Audit Reconciliation's own

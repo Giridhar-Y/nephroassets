@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchDepreciationPosting, type DepreciationPostingBreakdown } from "../api/client.js";
 import { useSettings } from "../lib/SettingsContext.js";
 import { formatCurrency, formatDate } from "../lib/format.js";
@@ -29,17 +29,26 @@ export function DepreciationPostingPage() {
   const isCustomDate = !!(settings && depDate && depDate !== settings.asAt);
   const settingsKey = fySettingsKey(settings);
 
+  // Superseded-response guard — see RegisterSummaryPage.
+  const runId = useRef(0);
   const load = useCallback(() => {
     if (!depDate) return;
+    const run = ++runId.current;
+    const current = () => run === runId.current;
     setLoading(true);
     setError(null);
     fetchDepreciationPosting(depDate)
       .then((res) => {
+        if (!current()) return;
         setTotal(res.totalPeriodDepreciation);
         setBreakdown(res.breakdown);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load the posting summary."))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (current()) setError(err instanceof Error ? err.message : "Could not load the posting summary.");
+      })
+      .finally(() => {
+        if (current()) setLoading(false);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depDate]);
 

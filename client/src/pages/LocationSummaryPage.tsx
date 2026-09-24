@@ -57,12 +57,24 @@ export function LocationSummaryPage() {
       setSummary(null);
       return;
     }
+    // Superseded-response guard — see RegisterSummaryPage. The cleanup below flips it
+    // when location/settings change (or on unmount) before this request returns.
+    let current = true;
     setSummaryLoading(true);
     setSummaryError(null);
     fetchLocationSummary(location, asAt)
-      .then(setSummary)
-      .catch((err) => setSummaryError(err instanceof Error ? err.message : "Could not load the summary."))
-      .finally(() => setSummaryLoading(false));
+      .then((res) => {
+        if (current) setSummary(res);
+      })
+      .catch((err) => {
+        if (current) setSummaryError(err instanceof Error ? err.message : "Could not load the summary.");
+      })
+      .finally(() => {
+        if (current) setSummaryLoading(false);
+      });
+    return () => {
+      current = false;
+    };
     // Refetch on any FY setting change, not just AS_AT — settingsKey covers all of them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, settingsKey]);
