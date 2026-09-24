@@ -13,12 +13,17 @@ export function RefreshControl({
   computedAt,
   loading,
   failed = false,
+  attemptedAt = null,
   onRefresh
 }: {
   computedAt: string | null;
   loading: boolean;
   /** Some request failed — says so instead of silently showing no timestamp. */
   failed?: boolean;
+  /** When the last load/refresh attempt finished (ISO). Shown with seconds on failure,
+   *  so a Refresh that fails again visibly changes the text instead of looking like a
+   *  no-op click — computedAt only moves on success. */
+  attemptedAt?: string | null;
   onRefresh: () => void;
 }) {
   return (
@@ -27,7 +32,7 @@ export function RefreshControl({
         {loading
           ? "Loading…"
           : failed
-            ? "Some figures couldn't load"
+            ? `Some figures couldn't load${attemptedAt ? ` · tried at ${new Date(attemptedAt).toLocaleTimeString("en-IN")}` : ""}`
             : computedAt
               ? `Last updated: ${formatDateTime(computedAt)}`
               : null}

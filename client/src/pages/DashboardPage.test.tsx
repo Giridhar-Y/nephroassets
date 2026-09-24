@@ -302,7 +302,7 @@ describe("DashboardPage: a failed request resolves to an error state, never an e
     vi.stubGlobal("fetch", fetchMock);
     render(<DashboardPage />);
 
-    await waitFor(() => expect(screen.getByText("Some figures couldn't load")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/^Some figures couldn't load · tried at /)).toBeTruthy());
     expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(1);
     expect(screen.queryByText("Loading…")).toBeNull();
     expect(document.querySelectorAll(".animate-pulse")).toHaveLength(0);
@@ -310,5 +310,33 @@ describe("DashboardPage: a failed request resolves to an error state, never an e
     // Pieces that did load still render — the trend and asset count aren't held hostage.
     expect(screen.getByText(String(FAST.totals.assetCount))).toBeTruthy();
     expect(screen.getByText("Net Block Trend")).toBeTruthy();
+  });
+
+  it("Refresh after a failure re-fires the requests and visibly shows the new attempt time", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-24T06:00:00Z"));
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes("dashboard-totals"))
+          return Promise.resolve({ ok: false, status: 504, json: async () => ({ error: "Gateway Timeout" }) } as Response);
+        if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse(TREND));
+        return Promise.resolve(jsonResponse(FAST));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DashboardPage />);
+
+      const first = `tried at ${new Date("2026-09-24T06:00:00Z").toLocaleTimeString("en-IN")}`;
+      await waitFor(() => expect(screen.getByText(new RegExp(escapeRegExp(first)))).toBeTruthy());
+
+      vi.setSystemTime(new Date("2026-09-24T06:01:07Z"));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+      const second = `tried at ${new Date("2026-09-24T06:01:07Z").toLocaleTimeString("en-IN")}`;
+      await waitFor(() => expect(screen.getByText(new RegExp(escapeRegExp(second)))).toBeTruthy());
+      expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(2);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

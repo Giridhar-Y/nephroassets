@@ -268,6 +268,7 @@ export function DashboardPage() {
   const [totalsError, setTotalsError] = useState<string | null>(null);
   const [trendError, setTrendError] = useState<string | null>(null);
   const [disposalScope, setDisposalScope] = useState<DisposalScope>("fytd");
+  const [attemptedAt, setAttemptedAt] = useState<string | null>(null);
   // Entrance fade/slide-in, once — a plain two-state CSS transition (no keyframes, no
   // animation library) rather than a per-tile stagger, restrained on purpose: this is a
   // screen finance scans for numbers, not a marketing page.
@@ -335,7 +336,10 @@ export function DashboardPage() {
     } catch (err) {
       if (current()) setTrendError(err instanceof Error ? err.message : "Could not load the trend.");
     } finally {
-      if (current()) setLoadingTrend(false);
+      if (current()) {
+        setLoadingTrend(false);
+        setAttemptedAt(new Date().toISOString());
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.asAt, settingsKey]);
@@ -363,6 +367,7 @@ export function DashboardPage() {
             computedAt={computedAt}
             loading={loadingFast || loadingTotals || loadingTrend}
             failed={!!(fastError || totalsError || trendError)}
+            attemptedAt={attemptedAt}
             onRefresh={load}
           />
         </div>

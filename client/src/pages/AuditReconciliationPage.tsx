@@ -127,6 +127,7 @@ export function AuditReconciliationPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [computedAt, setComputedAt] = useState<string | null>(null);
+  const [attemptedAt, setAttemptedAt] = useState<string | null>(null);
 
   // Independent of the app-wide "Figures as of" setting — seeded from it once, on
   // first load, but from then on only this page's own period selector drives what gets
@@ -153,7 +154,10 @@ export function AuditReconciliationPage() {
         setComputedAt(res.computedAt);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the reconciliation."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setAttemptedAt(new Date().toISOString());
+      });
   }, [period]);
 
   useEffect(() => {
@@ -171,7 +175,7 @@ export function AuditReconciliationPage() {
           Closing Depreciation should equal Closing NBV."
         actions={
           <div className="flex items-center gap-3">
-            <RefreshControl computedAt={computedAt} loading={loading} failed={!!error} onRefresh={load} />
+            <RefreshControl computedAt={computedAt} loading={loading} failed={!!error} attemptedAt={attemptedAt} onRefresh={load} />
             <ExportButton url={period ? getAuditReconciliationExportUrl(period) : undefined} />
           </div>
         }
