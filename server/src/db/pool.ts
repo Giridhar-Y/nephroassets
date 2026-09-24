@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
@@ -104,7 +105,15 @@ export async function applySchema(): Promise<void> {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [APPLY_SCHEMA_LOCK_ID]);
-    await applySchemaLocked(client);
+    const fingerprint = schemaFingerprint();
+    if ((await storedSchemaFingerprint(client)) !== fingerprint) {
+      await applySchemaLocked(client);
+      await client.query(
+        `CREATE TABLE IF NOT EXISTS schema_fingerprint (id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), fingerprint TEXT NOT NULL);
+         INSERT INTO schema_fingerprint (id, fingerprint) VALUES (TRUE, '${fingerprint}')
+         ON CONFLICT (id) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`
+      );
+    }
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -112,6 +121,33 @@ export async function applySchema(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+// Skip the whole migration when this exact code already ran against this database. The
+// DDL below is idempotent but NOT free: ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes
+// an ACCESS EXCLUSIVE lock before it checks whether the column exists, and
+// calcFunction.sql drops/recreates far_calc_component. Run on every Vercel cold start,
+// that one transaction queued behind any long-running report scan on `assets` while
+// already holding exclusive locks on `users` & co — so every request (auth reads
+// `users`) froze behind it, and the Dashboard pre-warm's scan deadlocked against it
+// (2026-09-24, "deadlock detected"). Now it runs once per deploy that changes it.
+// The fingerprint covers the migration code itself plus every SQL file it reads; a
+// change anywhere in them (even a comment) just means one extra full run.
+function schemaFingerprint(): string {
+  return createHash("sha256")
+    .update(applySchemaLocked.toString())
+    .update(seedBuiltInRoles.toString())
+    .update(backfillUserPermissions.toString())
+    .update(readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8"))
+    .update(readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8"))
+    .digest("hex");
+}
+
+async function storedSchemaFingerprint(db: pg.PoolClient): Promise<string | null> {
+  const { rows } = await db.query<{ exists: boolean }>(`SELECT to_regclass('schema_fingerprint') IS NOT NULL AS exists`);
+  if (!rows[0]?.exists) return null;
+  const { rows: fp } = await db.query<{ fingerprint: string }>(`SELECT fingerprint FROM schema_fingerprint WHERE id = TRUE`);
+  return fp[0]?.fingerprint ?? null;
 }
 
 async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
