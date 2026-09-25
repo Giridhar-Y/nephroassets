@@ -108,6 +108,12 @@ export async function applySchema(): Promise<void> {
     const fingerprint = schemaFingerprint();
     if ((await storedSchemaFingerprint(client)) !== fingerprint) {
       await applySchemaLocked(client);
+      // The migration code changed — possibly calcFunction.sql itself. Cached report
+      // figures were computed by the previous code and nothing in the data signature
+      // would notice (month-end rows live 7 days), so clear them. Same bump-then-delete
+      // order as invalidateReportTotalsCache, inside this transaction.
+      await client.query(`UPDATE report_cache_revision SET revision = revision + 1 WHERE id = TRUE`);
+      await client.query(`DELETE FROM report_totals_cache`);
       await client.query(
         `CREATE TABLE IF NOT EXISTS schema_fingerprint (id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), fingerprint TEXT NOT NULL);
          INSERT INTO schema_fingerprint (id, fingerprint) VALUES (TRUE, '${fingerprint}')
@@ -550,6 +556,8 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
       payload      JSONB NOT NULL,
       computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE report_totals_cache ADD COLUMN IF NOT EXISTS data_signature TEXT;
+    ALTER TABLE report_totals_cache ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 
     -- See schema.sql's own report_prewarm_requests comment.
     CREATE TABLE IF NOT EXISTS report_prewarm_requests (

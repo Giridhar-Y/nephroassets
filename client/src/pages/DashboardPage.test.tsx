@@ -266,7 +266,7 @@ describe("DashboardPage: header, Missing Data tile, refresh and loading", () => 
 
   it("shows the older cached timestamp as Last updated", async () => {
     await renderDashboard();
-    expect(screen.getByText(`Last updated: ${formatDateTime(TREND.computedAt)}`)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`^Last updated: ${escapeRegExp(formatDateTime(TREND.computedAt))} · checked `))).toBeTruthy();
   });
 
   it("Refresh re-fetches all 3 pieces and never shows the old figures while the new ones load", async () => {
@@ -366,7 +366,47 @@ describe("DashboardPage: a date that isn't cached yet (202 preparing on Vercel)"
       expect(fetchMock.mock.calls.filter((c) => (c[0] as string).includes("dashboard-totals"))).toHaveLength(2);
       expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy();
       expect(screen.queryByText(/Preparing figures/)).toBeNull();
-      expect(screen.getByText(`Last updated: ${formatDateTime(TREND.computedAt)}`)).toBeTruthy();
+      expect(screen.getByText(new RegExp(`^Last updated: ${escapeRegExp(formatDateTime(TREND.computedAt))} · checked `))).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("DashboardPage: Refresh after a data change reflects it", () => {
+  it("shows the new figures and computedAt, and the 'checked' time moves even when nothing changed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-25T06:00:00Z"));
+      let current: DashboardTotals = TOTALS;
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes("dashboard-totals")) return Promise.resolve(jsonResponse(current));
+        if (url.includes("dashboard-trend")) return Promise.resolve(jsonResponse({ ...TREND, computedAt: current.computedAt }));
+        return Promise.resolve(jsonResponse(FAST));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DashboardPage />);
+      await waitFor(() => expect(screen.getByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeTruthy());
+      const checked1 = new Date("2026-09-25T06:00:00Z").toLocaleTimeString("en-IN");
+      expect(screen.getByText(new RegExp(`· checked ${escapeRegExp(checked1)}$`))).toBeTruthy();
+
+      // Nothing changed: Refresh still visibly registers (the checked time moves).
+      vi.setSystemTime(new Date("2026-09-25T06:02:10Z"));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      const checked2 = new Date("2026-09-25T06:02:10Z").toLocaleTimeString("en-IN");
+      await waitFor(() => expect(screen.getByText(new RegExp(`· checked ${escapeRegExp(checked2)}$`))).toBeTruthy());
+
+      // The data changed (the server recomputed): Refresh shows the new figures and time.
+      current = {
+        ...TOTALS,
+        totals: { ...TOTALS.totals, grossBlock: 99_000_000_000 },
+        computedAt: "2026-09-25T06:05:00.000Z"
+      };
+      vi.setSystemTime(new Date("2026-09-25T06:05:30Z"));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() => expect(screen.getByText(formatCurrencyCompact(99_000_000_000))).toBeTruthy());
+      expect(screen.queryByText(formatCurrencyCompact(TOTALS.totals.grossBlock))).toBeNull();
+      expect(screen.getByText(new RegExp(`^Last updated: ${escapeRegExp(formatDateTime("2026-09-25T06:05:00.000Z"))}`))).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

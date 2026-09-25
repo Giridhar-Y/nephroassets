@@ -6,7 +6,7 @@ import { getPool } from "../db/pool.js";
 import { clearReportTotalsCacheForTests } from "../db/reportTotalsCache.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
-import { prewarmDashboardCaches } from "../jobs/dashboardPrewarm.js";
+import { monthEndDates, prewarmDashboardCaches } from "../jobs/dashboardPrewarm.js";
 import {
   claimPrewarmRequest,
   completePrewarmRequest,
@@ -269,5 +269,123 @@ describe("custom Days-in-FY: one canonical resolution (review 2026-09-24)", () =
     const { rows } = await db.query<{ cache_key: string }>(`SELECT cache_key FROM report_totals_cache WHERE cache_key LIKE 'audit-reconciliation:%'`);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.cache_key).toContain('"daysInFy":360');
+  });
+});
+
+// Asked 2026-09-25: "Refresh doesn't actually refresh". It re-served the cached row;
+// nothing tied that row to the data it was computed from, so an edit that bypassed the
+// app's invalidation (SQL editor, scripts) was never picked up until the TTL expired.
+describe("Refresh after a data change reflects it (data signature)", () => {
+  const FAR = "REFRESH-SIG-1";
+  async function writeOutsideApp(sql: string, params: unknown[] = []) {
+    const client = await (await getPool()).connect();
+    try {
+      await client.query(sql, params);
+      await client.query("SELECT pg_stat_force_next_flush()"); // publish the write counters now
+    } finally {
+      client.release();
+    }
+  }
+  beforeEach(async () => {
+    await writeOutsideApp(`DELETE FROM assets WHERE far_id = $1`, [FAR]);
+  });
+  afterAll(async () => {
+    await writeOutsideApp(`DELETE FROM assets WHERE far_id = $1`, [FAR]);
+  });
+
+  it("Docker/company: a Refresh after an out-of-app edit recomputes and shows the new figures", async () => {
+    vi.stubEnv("VERCEL", "");
+    const url = `/api/reports/dashboard-totals?asAt=2026-09-24`;
+    const first = (await authedInject(app, { method: "GET", url })).json();
+    const again = (await authedInject(app, { method: "GET", url })).json();
+    expect(again.computedAt).toBe(first.computedAt); // nothing changed: a genuine cache hit
+
+    await writeOutsideApp(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location,
+         useful_life_c1_years, useful_life_c2_years, c1_opening_cost)
+       VALUES ($1, 'Refresh-Sub', 'added via SQL, no app invalidation', 'Active', '2020-01-01', 'Refresh-Center', 30, 5, 1000000)`,
+      [FAR]
+    );
+
+    const refreshed = (await authedInject(app, { method: "GET", url })).json();
+    expect(refreshed.computedAt).not.toBe(first.computedAt);
+    expect(refreshed.totals.grossBlock).toBeCloseTo(first.totals.grossBlock + 1000000, 2);
+  });
+
+  it("Vercel: the same stale row is not replayed; the request goes to the preparing flow", async () => {
+    vi.stubEnv("VERCEL", "");
+    const url = `/api/reports/dashboard-totals?asAt=2026-09-24`;
+    await authedInject(app, { method: "GET", url }); // cached
+    await writeOutsideApp(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location, useful_life_c1_years, useful_life_c2_years)
+       VALUES ($1, 'Refresh-Sub', 'x', 'Active', '2020-01-01', 'Refresh-Center', 5, 5)`,
+      [FAR]
+    );
+    vi.stubEnv("VERCEL", "1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const res = await authedInject(app, { method: "GET", url });
+    expect(res.statusCode).toBe(202);
+  });
+});
+
+describe("month-end pre-warming", () => {
+  const FY_ = { fyStart: "2026-04-01", fyEnd: "2027-03-31" };
+
+  it("monthEndDates: the current FY's completed month-ends, most recent first", () => {
+    expect(monthEndDates(new Date("2026-09-25T06:00:00Z"), FY_)).toEqual([
+      "2026-08-31",
+      "2026-07-31",
+      "2026-06-30",
+      "2026-05-31",
+      "2026-04-30"
+    ]);
+    // 30 Sept itself isn't "completed" until 1 Oct (IST), and nothing before FY start.
+    expect(monthEndDates(new Date("2026-09-30T06:00:00Z"), FY_)[0]).toBe("2026-08-31");
+    expect(monthEndDates(new Date("2026-09-30T19:00:00Z"), FY_)[0]).toBe("2026-09-30"); // already 1 Oct in IST
+    expect(monthEndDates(new Date("2026-04-15T06:00:00Z"), FY_)).toEqual([]);
+    expect(monthEndDates(new Date("2027-06-01T06:00:00Z"), FY_)).toHaveLength(12); // FY over: all 12, capped at FY end
+  });
+
+  async function rowsFor(asAt: string) {
+    const { rows } = await (await getPool()).query<{ cache_key: string; hours: string; computed_at: Date }>(
+      `SELECT cache_key, ROUND(EXTRACT(EPOCH FROM expires_at - computed_at) / 3600) AS hours, computed_at
+       FROM report_totals_cache WHERE cache_key LIKE $1 ORDER BY cache_key`,
+      [`%"asAt":"${asAt}"%`]
+    );
+    return rows;
+  }
+
+  it("warms all three reports for a month-end with the 7-day lifetime, and a second run recomputes nothing (only stale dates)", async () => {
+    const db = await getPool();
+    const now = new Date("2026-06-10T06:00:00Z"); // month-ends: 2026-05-31, 2026-04-30
+    await prewarmDashboardCaches(db, { now });
+
+    const may = await rowsFor("2026-05-31");
+    expect(may.map((r) => r.cache_key.split(":")[0]).sort()).toEqual(["audit-reconciliation", "dashboard-totals", "dashboard-trend"]);
+    expect(may.every((r) => Number(r.hours) === 168)).toBe(true);
+
+    await prewarmDashboardCaches(db, { now });
+    const mayAgain = await rowsFor("2026-05-31");
+    expect(mayAgain.map((r) => r.computed_at.getTime())).toEqual(may.map((r) => r.computed_at.getTime()));
+  });
+
+  it("respects the time budget: with none left, no month-end is started (today's dates still are)", async () => {
+    const db = await getPool();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await prewarmDashboardCaches(db, { now: new Date("2026-06-10T06:00:00Z"), monthEndBudgetMs: 0 });
+    expect(await rowsFor("2026-05-31")).toEqual([]);
+    expect((await rowsFor("2026-06-10")).length).toBe(3);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/month-end budget used up/));
+    log.mockRestore();
+  });
+
+  it("a date a user is waiting on is warmed before any month-end", async () => {
+    const db = await getPool();
+    await db.query(`INSERT INTO report_prewarm_requests (as_at, fy_start, fy_end) VALUES ('2026-05-15', $1, $2)`, [FY_.fyStart, FY_.fyEnd]);
+    await prewarmDashboardCaches(db, { now: new Date("2026-06-10T06:00:00Z") });
+    const requested = Math.max(...(await rowsFor("2026-05-15")).map((r) => r.computed_at.getTime()));
+    const firstMonthEnd = Math.min(...(await rowsFor("2026-05-31")).map((r) => r.computed_at.getTime()));
+    expect(requested).toBeLessThanOrEqual(firstMonthEnd);
+    expect(await pending()).toEqual([]);
   });
 });

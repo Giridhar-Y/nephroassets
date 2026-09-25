@@ -474,9 +474,13 @@ CREATE INDEX idx_export_jobs_user_id ON export_jobs (user_id, created_at DESC);
 -- specifically so a cold Vercel serverless instance doesn't pay the full
 -- far_calc_component() scan again just because it isn't the instance that computed it.
 CREATE TABLE report_totals_cache (
-  cache_key    TEXT PRIMARY KEY,
-  payload      JSONB NOT NULL,
-  computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  cache_key       TEXT PRIMARY KEY,
+  payload         JSONB NOT NULL,
+  computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- See db/reportTotalsCache.ts: the data signature the row was computed against (a
+  -- mismatch = stale) and its per-row lifetime.
+  data_signature  TEXT,
+  expires_at      TIMESTAMPTZ
 );
 
 -- Dates a user asked for that weren't cached, waiting for the out-of-Vercel pre-warm

@@ -11,8 +11,10 @@ import {
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
-  getReportDataRevision,
-  setCachedReportTotals
+  getReportDataVersion,
+  MONTH_END_TTL,
+  setCachedReportTotals,
+  type ReportCacheTtl
 } from "../db/reportTotalsCache.js";
 import { claimPrewarmRequest, completePrewarmRequest, failPrewarmRequest } from "./prewarmRequests.js";
 
@@ -75,17 +77,45 @@ export function prewarmDates(now: Date, fy: { asAt: string; fyStart: string; fyE
   return [...new Set(dates)];
 }
 
+/** The current FY's completed month-ends (last day of each month from FY start up to,
+ *  not including, the month users are in now), most recent first: the dates finance
+ *  checks most after "today". Exported for its test. */
+export function monthEndDates(now: Date, fy: { fyStart: string; fyEnd: string }): string[] {
+  const today = isoDateInTimezone(now, USER_TIMEZONE);
+  const dates: string[] = [];
+  for (let d = new Date(`${fy.fyStart.slice(0, 7)}-01T00:00:00Z`); ; d.setUTCMonth(d.getUTCMonth() + 1)) {
+    // Day 0 of next month = last day of this one.
+    const monthEnd = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+    if (monthEnd >= today || monthEnd > fy.fyEnd) break;
+    if (monthEnd >= fy.fyStart) dates.push(monthEnd);
+  }
+  return dates.reverse();
+}
+
+/** Month-ends are background work nobody is waiting on: stop STARTING new ones once a
+ *  run has been going this long, so a run after a cache-wide invalidation (every
+ *  month-end stale at once: 3 heavy scans x up to 11 dates) stays inside the workflow's
+ *  20-minute timeout and spreads the rest over the next runs instead of one long spike. */
+const MONTH_END_BUDGET_MS = 12 * 60_000;
+
 /** Warms report_totals_cache for dashboard-totals, dashboard-trend and
- *  audit-reconciliation, for each of prewarmDates() in order — skips anything already
- *  cached and unexpired (the common case once this has run once), so a repeat call is
- *  cheap. No-ops cleanly if Settings hasn't been configured yet (same condition the
- *  routes themselves 409 on). Never throws on an individual date's failure — logs and
- *  moves on to the next, so one bad date can't block the others from warming. */
-export async function prewarmDashboardCaches(db: pg.Pool): Promise<void> {
+ *  audit-reconciliation, in priority order: prewarmDates() (today, what every load asks
+ *  for), then dates users have asked for and are waiting on, then the current FY's
+ *  month-ends (within MONTH_END_BUDGET_MS). Skips anything already cached, unexpired and
+ *  computed against the current data, so a repeat call is cheap and only stale dates are
+ *  recomputed. No-ops cleanly if Settings hasn't been configured yet (same condition the
+ *  routes themselves 409 on). Never throws on an individual date's failure: logs and
+ *  moves on, so one bad date can't block the others. */
+export async function prewarmDashboardCaches(
+  db: pg.Pool,
+  opts: { now?: Date; monthEndBudgetMs?: number } = {}
+): Promise<void> {
+  const started = Date.now();
+  const now = opts.now ?? new Date();
   const fyBase = await requireFySettings(db);
   if (!fyBase) return;
 
-  for (const asAt of prewarmDates(new Date(), fyBase)) {
+  for (const asAt of prewarmDates(now, fyBase)) {
     try {
       await warmOne(db, asAt);
     } catch (err) {
@@ -93,15 +123,37 @@ export async function prewarmDashboardCaches(db: pg.Pool): Promise<void> {
     }
   }
 
-  // Then every date a user asked for that wasn't cached (jobs/prewarmRequests.ts),
-  // claimed one at a time until nothing is claimable — so a date requested while this
-  // run was busy isn't left for the next (possibly hours-away) scheduled run. A success
-  // removes the row; a failure keeps it in a 10-minute backoff (so this loop moves on
-  // rather than retrying it back-to-back, and polls can't re-dispatch it early).
+  await drainRequestedDates(db, fyBase);
+
+  // Month-ends: only on this regular pass (never dispatched per edit, so an edit can't
+  // trigger a burst of workflow runs), only the stale ones (warmOne's cache check), and
+  // cached for 7 days (MONTH_END_TTL) so they aren't recomputed every 6 hours for
+  // identical results. Requested dates are re-drained between month-ends, so a user
+  // waiting on a spinner never queues behind this background work.
+  for (const asAt of monthEndDates(now, fyBase)) {
+    if (Date.now() - started >= (opts.monthEndBudgetMs ?? MONTH_END_BUDGET_MS)) {
+      console.log("Pre-warm: month-end budget used up; the remaining month-ends catch up on the next run.");
+      break;
+    }
+    try {
+      await warmOne(db, asAt, { ttl: MONTH_END_TTL });
+    } catch (err) {
+      console.error(`Pre-warm failed for month-end asAt=${asAt}:`, err);
+    }
+    await drainRequestedDates(db, fyBase);
+  }
+}
+
+/** Every date a user asked for that wasn't cached (jobs/prewarmRequests.ts), claimed
+ *  one at a time until nothing is claimable, so a date requested while this run was busy
+ *  isn't left for the next (possibly hours-away) scheduled run. A success removes the
+ *  row; a failure keeps it in a 10-minute backoff (so this loop moves on rather than
+ *  retrying it back-to-back, and polls can't re-dispatch it early). */
+async function drainRequestedDates(db: pg.Pool, fyBase: { fyStart: string; fyEnd: string }): Promise<void> {
   for (let req = await claimPrewarmRequest(db); req; req = await claimPrewarmRequest(db)) {
     try {
       const isCurrentFy = req.fyStart === fyBase.fyStart && req.fyEnd === fyBase.fyEnd;
-      await warmOne(db, req.asAt, isCurrentFy ? undefined : { fyStart: req.fyStart, fyEnd: req.fyEnd });
+      await warmOne(db, req.asAt, isCurrentFy ? {} : { reconPeriod: { fyStart: req.fyStart, fyEnd: req.fyEnd } });
       await completePrewarmRequest(db, req);
     } catch (err) {
       console.error(`Pre-warm failed for requested asAt=${req.asAt} (${req.fyStart}..${req.fyEnd}):`, err);
@@ -133,28 +185,38 @@ async function withoutStatementTimeout<T>(db: pg.Pool, fn: (client: pg.PoolClien
 }
 
 /** `reconPeriod`: an Audit Reconciliation request for an FY other than Settings' current
- *  one — warms only that report, since Dashboard always uses the current FY. */
-async function warmOne(db: pg.Pool, asAt: string, reconPeriod?: { fyStart: string; fyEnd: string }): Promise<void> {
-  if (reconPeriod) return warmAuditReconciliation(db, asAt, reconPeriod);
+ *  one — warms only that report, since Dashboard always uses the current FY. `ttl`: the
+ *  published rows' lifetime (month-ends use MONTH_END_TTL). */
+async function warmOne(
+  db: pg.Pool,
+  asAt: string,
+  { reconPeriod, ttl }: { reconPeriod?: { fyStart: string; fyEnd: string }; ttl?: ReportCacheTtl } = {}
+): Promise<void> {
+  if (reconPeriod) return warmAuditReconciliation(db, asAt, reconPeriod, ttl);
   const fy: Fy = (await requireFySettings(db, { asAt }))!;
   const totalsKey = dashboardTotalsCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, totalsKey))) {
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const totals = await withoutStatementTimeout(db, (c) => computeDashboardTotals(c, fy, UNSCOPED_USER, UNFILTERED));
-    await setCachedReportTotals(db, totalsKey, totals, revision);
+    await setCachedReportTotals(db, totalsKey, totals, version, ttl);
   }
 
   const trendKey = dashboardTrendCacheKey({ asAt, centerScope: null });
   if (!(await getCachedReportTotals(db, trendKey))) {
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const trend = await withoutStatementTimeout(db, (c) => computeDashboardTrend(c, fy, UNSCOPED_USER, UNFILTERED));
-    await setCachedReportTotals(db, trendKey, trend, revision);
+    await setCachedReportTotals(db, trendKey, trend, version, ttl);
   }
 
-  await warmAuditReconciliation(db, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+  await warmAuditReconciliation(db, asAt, { fyStart: fy.fyStart, fyEnd: fy.fyEnd }, ttl);
 }
 
-async function warmAuditReconciliation(db: pg.Pool, asAt: string, period: { fyStart: string; fyEnd: string }): Promise<void> {
+async function warmAuditReconciliation(
+  db: pg.Pool,
+  asAt: string,
+  period: { fyStart: string; fyEnd: string },
+  ttl?: ReportCacheTtl
+): Promise<void> {
   // Resolved exactly like the route does for the client's request (it always sends
   // fyStart/fyEnd alongside asAt), so the key and payload match.
   const reconFy = (await requireFySettings(db, { asAt, ...period }))!;
@@ -166,8 +228,8 @@ async function warmAuditReconciliation(db: pg.Pool, asAt: string, period: { fySt
     centerScope: null
   });
   if (!(await getCachedReportTotals(db, reconKey))) {
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const recon = await withoutStatementTimeout(db, (c) => computeAuditReconciliation(c, reconFy, UNSCOPED_USER));
-    await setCachedReportTotals(db, reconKey, recon, revision);
+    await setCachedReportTotals(db, reconKey, recon, version, ttl);
   }
 }

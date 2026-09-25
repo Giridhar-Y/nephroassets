@@ -11,7 +11,7 @@ import {
   dashboardTotalsCacheKey,
   dashboardTrendCacheKey,
   getCachedReportTotals,
-  getReportDataRevision,
+  getReportDataVersion,
   setCachedReportTotals
 } from "../db/reportTotalsCache.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
@@ -1780,9 +1780,9 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const result = await computeAuditReconciliation(db, fy, req.user!);
-    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, version)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 
@@ -2109,14 +2109,14 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const result = await computeDashboardTotals(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
     // null = a write invalidated the cache mid-compute: still answer this request, just
     // don't cache a result that may predate that write.
-    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, version)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 
@@ -2149,12 +2149,12 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return preparing(reply, db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
     }
 
-    const revision = await getReportDataRevision(db);
+    const version = await getReportDataVersion(db);
     const result = await computeDashboardTrend(db, fy, req.user!, {
       center: parsed.data.center,
       subClassification: parsed.data.subClassification
     });
-    const computedAt = (await setCachedReportTotals(db, cacheKey, result, revision)) ?? new Date().toISOString();
+    const computedAt = (await setCachedReportTotals(db, cacheKey, result, version)) ?? new Date().toISOString();
     return { ...result, computedAt };
   });
 }

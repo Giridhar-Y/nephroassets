@@ -5,10 +5,10 @@ import { Button } from "./Button.js";
 // "Last updated: <time>" + a Refresh button — shared by Dashboard and Audit
 // Reconciliation. `computedAt` is the server cache row's own timestamp (see
 // reportTotalsCache.ts), not the time the browser fetched it, so it honestly says how old
-// the figures are. Refresh re-requests from the server; it deliberately doesn't bypass
-// the cache — every data write already clears it, so a cache hit is never stale for its
-// asAt, and a forced cold recompute at production scale is exactly the 60s+ scan that
-// 504s on Vercel.
+// the figures are. Refresh re-requests from the server, which serves a cached row only if
+// it was computed against the data as it is now (the data signature) and recomputes
+// otherwise, so a Refresh after any data change, in-app or not, reflects it. "checked
+// <time>" moves on every attempt, so a Refresh with nothing new still visibly registered.
 export function RefreshControl({
   computedAt,
   loading,
@@ -34,7 +34,7 @@ export function RefreshControl({
           : failed
             ? `Some figures couldn't load${attemptedAt ? ` · tried at ${new Date(attemptedAt).toLocaleTimeString("en-IN")}` : ""}`
             : computedAt
-              ? `Last updated: ${formatDateTime(computedAt)}`
+              ? `Last updated: ${formatDateTime(computedAt)}${attemptedAt ? ` · checked ${new Date(attemptedAt).toLocaleTimeString("en-IN")}` : ""}`
               : null}
       </span>
       <Button variant="secondary" size="sm" onClick={onRefresh} disabled={loading}>

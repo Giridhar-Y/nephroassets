@@ -42,6 +42,29 @@ import type pg from "pg";
 // behind a real edit."
 const TTL_INTERVAL_SQL = "6 hours";
 
+/** Per-row lifetime, chosen when a row is PUBLISHED (and stored as expires_at) so every
+ *  reader — the route, the pre-warm's "already cached?" check — agrees on when it
+ *  expires. Past month-ends (jobs/dashboardPrewarm.ts) get the long one: a completed
+ *  month's figures only change when the data does, which invalidation + the data
+ *  signature below already catch, so re-computing them every 6 hours would just be
+ *  recurring database load for identical results. */
+export type ReportCacheTtl = "6 hours" | "7 days";
+export const MONTH_END_TTL: ReportCacheTtl = "7 days";
+
+// Data signature: Postgres's own cumulative write counters for the tables the cached
+// reports read. Any INSERT/UPDATE/DELETE moves it — including writes that never go
+// through this app's routes and so never call invalidateReportTotalsCache (the Supabase
+// SQL editor, one-off scripts, direct imports). Each row stores the signature read
+// before its computation started; a row whose signature no longer matches is treated as
+// a miss, so a Refresh after any real data change recomputes instead of replaying a
+// stale result. One cheap catalog read, no table scan. A stats reset just changes the
+// value too (a harmless one-off recompute). Settings is deliberately excluded: the
+// header's daily "Figures as of" write touches it and would needlessly expire every row
+// each morning; the Settings routes that DO change figures already invalidate.
+const DATA_SIGNATURE_SQL = `(SELECT COALESCE(SUM(n_tup_ins + n_tup_upd + n_tup_del), 0)::text
+   FROM pg_stat_user_tables
+   WHERE schemaname = current_schema() AND relname IN ('assets', 'transfers', 'sub_classifications'))`;
+
 /** Stable, order-independent key for one (asAt, center, subClassification, centerScope)
  *  combination — centerScope is part of the key (not just the named filters) because two
  *  users with different center-scoped access asking for "the same" asAt/center/
@@ -108,27 +131,42 @@ export function auditReconciliationCacheKey(parts: {
   })}`;
 }
 
-/** The payload comes back with the row's own `computedAt` merged in — what the
- *  Dashboard/Audit Reconciliation "Last updated" label shows. */
+/** A cache hit only if the row is unexpired AND was computed against the data as it is
+ *  right now (data signature, above). The payload comes back with the row's own
+ *  `computedAt` merged in — what the Dashboard/Audit Reconciliation "Last updated"
+ *  label shows. */
 export async function getCachedReportTotals<T>(db: pg.Pool, cacheKey: string): Promise<(T & { computedAt: string }) | undefined> {
   const { rows } = await db.query<{ payload: T & { computedAt: string } }>(
     // Same "…T…Z" ISO shape setCachedReportTotals returns (toISOString), not the
-    // session-timezone offset form jsonb would give a raw timestamptz.
-    `SELECT payload || jsonb_build_object('computedAt', to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) AS payload FROM report_totals_cache WHERE cache_key = $1 AND computed_at > NOW() - INTERVAL '${TTL_INTERVAL_SQL}'`,
+    // session-timezone offset form jsonb would give a raw timestamptz. A row from before
+    // expires_at existed falls back to the old computed_at + 6 hours.
+    `SELECT payload || jsonb_build_object('computedAt', to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) AS payload
+     FROM report_totals_cache
+     WHERE cache_key = $1
+       AND COALESCE(expires_at, computed_at + INTERVAL '${TTL_INTERVAL_SQL}') > NOW()
+       AND data_signature = ${DATA_SIGNATURE_SQL}`,
     [cacheKey]
   );
   return rows[0]?.payload;
 }
 
-/** The data revision a computation is based on — read it BEFORE computing and pass it
- *  to setCachedReportTotals. Every invalidation bumps it (see below). */
-export async function getReportDataRevision(db: pg.Pool | pg.PoolClient): Promise<number> {
-  const { rows } = await db.query<{ revision: string }>(`SELECT revision FROM report_cache_revision WHERE id = TRUE`);
-  return Number(rows[0]?.revision ?? 0);
+/** What a computation is based on — read it BEFORE computing and pass it to
+ *  setCachedReportTotals. `revision` is bumped by every invalidation (the stale-publish
+ *  guard below); `signature` is the data signature stored with the row. */
+export interface ReportDataVersion {
+  revision: number;
+  signature: string;
+}
+
+export async function getReportDataVersion(db: pg.Pool | pg.PoolClient): Promise<ReportDataVersion> {
+  const { rows } = await db.query<{ revision: string | null; signature: string }>(
+    `SELECT (SELECT revision FROM report_cache_revision WHERE id = TRUE) AS revision, ${DATA_SIGNATURE_SQL} AS signature`
+  );
+  return { revision: Number(rows[0]?.revision ?? 0), signature: rows[0]!.signature };
 }
 
 /** Publishes a computed payload — but only if no invalidation has happened since
- *  `revision` was read. Without this, a slow computation that started before a write
+ *  `version` was read. Without this, a slow computation that started before a write
  *  (an old pre-warm worker, a long cold scan) could finish after that write's
  *  invalidation and put its now-stale result back into the cache for up to the full TTL.
  *  FOR SHARE on the revision row makes this wait out an in-flight invalidation and then
@@ -138,15 +176,17 @@ export async function setCachedReportTotals(
   db: pg.Pool,
   cacheKey: string,
   payload: unknown,
-  revision: number
+  version: ReportDataVersion,
+  ttl: ReportCacheTtl = TTL_INTERVAL_SQL
 ): Promise<string | null> {
   const { rows } = await db.query<{ computed_at: Date }>(
     `WITH rev AS (SELECT 1 FROM report_cache_revision WHERE id = TRUE AND revision = $3 FOR SHARE)
-     INSERT INTO report_totals_cache (cache_key, payload, computed_at)
-     SELECT $1, $2, NOW() FROM rev
-     ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, computed_at = NOW()
+     INSERT INTO report_totals_cache (cache_key, payload, computed_at, data_signature, expires_at)
+     SELECT $1, $2, NOW(), $4, NOW() + $5::interval FROM rev
+     ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, computed_at = NOW(),
+       data_signature = EXCLUDED.data_signature, expires_at = EXCLUDED.expires_at
      RETURNING computed_at`,
-    [cacheKey, JSON.stringify(payload), revision]
+    [cacheKey, JSON.stringify(payload), version.revision, version.signature, ttl]
   );
   return rows[0]?.computed_at.toISOString() ?? null;
 }
