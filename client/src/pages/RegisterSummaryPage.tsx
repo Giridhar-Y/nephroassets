@@ -14,6 +14,7 @@ import { DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { EmptyIcon, ErrorIcon, RegisterIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 const SELECT_CLASS =
   "rounded-md border border-gray-300 px-2 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
@@ -162,26 +163,24 @@ export function RegisterSummaryPage() {
             <label htmlFor="summary-date-from" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
               Date Acquired From
             </label>
-            <input
-              id="summary-date-from"
-              type="date"
+            <ApplyDateInput
+              id="summary-date-from" allowEmpty
               className={DATE_INPUT_CLASS}
               value={dateAcquiredFrom}
               max={dateAcquiredTo || undefined}
-              onChange={(e) => setDateAcquiredFrom(e.target.value)}
+              onApply={(v) => setDateAcquiredFrom(v)}
             />
           </div>
           <div className="flex flex-col gap-1">
             <label htmlFor="summary-date-to" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
               Date Acquired To
             </label>
-            <input
-              id="summary-date-to"
-              type="date"
+            <ApplyDateInput
+              id="summary-date-to" allowEmpty
               className={DATE_INPUT_CLASS}
               value={dateAcquiredTo}
               min={dateAcquiredFrom || undefined}
-              onChange={(e) => setDateAcquiredTo(e.target.value)}
+              onApply={(v) => setDateAcquiredTo(v)}
             />
           </div>
           {hasFilters && (

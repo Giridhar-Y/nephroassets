@@ -17,6 +17,7 @@ import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
 import { useExport } from "../hooks/useExport.js";
 import { useBackgroundExport } from "../hooks/useBackgroundExport.js";
+import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 const PAGE_SIZE = 50;
 
@@ -370,24 +371,22 @@ export function ActivityLogPage() {
             <label htmlFor="al-date-from" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
               From
             </label>
-            <input
-              id="al-date-from"
-              type="date"
+            <ApplyDateInput
+              id="al-date-from" allowEmpty
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
+              onApply={(v) => setDateFrom(v)}
             />
           </div>
           <div className="flex flex-col gap-1">
             <label htmlFor="al-date-to" className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
               To
             </label>
-            <input
-              id="al-date-to"
-              type="date"
+            <ApplyDateInput
+              id="al-date-to" allowEmpty
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
+              onApply={(v) => setDateTo(v)}
             />
           </div>
           {hasActiveFilters && (

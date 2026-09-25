@@ -55,7 +55,9 @@ describe("Depreciation Posting: rapid date reversal", () => {
     const input = document.getElementById("dep-date") as HTMLInputElement;
 
     fireEvent.change(input, { target: { value: "2026-06-30" } }); // B
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.change(input, { target: { value: "2026-09-24" } }); // back to A
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     const [firstA, secondA] = pending.get("dep:2026-09-24")!;
     const [b] = pending.get("dep:2026-06-30")!;
@@ -85,7 +87,9 @@ describe("Register Summary: rapid filter reversal", () => {
     const from = document.getElementById("summary-date-from") as HTMLInputElement;
 
     fireEvent.change(from, { target: { value: "2020-01-01" } }); // B
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.change(from, { target: { value: "" } }); // back to no filter
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     const [, latest] = pending.get("sum:")!;
     const [b] = pending.get("sum:2020-01-01")!;

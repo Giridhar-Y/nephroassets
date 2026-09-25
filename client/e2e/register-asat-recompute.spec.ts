@@ -38,7 +38,8 @@ test("changing AS_AT recomputes the register with no stale data", async ({ page,
   );
   const asAtInput = page.getByTestId("asat-input");
   await asAtInput.fill(NEW_AS_AT);
-  await asAtInput.blur();
+  // Staged until applied (ApplyDateInput) — filling the field alone must not recompute.
+  await page.getByRole("button", { name: "Apply" }).click();
   await responsePromise;
 
   // Same row, same field, must now reflect the new AS_AT — not the value cached from

@@ -46,7 +46,7 @@ export function UserMenu() {
         type="button"
         aria-label={`Account menu for ${user.displayName}`}
         title={user.displayName}
-        className="rounded-full ring-white/40 hover:ring-2"
+        className="rounded-full border-2 border-accent ring-white/40 hover:ring-2"
         onClick={() => setOpen((o) => !o)}
       >
         <InitialsAvatar name={user.displayName} />

@@ -18,6 +18,7 @@ import { ColumnFilterPopover, ConditionFilterPanel, DualModeFilterPanel } from "
 import { EmptyIcon, ErrorIcon, LocationIcon, TransferIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 const SCHEDULE_GRID_COLS = "grid-cols-[120px_1fr_130px_100px_100px_80px_100px_100px_110px]";
 const ROW_HEIGHT = 40;
@@ -345,12 +346,11 @@ export function TransferDepreciationReportPage() {
               <label htmlFor="xdep-date" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
                 Figures as of
               </label>
-              <input
+              <ApplyDateInput
                 id="xdep-date"
-                type="date"
                 className={DATE_INPUT_CLASS}
                 value={asAt}
-                onChange={(e) => setAsAt(e.target.value)}
+                onApply={(v) => setAsAt(v)}
               />
             </div>
             {isCustomDate && settings && (

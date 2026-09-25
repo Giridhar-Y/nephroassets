@@ -43,6 +43,7 @@ import {
   AuditLogIcon
 } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
+import { ApplyDateInput } from "./ui/ApplyDateInput.js";
 
 // Per-user scoped, same reasoning and pattern as useColumnPrefs.ts's Saved Views and
 // useDensity.ts: a personal display preference the user would expect to keep across
@@ -206,17 +207,18 @@ function AsAtControl() {
         <CalendarIcon fontSize={16} />
         Figures as of:
       </span>
-      <input
-        type="date"
-        data-testid="asat-input"
+      {/* Staged until Apply/Enter — every change here recalculates every figure in the
+          app (and on Vercel an uncached date is a multi-minute job), so browsing the
+          calendar must never trigger it. See ApplyDateInput. */}
+      <ApplyDateInput
+        testId="asat-input"
         className="rounded-md border border-white/20 bg-white/10 px-2 py-1.5 text-sm text-white [color-scheme:dark] focus:border-white/50 focus:outline-none focus:ring-1 focus:ring-white/50"
+        applyClassName="rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-accent-hover"
         value={settings.asAt}
         min={settings.fyStart}
         max={settings.fyEnd}
         disabled={pending}
-        onChange={async (e) => {
-          const value = e.target.value;
-          if (!value) return;
+        onApply={async (value) => {
           setPending(true);
           try {
             await setAsAt(value);

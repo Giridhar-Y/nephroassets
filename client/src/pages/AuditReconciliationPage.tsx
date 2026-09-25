@@ -16,6 +16,7 @@ import { EmptyIcon, ErrorIcon, FailIcon, InfoIcon, PassIcon, RetryIcon, Reconcil
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { RefreshControl } from "../components/ui/RefreshControl.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 // Deliberately its own green/red, not the (now black/charcoal) brand accent — pass/fail
 // must stay visually distinct from ordinary UI chrome at a glance.
@@ -205,40 +206,37 @@ export function AuditReconciliationPage() {
               <label htmlFor="recon-fy-start" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
                 FY Start
               </label>
-              <input
+              <ApplyDateInput
                 id="recon-fy-start"
-                type="date"
                 className={DATE_INPUT_CLASS}
-                value={period.fyStart}
+                value={period.fyStart ?? ""}
                 max={period.fyEnd}
-                onChange={(e) => setPeriod({ ...period, fyStart: e.target.value })}
+                onApply={(v) => setPeriod({ ...period, fyStart: v })}
               />
             </div>
             <div className="flex flex-col gap-1">
               <label htmlFor="recon-fy-end" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
                 FY End
               </label>
-              <input
+              <ApplyDateInput
                 id="recon-fy-end"
-                type="date"
                 className={DATE_INPUT_CLASS}
-                value={period.fyEnd}
+                value={period.fyEnd ?? ""}
                 min={period.fyStart}
-                onChange={(e) => setPeriod({ ...period, fyEnd: e.target.value })}
+                onApply={(v) => setPeriod({ ...period, fyEnd: v })}
               />
             </div>
             <div className="flex flex-col gap-1">
               <label htmlFor="recon-as-at" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
                 As At
               </label>
-              <input
+              <ApplyDateInput
                 id="recon-as-at"
-                type="date"
                 className={DATE_INPUT_CLASS}
                 value={period.asAt}
                 min={period.fyStart}
                 max={period.fyEnd}
-                onChange={(e) => setPeriod({ ...period, asAt: e.target.value })}
+                onApply={(v) => setPeriod({ ...period, asAt: v })}
               />
             </div>
             {isCustomPeriod && settings && (

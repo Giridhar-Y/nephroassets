@@ -8,6 +8,7 @@ import { CustomPeriodBadge, DATE_INPUT_CLASS } from "../components/CustomPeriodB
 import { FIELD_INFO } from "../lib/fieldInfo.js";
 import { DepreciationIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 export function DepreciationPostingPage() {
   const { settings } = useSettings();
@@ -73,12 +74,11 @@ export function DepreciationPostingPage() {
               <label htmlFor="dep-date" className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
                 Date of Depreciation
               </label>
-              <input
+              <ApplyDateInput
                 id="dep-date"
-                type="date"
                 className={DATE_INPUT_CLASS}
                 value={depDate}
-                onChange={(e) => setDepDate(e.target.value)}
+                onApply={(v) => setDepDate(v)}
               />
             </div>
             {isCustomDate && settings && (
