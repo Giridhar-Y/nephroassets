@@ -3,7 +3,7 @@
 A Fixed Asset Register for dialysis-center assets. React + TypeScript client, Fastify +
 PostgreSQL server, deployed to Vercel (serverless, `api/index.ts`) with Supabase Postgres.
 Also packaged as a standalone container (root `Dockerfile`) for a persistent-process host
-like AWS App Runner or Render (`render.yaml`) — same app, same Supabase database, just a
+like AWS App Runner or the company's Docker deployment — same app, just a
 different entry point (`server/src/index.ts`'s `app.listen(...)` instead of a serverless
 handler).
 

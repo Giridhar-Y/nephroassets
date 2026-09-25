@@ -100,8 +100,8 @@ const EXPORT_BATCH_SIZE = 20_000;
 //
 // This is NOT a permanent design decision — raise or remove it entirely the moment
 // hosting changes (a Pro plan's higher maxDuration, or a persistent-process host with no
-// duration ceiling at all — server/src/index.ts is already built for that, see
-// render.yaml).
+// duration ceiling at all — server/src/index.ts is already built for that, see the root
+// Dockerfile).
 export const EXPORT_ROW_LIMIT = 400_000;
 
 // Separate, much lower cap for the styled .xlsx format (format=xlsx) — a per-cell
