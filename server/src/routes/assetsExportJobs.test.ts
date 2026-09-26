@@ -374,15 +374,32 @@ describe("Background Register export: HTTP routes", () => {
 });
 
 describe("fireSelfNudge", () => {
-  it("calls back on the scheme the client used (x-forwarded-proto), so the cookie isn't dropped by an http→https redirect", () => {
+  it("on Vercel, calls back on the scheme the client used (x-forwarded-proto), so the cookie isn't dropped by an http→https redirect", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null));
     vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("VERCEL", "1");
     try {
       const req = { protocol: "http", headers: { host: "app.example", cookie: "s=1", "x-forwarded-proto": "https" } } as never;
       fireSelfNudge(req, "/api/x");
       expect(fetchMock).toHaveBeenCalledWith("https://app.example/api/x", expect.objectContaining({ headers: { cookie: "s=1" } }));
     } finally {
       vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("on a long-running server (Docker), calls itself directly on localhost, never through the public hostname", () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("PORT", "3000");
+    try {
+      const req = { protocol: "http", headers: { host: "far.example.com", cookie: "s=1", "x-forwarded-proto": "https" } } as never;
+      fireSelfNudge(req, "/api/x");
+      expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:3000/api/x", expect.objectContaining({ headers: { cookie: "s=1" } }));
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
     }
   });
 });

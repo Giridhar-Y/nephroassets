@@ -478,12 +478,20 @@ export async function advanceExportJob(
 export function fireSelfNudge(req: FastifyRequest, path: string): void {
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return;
-  // The scheme the client actually used: behind Vercel's proxy req.protocol is "http",
-  // and http:// gets redirected to https://, a cross-scheme redirect on which fetch drops
-  // the cookie header, so the nudge used to arrive unauthenticated (a 401, seen live).
+  fetch(`${selfNudgeOrigin(req)}${path}`, { headers: { cookie: cookieHeader }, redirect: "manual" }).catch(() => {});
+}
+
+/** Where a nudge goes. A long-running server (Docker) calls itself directly on
+ *  localhost: no dependence on reaching its own public hostname through the reverse
+ *  proxy (hairpin routing, TLS) from inside the container. On Vercel every invocation is
+ *  its own instance, so it must go back through the public URL, on the scheme the client
+ *  actually used: req.protocol is "http" behind Vercel's proxy, and the http->https
+ *  redirect is cross-scheme, on which fetch drops the cookie (every nudge was a 401). */
+export function selfNudgeOrigin(req: FastifyRequest): string {
+  if (process.env.VERCEL !== "1") return `http://127.0.0.1:${process.env.PORT ?? 4000}`;
   const forwarded = req.headers["x-forwarded-proto"];
   const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() || req.protocol;
-  fetch(`${proto}://${req.headers.host}${path}`, { headers: { cookie: cookieHeader }, redirect: "manual" }).catch(() => {});
+  return `${proto}://${req.headers.host}`;
 }
 
 // The real S3-backed implementation is the default everywhere except tests, which swap
