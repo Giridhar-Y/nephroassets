@@ -605,14 +605,58 @@ function handleMasterError(err: unknown, reply: { code: (n: number) => void }): 
 
 /** Captures a Masters update for approval when a workflow applies (else null), with the
  *  row as it stands now for the approver's before/after view. */
+type MasterTable = "centers" | "sub_classifications" | "statuses" | "roles";
+const MASTER_KEY: Record<MasterTable, { col: "code" | "name"; path: string; label: string }> = {
+  centers: { col: "code", path: "/api/masters/centers", label: "A center with code" },
+  sub_classifications: { col: "name", path: "/api/masters/sub-classifications", label: "A sub classification named" },
+  statuses: { col: "name", path: "/api/masters/statuses", label: "A status named" },
+  roles: { col: "name", path: "/api/masters/roles", label: "A role named" }
+};
+
+/** Duplicate check at submission, so a maker hears about a clash now rather than an
+ *  approver finding it at apply time: against existing rows (case-insensitive, like the
+ *  unique indexes) and against another open request adding/renaming to the same value.
+ *  Skipped for the approved replay, which would otherwise find its own request. */
+async function masterDuplicateError(req: FastifyRequest, db: Awaited<ReturnType<typeof getPool>>, table: MasterTable, id?: number): Promise<string | null> {
+  if (req.headers["x-approval-apply"] !== undefined) return null;
+  const { col, path, label } = MASTER_KEY[table];
+  const value = (req.body as Record<string, unknown> | null)?.[col];
+  if (typeof value !== "string" || !value.trim()) return null;
+  const { rows: existing } = await db.query(`SELECT 1 FROM ${table} WHERE LOWER(${col}) = LOWER($1) AND ($2::bigint IS NULL OR id <> $2)`, [value, id ?? null]);
+  if (existing.length) return `${label} "${value}" already exists.`;
+  const { rows: open } = await db.query<{ id: string }>(
+    `SELECT id FROM change_requests
+     WHERE module = 'masters' AND status IN ('pending', 'in_review', 'applying')
+       AND payload->>'url' LIKE $1 AND LOWER(payload->'body'->>'${col}') = LOWER($2)
+     ORDER BY id LIMIT 1`,
+    [`${path}%`, value]
+  );
+  if (open.length) return `${label} "${value}" is already waiting for approval (#${open[0]!.id}).`;
+  return null;
+}
+
+async function mastersCreatePending(req: FastifyRequest, reply: FastifyReply, db: Awaited<ReturnType<typeof getPool>>, table: MasterTable, summary: string) {
+  const duplicate = await masterDuplicateError(req, db, table);
+  if (duplicate) {
+    reply.code(409);
+    return { error: duplicate };
+  }
+  return submitIfWorkflow(req, reply, { module: "masters", summary });
+}
+
 async function mastersUpdatePending(
   req: FastifyRequest,
   reply: FastifyReply,
   db: Awaited<ReturnType<typeof getPool>>,
-  table: "centers" | "sub_classifications" | "statuses" | "roles",
+  table: MasterTable,
   noun: string,
   id: number
 ) {
+  const duplicate = await masterDuplicateError(req, db, table, id);
+  if (duplicate) {
+    reply.code(409);
+    return { error: duplicate };
+  }
   const { rows } = await db.query<Record<string, unknown>>(`SELECT * FROM ${table} WHERE id = $1`, [id]);
   const current = rows[0];
   const name = current ? String(current.code ?? current.name ?? `#${id}`) : `#${id}`;
@@ -636,7 +680,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
-      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add center ${parsed.data.code}` });
+      const pending = await mastersCreatePending(req, reply, db, "centers", `Add center ${parsed.data.code}`);
       if (pending) return pending;
       const result = await createCenter(db, parsed.data);
       await logMasterActivity(db, {
@@ -700,7 +744,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
-      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add sub classification ${parsed.data.name}` });
+      const pending = await mastersCreatePending(req, reply, db, "sub_classifications", `Add sub classification ${parsed.data.name}`);
       if (pending) return pending;
       const result = await createSubClassification(db, parsed.data);
       await logMasterActivity(db, {
@@ -758,7 +802,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
-      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add status ${parsed.data.name}` });
+      const pending = await mastersCreatePending(req, reply, db, "statuses", `Add status ${parsed.data.name}`);
       if (pending) return pending;
       const result = await createStatus(db, parsed.data);
       await logMasterActivity(db, {
@@ -819,7 +863,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
-      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add role ${parsed.data.name}` });
+      const pending = await mastersCreatePending(req, reply, db, "roles", `Add role ${parsed.data.name}`);
       if (pending) return pending;
       const result = await createRole(db, parsed.data);
       await logMasterActivity(db, {
