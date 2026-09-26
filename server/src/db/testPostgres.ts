@@ -8,7 +8,9 @@ import pg from "pg";
 // not `npm run dev` happens to be running at the same time. Ephemeral (persistent:
 // false) so every test run starts from a clean, freshly-migrated database.
 const DATA_DIR = path.resolve(import.meta.dirname, "../../.pgdata-test");
-const PORT = 55433;
+// Overridable because Windows can dynamically reserve a port range covering 55433
+// (Hyper-V/WSL), which makes the bind fail with "Permission denied".
+const PORT = Number(process.env.TEST_PG_PORT) || 55433;
 const USER = "postgres";
 const PASSWORD = "postgres";
 const DB_NAME = "nephroassets_test";
