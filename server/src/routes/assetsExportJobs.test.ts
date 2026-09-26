@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import assetsExportJobsRoutes, { advanceExportJob, setObjectStorageForTests } from "./assetsExportJobs.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import assetsExportJobsRoutes, { advanceExportJob, fireSelfNudge, setObjectStorageForTests } from "./assetsExportJobs.js";
 import { exportQuerySchema } from "./assetsExport.js";
 import { getPool } from "../db/pool.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -370,5 +370,19 @@ describe("Background Register export: HTTP routes", () => {
     expect(body.status).toBe("COMPLETED");
     expect(body.processedRows).toBe(1);
     expect(body.fileUrl).toContain("signed=1");
+  });
+});
+
+describe("fireSelfNudge", () => {
+  it("calls back on the scheme the client used (x-forwarded-proto), so the cookie isn't dropped by an http→https redirect", () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const req = { protocol: "http", headers: { host: "app.example", cookie: "s=1", "x-forwarded-proto": "https" } } as never;
+      fireSelfNudge(req, "/api/x");
+      expect(fetchMock).toHaveBeenCalledWith("https://app.example/api/x", expect.objectContaining({ headers: { cookie: "s=1" } }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

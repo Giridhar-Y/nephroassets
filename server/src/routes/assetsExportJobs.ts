@@ -478,8 +478,12 @@ export async function advanceExportJob(
 export function fireSelfNudge(req: FastifyRequest, path: string): void {
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return;
-  const origin = `${req.protocol}://${req.headers.host}`;
-  fetch(`${origin}${path}`, { headers: { cookie: cookieHeader } }).catch(() => {});
+  // The scheme the client actually used: behind Vercel's proxy req.protocol is "http",
+  // and http:// gets redirected to https://, a cross-scheme redirect on which fetch drops
+  // the cookie header, so the nudge used to arrive unauthenticated (a 401, seen live).
+  const forwarded = req.headers["x-forwarded-proto"];
+  const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() || req.protocol;
+  fetch(`${proto}://${req.headers.host}${path}`, { headers: { cookie: cookieHeader }, redirect: "manual" }).catch(() => {});
 }
 
 // The real S3-backed implementation is the default everywhere except tests, which swap
