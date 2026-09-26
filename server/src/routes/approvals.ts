@@ -258,6 +258,18 @@ export default async function approvalsRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/approvals/tasks/count", async (req) => {
+    // Every signed-in browser polls this once a minute, so it's the guaranteed driver for
+    // a bulk apply whose self-nudge chain broke (a serverless instance frozen before the
+    // nudge went out) and that nobody has open: one chunk per poll, then a fresh nudge.
+    const db = await getPool();
+    const { rows: stalled } = await db.query<{ id: number }>(
+      `SELECT id FROM change_requests WHERE kind = 'bulk' AND status = 'applying'
+         AND (apply_lease_until IS NULL OR apply_lease_until < now()) ORDER BY id LIMIT 1`
+    );
+    if (stalled[0]) {
+      await advanceBulkApply(db, stalled[0].id, 0).catch(() => false);
+      fireSelfNudge(req, `/api/approvals/requests/${stalled[0].id}`);
+    }
     const list = await listFor(req.user!, "mine");
     const agingThreshold = await agingDays();
     return { awaiting: list.length, aging: list.filter((x) => ageDays(x.r) >= agingThreshold).length };
@@ -290,20 +302,21 @@ export default async function approvalsRoutes(app: FastifyInstance) {
   async function detail(req: FastifyRequest, reply: FastifyReply, id: number, advance = true) {
     const db = await getPool();
     let request = await loadRequest(db, id);
+    // Viewing a file that's being applied also moves its job along (one time-limited
+    // slice), then hands the next slice to a fresh request, same as the export job. Done
+    // before the visibility check: it only progresses an already-approved job, and it
+    // lets a nudge carried on any signed-in user's cookie (tasks/count) keep it going.
+    if (advance && request?.kind === "bulk" && request.status === "applying") {
+      const more = await advanceBulkApply(db, id);
+      request = (await loadRequest(db, id))!;
+      if (more || request.status === "applying") fireSelfNudge(req, `/api/approvals/requests/${id}`);
+    }
     const user = req.user!;
     const roleId = await roleIdForName(db, user.role);
-    let actions = request ? await loadActions(db, id) : [];
+    const actions = request ? await loadActions(db, id) : [];
     if (!request || !(await canView(request, user, actions, roleId))) {
       reply.code(404);
       return { error: "No request found with that id." };
-    }
-    // Viewing a file that's being applied also moves its job along (one time-limited
-    // slice), then hands the next slice to a fresh request, same as the export job.
-    if (advance && request.kind === "bulk" && request.status === "applying") {
-      const more = await advanceBulkApply(db, id);
-      request = (await loadRequest(db, id))!;
-      actions = await loadActions(db, id);
-      if (more || request.status === "applying") fireSelfNudge(req, `/api/approvals/requests/${id}`);
     }
     const names = await userNames([request.maker_id, ...actions.map((a) => a.actor_id)]);
     const agingThreshold = await agingDays();

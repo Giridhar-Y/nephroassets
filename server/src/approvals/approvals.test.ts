@@ -7,11 +7,12 @@ import transfersRoutes from "../routes/transfers.js";
 import bulkUploadRoutes from "../routes/bulkUpload.js";
 import mastersRoutes from "../routes/masters.js";
 import approvalsRoutes from "../routes/approvals.js";
+import activityLogRoutes from "../routes/activityLog.js";
 import { getPool } from "../db/pool.js";
 import { authedInject, authHeaderFor, createTestUser } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
 import { csvPayload } from "../routes/bulkTestHelpers.js";
-import { advanceBulkApply, setApprovalsApp } from "./engine.js";
+import { advanceBulkApply, approvalApplyContextHook, setApprovalsApp } from "./engine.js";
 
 // Approval workflows end to end, through the real routes: a maker's entry is captured as a
 // change request instead of written; approvers act step by step; the final approval
@@ -58,6 +59,7 @@ beforeAll(async () => {
   app = Fastify();
   app.decorateRequest("user", null);
   app.addHook("preHandler", authGateHook);
+  app.addHook("preHandler", approvalApplyContextHook);
   await app.register(cookie);
   await app.register(multipart);
   await app.register(assetsRoutes);
@@ -65,6 +67,7 @@ beforeAll(async () => {
   await app.register(bulkUploadRoutes);
   await app.register(mastersRoutes);
   await app.register(approvalsRoutes);
+  await app.register(activityLogRoutes);
   await app.ready();
   setApprovalsApp(app);
 
@@ -128,7 +131,7 @@ describe("state machine", () => {
     expect(await assetExists("APR-1")).toBe(false); // pending data never touches the asset tables
 
     expect((await detail(pending.requestId)).status).toBe("pending");
-    expect((await decideAs(fm1, pending.requestId, "approve")).statusCode).toBe(200);
+    expect((await decideAs(fm1, pending.requestId, "approve", "Matches the PO")).statusCode).toBe(200);
     let d = await detail(pending.requestId, cfo);
     expect(d.status).toBe("in_review");
     expect(d.currentStep).toBe(1);
@@ -143,6 +146,16 @@ describe("state machine", () => {
     // The applied row is logged as the maker's capitalization, like any other.
     const { rows } = await (await getPool()).query(`SELECT actor_user_id FROM asset_activity_log WHERE far_id = 'APR-1' AND action = 'capitalization_create'`);
     expect(Number(rows[0].actor_user_id)).toBe(editor.id);
+    // ...and linked to its approvers: every step, who, when, and the comment.
+    const log = (await authedInject(app, { method: "GET", url: "/api/audit-log/activity?search=APR-1" })).json();
+    const entry = log.items.find((i: { farId: string; action: string }) => i.farId === "APR-1" && i.action === "capitalization_create");
+    expect(entry.actorUsername).toBe(editor.username);
+    expect(entry.approval.requestId).toBe(pending.requestId);
+    expect(entry.approval.approvals).toMatchObject([
+      { step: 1, by: fm1.username, comment: "Matches the PO" },
+      { step: 2, by: cfo.username, comment: null }
+    ]);
+    expect(entry.details.approvedBy).toMatch(/^Step 1: .*\("Matches the PO"\); Step 2: /);
     // Notifications: CFO got a task, the maker got "applied".
     const notes = (await as(editor, { method: "GET", url: "/api/notifications" })).json();
     expect(notes.items[0].message).toMatch(/^Approved and applied/);
@@ -394,6 +407,8 @@ describe("bulk files: whole-file approval, background apply with resume", () => 
     const done = await detail(fin.requestId);
     expect(done.status).toBe("applied");
     for (const i of [1, 2, 3, 4, 5]) expect(await assetExists(`BLK-${i}`)).toBe(true);
+    const linked = await db.query(`SELECT COUNT(*)::int AS n FROM asset_activity_log WHERE far_id LIKE 'BLK-%' AND approval_request_id = $1`, [fin.requestId]);
+    expect(linked.rows[0].n).toBe(5); // every row of the file links back to its approval
 
     // Replaying an already-applied chunk (a slice that died after writing) is harmless.
     await db.query(`UPDATE change_request_chunks SET applied_at = NULL WHERE request_id = $1 AND chunk_no = 0`, [fin.requestId]);
@@ -401,6 +416,22 @@ describe("bulk files: whole-file approval, background apply with resume", () => 
     while (await advanceBulkApply(db, fin.requestId, -1));
     const { rows } = await db.query(`SELECT COUNT(*)::int AS n FROM assets WHERE far_id LIKE 'BLK-%'`);
     expect(rows[0].n).toBe(5);
+  });
+
+  it("a stalled job (nudge lost, nobody viewing) is finished by any signed-in user's badge poll", async () => {
+    await setRules("bulkCapitalization", [{ initiatorRoleIds: [roleId.editor], steps: [step("any", ["user", fm1.id])] }]);
+    const fin = await uploadInTwoChunks("batch-stall");
+    const d0 = await detail(fin.requestId);
+    await as(fm1, { method: "POST", url: `/api/approvals/requests/${fin.requestId}/approve`, payload: { step: d0.currentStep, cycle: d0.cycle } });
+    const db = await getPool();
+    await db.query(`UPDATE change_requests SET apply_lease_until = NULL WHERE id = $1`, [fin.requestId]);
+    // cfo isn't involved in this request at all; their sidebar badge still drives it.
+    for (let i = 0; i < 10 && (await db.query(`SELECT status FROM change_requests WHERE id = $1`, [fin.requestId])).rows[0].status === "applying"; i++) {
+      const res = await as(cfo, { method: "GET", url: "/api/approvals/tasks/count" });
+      expect(res.statusCode).toBe(200);
+    }
+    expect((await detail(fin.requestId)).status).toBe("applied");
+    for (const i of [1, 2, 3, 4, 5]) expect(await assetExists(`BLK-${i}`)).toBe(true);
   });
 
   it("if any row no longer validates at apply time, NOTHING is applied and the file needs attention", async () => {
@@ -430,8 +461,28 @@ describe("Masters approval", () => {
     expect((await db.query(`SELECT 1 FROM centers WHERE code = 'Center-New'`)).rows).toHaveLength(0);
     await decideAs(fm1, res.json().pendingApproval.requestId, "approve");
     expect((await db.query(`SELECT 1 FROM centers WHERE code = 'Center-New'`)).rows).toHaveLength(1);
-    const { rows } = await db.query(`SELECT actor_user_id FROM master_activity_log WHERE action = 'center_create' ORDER BY id DESC LIMIT 1`);
+    const { rows } = await db.query(`SELECT actor_user_id, approval_request_id FROM master_activity_log WHERE action = 'center_create' ORDER BY id DESC LIMIT 1`);
     expect(Number(rows[0].actor_user_id)).toBe(editor.id);
+    expect(Number(rows[0].approval_request_id)).toBe(res.json().pendingApproval.requestId);
+  });
+});
+
+describe("Masters duplicates at submission", () => {
+  it("a clash with an existing row or another open request is refused before anyone has to review it", async () => {
+    await setRules("masters", [{ initiatorRoleIds: [roleId.editor], steps: [step("any", ["user", fm1.id])] }]);
+    const existing = await as(editor, { method: "POST", url: "/api/masters/centers", payload: { code: "center-test" } });
+    expect(existing.statusCode).toBe(409);
+    expect(existing.json().error).toBe('A center with code "center-test" already exists.');
+
+    const first = await as(editor, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-Dup" } });
+    expect(first.statusCode, first.body).toBe(202);
+    const second = await as(editor, { method: "POST", url: "/api/masters/centers", payload: { code: "CENTER-DUP" } });
+    expect(second.statusCode).toBe(409);
+    expect(second.json().error).toBe(`A center with code "CENTER-DUP" is already waiting for approval (#${first.json().pendingApproval.requestId}).`);
+
+    // The approved replay isn't blocked by its own open request.
+    await decideAs(fm1, first.json().pendingApproval.requestId, "approve");
+    expect((await detail(first.json().pendingApproval.requestId)).status).toBe("applied");
   });
 });
 
