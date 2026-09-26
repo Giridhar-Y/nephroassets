@@ -212,7 +212,7 @@ export async function captureBulkChunkIfWorkflow(
     const { rows } = await db.query<RequestRow>(
       `INSERT INTO change_requests (module, kind, summary, payload, status, maker_id, batch_token)
        VALUES ($1, 'bulk', $2, $3, 'draft', $4, $5) RETURNING *`,
-      [spec.module, `${APPROVAL_MODULES[spec.module].label}: ${spec.filename}`, JSON.stringify({ path: spec.path, filename: spec.filename }), user.id, headerToken ?? randomUUID()]
+      [spec.module, `File ${spec.filename}`, JSON.stringify({ path: spec.path, filename: spec.filename }), user.id, headerToken ?? randomUUID()]
     );
     draft = rows[0]!;
   }
@@ -318,7 +318,7 @@ export async function finalizeBulk(db: pg.Pool, user: { id: number; role: string
       return { requestId: Number(draft.id), status: "empty", message: "No valid rows to submit." };
     }
     const amount = totals.amount === null ? null : Number(totals.amount);
-    const summary = `${APPROVAL_MODULES[draft.module].label}: ${rowCount.toLocaleString("en-IN")} row${rowCount === 1 ? "" : "s"} from ${draft.payload.filename}`;
+    const summary = `${rowCount.toLocaleString("en-IN")} row${rowCount === 1 ? "" : "s"} from ${draft.payload.filename}`;
     const resubmitted = (await loadActions(client, Number(draft.id))).length > 0;
     let snapshot = draft.workflow_snapshot;
     if (!resubmitted) {

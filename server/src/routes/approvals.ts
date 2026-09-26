@@ -352,7 +352,7 @@ export default async function approvalsRoutes(app: FastifyInstance) {
       blockReason: reason,
       farIds: request.far_ids.slice(0, 50),
       centers: request.centers,
-      payload: request.kind === "single" ? request.payload : { filename: request.payload.filename },
+      payload: request.kind === "single" ? request.payload : { filename: request.payload.filename, path: request.payload.path },
       before: request.before,
       lastError: request.last_error,
       cycle: request.cycle,

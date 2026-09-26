@@ -407,6 +407,7 @@ export async function advanceBulkApply(db: pg.Pool, requestId: number, budgetMs 
         await db.query(`UPDATE change_request_chunks SET validated_at = now() WHERE request_id = $1 AND chunk_no = $2`, [requestId, chunk.chunk_no]);
         progress.chunksDone += 1;
         progress.rowsDone += chunk.row_count;
+        await saveProgress(db, requestId, progress, true); // so the approver's progress bar moves
       }
       if (progress.errors.length > 0) {
         await saveProgress(db, requestId, { ...progress, phase: "done", errors: progress.errors.slice(0, 500) }, false);
@@ -448,6 +449,7 @@ export async function advanceBulkApply(db: pg.Pool, requestId: number, budgetMs 
         ]);
         progress.chunksDone += 1;
         progress.rowsDone += chunk.row_count;
+        await saveProgress(db, requestId, progress, true);
       }
       await saveProgress(db, requestId, { ...progress, phase: "done", errors: progress.errors.slice(0, 500) }, false);
       // Rows refused only at this stage changed in the seconds between the dry run and
