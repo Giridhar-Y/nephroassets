@@ -146,7 +146,7 @@ doesn't need it.
 **Verified:** a dispatch on company showed "skipped" (2026-09-26); personal runs normally.
 
 ### 4. Docker boot check in CI
-Commit: this manifest's commit (see `git log -- .github/workflows/docker-boot.yml`)
+Commit: `32bc106`
 
 **What changed**
 - A new GitHub Actions workflow, `docker-boot.yml`, runs on every push (and on demand).
@@ -162,7 +162,12 @@ generated per run).
 push too. It's harmless and uses no secrets, but it does use GitHub Actions minutes.
 Disable it in that repo's Actions settings if that's unwanted.
 
-**Verified:** its first run on the personal repo (see the Actions tab).
+**Verified** (2026-09-26)
+- Passing run on `32bc106` (run 36261623504): image built in 53 s, and both boots were
+  listening and healthy in about 4 s.
+- Negative check: a throwaway branch with the SQL-copy fix reverted **failed** as it
+  should (run 36261751993), with "Container 'app' stopped during boot 1" and
+  `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
