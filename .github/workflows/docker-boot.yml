@@ -1,0 +1,61 @@
+# Production runs this Docker image (not Vercel), and a Vercel-only UAT once hid a
+# Docker boot crash (a SQL file missing from the image). So on every push: build the
+# image exactly as DevOps does, boot it against a throwaway Postgres, and fail unless it
+# reaches "Server listening" and answers /api/health — twice, so the second boot also
+# proves the one-time schema setup is skipped (fingerprint), not re-run.
+#
+# Needs no secrets: the database is a disposable service container and JWT_SECRET is
+# generated per run.
+
+name: Docker boot check
+
+on:
+  push:
+  workflow_dispatch: {}
+
+concurrency:
+  group: docker-boot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        # Same image as docker-compose.yml's local-db profile.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nephroassets
+          POSTGRES_PASSWORD: nephroassets
+          POSTGRES_DB: nephroassets
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nephroassets"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image (same Dockerfile DevOps builds)
+        run: docker build -t nephroassets:ci .
+
+      - name: Boot against a throwaway Postgres (first boot runs the schema setup)
+        run: |
+          docker run -d --name app --network host \
+            -e DATABASE_URL=postgres://nephroassets:nephroassets@127.0.0.1:5432/nephroassets \
+            -e JWT_SECRET="$(openssl rand -base64 48)" \
+            -e PORT=3000 -e SEED_ON_BOOT=false \
+            nephroassets:ci
+          bash .github/scripts/wait-for-boot.sh app 1
+
+      - name: Restart (second boot must skip the schema setup and still come up)
+        run: |
+          docker restart app
+          bash .github/scripts/wait-for-boot.sh app 2
+
+      - name: Container logs
+        if: always()
+        run: docker logs app 2>&1 | tail -200 || true
