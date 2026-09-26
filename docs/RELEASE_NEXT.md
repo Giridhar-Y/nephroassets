@@ -169,7 +169,32 @@ Disable it in that repo's Actions settings if that's unwanted.
   should (run 36261751993), with "Container 'app' stopped during boot 1" and
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
-### 5. Test tooling (developers only)
+### 5. Approval screens: UX polish from UAT
+Commit: see `git log -- client/src/components/approvals/RequestPanel.tsx` (after `84a8a19`)
+
+**What changed**
+- A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
+  the status badge (still Crimson Red) and the Tasks status filter. The history already
+  said "Returned for changes", and the notification already says "Returned for changes: …".
+  The stored status value is unchanged (`rejected`), so no data migration is needed.
+- The Tasks empty state is tab-specific when no filters are set:
+  - Awaiting my approval: "Nothing waiting for your approval."
+  - My requests: "You haven't submitted any requests yet."
+  - All requests: "No approval requests yet."
+  - "No requests match. Try clearing the filters." appears only when a filter is active.
+- The request detail panel uses the module forms' own field labels (for example
+  "Component 1 Opening Cost", "Date of Addition", "Destination Center"), in form order.
+  - It hides fields that don't apply or are empty, such as a capitalization's unused
+    Mid-Year Additions, zero opening accumulated depreciation, or an empty serial number.
+  - For an update, it shows only the submitted fields.
+  - The same labels are used in the bulk preview headers and the resubmit form.
+
+**Database / env vars:** none. **DevOps must do / expect:** nothing (client-only).
+
+**Verified:** client tests (152/152, including labels, field order, hidden fields, update
+rows and the "Returned" badge); UAT on personal Vercel (see below).
+
+### 6. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
 Windows can reserve the default port. No effect on the app, the image or the deployment.
 

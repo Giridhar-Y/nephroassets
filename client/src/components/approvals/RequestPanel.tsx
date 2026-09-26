@@ -25,13 +25,80 @@ import { AssigneePicker } from "./AssigneePicker.js";
 // The side panel for one request: what it changes, who has approved so far, and the
 // decision controls. Opened from the Tasks screen (and from notification links).
 
-function humanize(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+// The same labels the module forms use (Capitalization, Addition, Disposal, Transfer,
+// Edit Asset, Masters), in form order. Anything not listed falls back to a readable
+// version of its field name.
+const FIELD_LABELS: Array<[string, string]> = [
+  ["farId", "FAR ID"],
+  ["farIds", "FAR IDs"],
+  ["subClassification", "Sub Classification"],
+  ["assetDescription", "Asset Description"],
+  ["serialNo", "Serial No"],
+  ["qty", "Qty"],
+  ["status", "Status"],
+  ["dateAcquired", "Date Acquired"],
+  ["location", "Location"],
+  ["toLocation", "Destination Center"],
+  ["transactionDate", "Transfer Date"],
+  ["usefulLifeC1Years", "Component 1 Useful Life (Years)"],
+  ["usefulLifeC2Years", "Component 2 Useful Life (Years)"],
+  ["c1OpeningCost", "Component 1 Opening Cost"],
+  ["c2OpeningCost", "Component 2 Opening Cost"],
+  ["additionsC1", "Additions C1"],
+  ["additionsC2", "Additions C2"],
+  ["dateOfAddition", "Date of Addition"],
+  ["parentFarId", "Parent Asset"],
+  ["accDepC1Opening", "Opening Accumulated Depreciation (Component 1)"],
+  ["accDepC2Opening", "Opening Accumulated Depreciation (Component 2)"],
+  ["dateOfDisposal", "Disposal Date"],
+  ["saleValue", "Sale Value"],
+  ["code", "Code"],
+  ["name", "Name"],
+  ["description", "Description"],
+  ["defaultUsefulLifeC1Years", "Default C1 Life (yrs)"],
+  ["defaultUsefulLifeC2Years", "Default C2 Life (yrs)"],
+  ["hasComponent2", "Has Component 2"],
+  ["active", "Active"],
+  ["grants", "Permissions"]
+];
+const LABEL = new Map(FIELD_LABELS);
+const ORDER = new Map(FIELD_LABELS.map(([k], i) => [k, i]));
+
+/** Optional amounts left at zero read as "not used" (a capitalization's Mid-Year
+ *  Additions, opening accumulated depreciation, Component 2 on a C1-only asset). */
+const OPTIONAL_ZERO = new Set(["additionsC1", "additionsC2", "accDepC1Opening", "accDepC2Opening", "c2OpeningCost", "usefulLifeC2Years"]);
+
+const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+
+export function fieldLabel(key: string): string {
+  const k = camel(key);
+  return LABEL.get(k) ?? k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
+}
+
+function isEmptyField(key: string, value: unknown): boolean {
+  if (value === null || value === undefined || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return OPTIONAL_ZERO.has(camel(key)) && Number(value) === 0;
+}
+
+/** The rows the detail table shows, in form order: every submitted field that has a
+ *  value, plus any whose before-value differs (a cleared field is still a change). With a
+ *  before-snapshot (an update), only the submitted fields; the snapshot's other columns
+ *  (ids, untouched settings) are noise. Exported for its test. */
+export function comparisonRows(before: Record<string, unknown> | null, proposed: Record<string, unknown>): Array<{ key: string; before: unknown; proposed: unknown; changed: boolean }> {
+  const beforeOf = (k: string) => (before ? (k in before ? before[k] : before[k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)]) : undefined);
+  return Object.keys(proposed)
+    .map((key) => ({ key, before: beforeOf(key), proposed: proposed[key], changed: before ? display(beforeOf(key)) !== display(proposed[key]) : true }))
+    .filter((r) => (before && r.changed ? !(isEmptyField(r.key, r.before) && isEmptyField(r.key, r.proposed)) : !isEmptyField(r.key, r.proposed)))
+    .sort((x, y) => (ORDER.get(x.key) ?? 999) - (ORDER.get(y.key) ?? 999));
 }
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
-  if (Array.isArray(value)) return value.map((v) => (typeof v === "object" ? JSON.stringify(v) : String(v))).join(", ");
+  if (Array.isArray(value))
+    return value
+      .map((v) => (v && typeof v === "object" && "module" in v && "action" in v ? `${String(v.module)}: ${String(v.action)}` : typeof v === "object" ? JSON.stringify(v) : String(v)))
+      .join(", ");
   if (typeof value === "object") return JSON.stringify(value);
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
@@ -48,9 +115,9 @@ const ACTION_TEXT: Record<string, string> = {
   apply_failed: "Couldn't be applied"
 };
 
-/** Before / proposed, one row per field. Fields that didn't change are dimmed. */
+/** Before / proposed, one row per field that applies (see comparisonRows). */
 function Comparison({ before, proposed }: { before: Record<string, unknown> | null; proposed: Record<string, unknown> }) {
-  const keys = [...new Set([...Object.keys(proposed), ...(before ? Object.keys(before) : [])])].filter((k) => k !== "grants" || proposed[k] !== undefined);
+  const rows = comparisonRows(before, proposed);
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200">
       <table className="w-full text-sm">
@@ -62,19 +129,16 @@ function Comparison({ before, proposed }: { before: Record<string, unknown> | nu
           </tr>
         </thead>
         <tbody>
-          {keys.map((k) => {
-            const changed = before ? display(before[k]) !== display(proposed[k]) && k in proposed : true;
-            return (
-              <tr key={k} className={`border-t border-gray-100 ${changed ? "" : "text-gray-400"}`}>
-                <td className="px-3 py-1.5 font-medium">{humanize(k)}</td>
-                {before && <td className="px-3 py-1.5 tabular-nums">{display(before[k])}</td>}
-                <td className={`px-3 py-1.5 tabular-nums ${changed && before ? "font-semibold text-ink" : ""}`}>
-                  {k in proposed ? display(proposed[k]) : "(unchanged)"}
-                  {changed && before && <span className="sr-only"> (changed)</span>}
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((r) => (
+            <tr key={r.key} className={`border-t border-gray-100 ${r.changed ? "" : "text-gray-400"}`}>
+              <td className="px-3 py-1.5 font-medium">{fieldLabel(r.key)}</td>
+              {before && <td className="px-3 py-1.5 tabular-nums">{display(r.before)}</td>}
+              <td className={`px-3 py-1.5 tabular-nums ${r.changed && before ? "font-semibold text-ink" : ""}`}>
+                {display(r.proposed)}
+                {r.changed && before && <span className="sr-only"> (changed)</span>}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -230,7 +294,7 @@ function BulkSection({ detail }: { detail: RequestDetail }) {
                 <th className="px-2 py-1.5">Row</th>
                 {columns.map((c) => (
                   <th key={c} className="whitespace-nowrap px-2 py-1.5">
-                    {humanize(c)}
+                    {fieldLabel(c)}
                   </th>
                 ))}
               </tr>
@@ -325,7 +389,7 @@ function ResubmitForm({ detail, onDone }: { detail: RequestDetail; onDone: (mess
       <div className="grid grid-cols-2 gap-3">
         {Object.keys(values).map((k) => (
           <label key={k} className="flex flex-col gap-1 text-xs font-medium text-gray-600">
-            {humanize(k)}
+            {fieldLabel(k)}
             <input
               value={values[k]}
               onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.value }))}

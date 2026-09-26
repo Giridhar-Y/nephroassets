@@ -193,7 +193,8 @@ export const STATUS_LABELS: Record<RequestStatus, string> = {
   in_review: "In review",
   applying: "Applying",
   applied: "Approved",
-  rejected: "Rejected",
+  // Stored as "rejected", shown as "Returned": the maker edits and resubmits it.
+  rejected: "Returned",
   needs_attention: "Needs attention",
   withdrawn: "Withdrawn"
 };

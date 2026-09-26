@@ -5,7 +5,7 @@ import { ApplyingIcon, ClockIcon, FailIcon, PassIcon, WarningIcon, WithdrawIcon 
 
 // One badge for every approval state, always an icon plus a label — status is never
 // shown by colour alone. Brand palette only: Calming Blue for Pending, Teal for In
-// review, Crimson for Rejected, the app's existing success green and amber for
+// review, Crimson for Returned, the app's existing success green and amber for
 // Approved/Needs attention. Text stays Deep Blue (or the tone's own dark shade) on a
 // light tint so every pairing meets AA contrast; the colour lives in the tint and icon.
 const STYLES: Record<RequestStatus, { cls: string; icon: ComponentType<FluentIconsProps>; iconCls: string }> = {

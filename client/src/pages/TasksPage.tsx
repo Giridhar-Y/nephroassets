@@ -19,6 +19,12 @@ export { TASKS_CHANGED as TASKS_CHANGED_EVENT } from "../lib/useApprovalPreview.
 const SELECT_CLASS =
   "rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-brand-blue focus:outline-none focus:ring-1 focus:ring-brand-blue";
 
+const EMPTY_BY_TAB: Record<TaskTab, { title: string; hint: string }> = {
+  mine: { title: "Nothing waiting for your approval.", hint: "New tasks show up here and in your notifications." },
+  requests: { title: "You haven't submitted any requests yet.", hint: "Entries you send for approval show up here, with their progress." },
+  all: { title: "No approval requests yet.", hint: "Requests from every module show up here once workflows are in use." }
+};
+
 export function TasksPage() {
   const { user } = useAuth();
   const canViewAll = hasPermission(user, "approvals", "viewAll");
@@ -89,6 +95,11 @@ export function TasksPage() {
     { key: "requests", label: "My requests" },
     ...(canViewAll ? [{ key: "all" as const, label: "All requests" }] : [])
   ];
+
+  const filtersActive = Boolean(filters.module || filters.center.trim() || filters.status || filters.aging);
+  const emptyState = filtersActive
+    ? { title: "No requests match.", hint: "Try clearing the filters." }
+    : EMPTY_BY_TAB[tab];
 
   const statusOptions = useMemo(() => (tab === "mine" ? (["pending", "in_review"] as RequestStatus[]) : (Object.keys(STATUS_LABELS) as RequestStatus[]).filter((s) => s !== "draft")), [tab]);
 
@@ -178,8 +189,8 @@ export function TasksPage() {
         {items && items.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-20 text-center">
             <EmptyIcon fontSize={30} className="text-gray-300" aria-hidden />
-            <p className="text-sm font-medium text-ink">{tab === "mine" ? "Nothing is waiting for your approval." : "No requests match."}</p>
-            <p className="text-xs text-gray-500">{tab === "mine" ? "New tasks show up here and in your notifications." : "Try clearing the filters."}</p>
+            <p className="text-sm font-medium text-ink">{emptyState.title}</p>
+            <p className="text-xs text-gray-500">{emptyState.hint}</p>
           </div>
         )}
         {items && items.length > 0 && (
