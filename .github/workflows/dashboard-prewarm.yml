@@ -53,6 +53,11 @@ concurrency:
 
 jobs:
   prewarm:
+    # Only where a Vercel deployment needs it: the Docker deployment pre-warms with its
+    # own built-in timer (server/src/index.ts), so this job skips cleanly (no failure, no
+    # run) unless the repository variable PREWARM_ENABLED is set to "true" (Settings ->
+    # Secrets and variables -> Actions -> Variables).
+    if: vars.PREWARM_ENABLED == 'true'
     runs-on: ubuntu-latest
     # 20, not 10: audit-reconciliation is warmed too now (2026-09-24), adding a third
     # full scan per cold date on top of the ~6 min totals+trend already measured.
