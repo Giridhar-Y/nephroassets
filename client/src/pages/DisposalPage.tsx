@@ -17,6 +17,7 @@ import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
 import { GridViewControls } from "../components/ui/GridViewControls.js";
 import { useDensity } from "../hooks/useDensity.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
 
 type Tab = "new" | "log";
 
@@ -200,6 +201,7 @@ export function DisposalPage() {
           </button>
         </div>
       </PageHeader>
+      <PendingRequestsStrip modules={["disposals", "bulkDisposals"]} className="mx-6 mt-3" />
 
       {tab === "new" && (
         <NewDisposalTab

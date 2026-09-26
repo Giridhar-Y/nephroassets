@@ -18,6 +18,7 @@ import {
   TransferIcon
 } from "../lib/icons.js";
 import { StatusBadge } from "../components/ui/Badge.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -492,6 +493,7 @@ export function AssetLifecyclePage() {
   return (
     <>
     <div className="flex h-full flex-col overflow-auto bg-white px-6 py-6 print:hidden">
+      {farId && <PendingRequestsStrip farId={farId} className="mb-4" />}
       <div className="flex items-center justify-between">
         <Link to="/register" className="flex items-center gap-1 text-xs font-semibold text-accent hover:underline">
           <RegisterIcon fontSize={13} />

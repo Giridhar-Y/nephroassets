@@ -34,7 +34,7 @@ function sleep(ms: number): Promise<void> {
  *  trend, audit-reconciliation). Their 504 is Vercel killing a 60s+ cold compute before
  *  it could cache anything, while the Postgres query behind it keeps running — a retry
  *  only stacks another identical scan on top (the 2026-09-24 Dashboard incident). */
-async function request<T>(path: string, init?: RequestInit, opts?: { noTimeoutRetry?: boolean }): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, opts?: { noTimeoutRetry?: boolean }): Promise<T> {
   // A safety net for transient 5xx (e.g. a cold-start/connection blip resolved by the
   // *next* request) — never on a body-carrying request, since retrying a POST/PATCH
   // risks double-submitting a mutation. The real fix for the known cause of this is
@@ -554,6 +554,15 @@ export interface BulkUploadResult {
   added: number;
   updated: number;
   errors: BulkUploadError[];
+  /** Set when an approval workflow captured the file instead of applying it — the caller
+   *  submits it with finalizeBulk(batchToken). */
+  approvalDraft?: { requestId: number; batchToken: string };
+}
+
+/** Every chunk of one file carries the same batch token (and its row offset), so an
+ *  approval workflow can collect the whole file under one request. */
+function batchHeaders(batchToken: string | undefined, rowOffset: number): Record<string, string> {
+  return batchToken ? { "x-bulk-batch": batchToken, "x-bulk-row-offset": String(rowOffset) } : {};
 }
 
 export interface BulkPreviewRow {
@@ -572,10 +581,10 @@ export interface BulkPreviewResult {
 
 // Bypasses the `request` helper: it always sets Content-Type: application/json, but a
 // multipart upload needs the browser to set its own Content-Type with the form boundary.
-async function postFile<T>(path: string, file: File): Promise<T> {
+async function postFile<T>(path: string, file: File, headers: Record<string, string> = {}): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch(path, { method: "POST", body: formData });
+  const res = await fetch(path, { method: "POST", body: formData, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
@@ -606,8 +615,8 @@ export function previewBulkUpload(path: string, file: File): Promise<BulkPreview
   return postFile(`${path}?preview=true`, file);
 }
 
-export function commitBulkUpload(path: string, file: File): Promise<BulkUploadResult> {
-  return postFile(path, file);
+export function commitBulkUpload(path: string, file: File, batchToken?: string): Promise<BulkUploadResult> {
+  return postFile(path, file, batchHeaders(batchToken, 0));
 }
 
 // Chunked upload for a file too big for one request — see lib/csvChunking.ts's own
@@ -616,10 +625,10 @@ export function commitBulkUpload(path: string, file: File): Promise<BulkUploadRe
 // Same `postFile` helper below, just given a Blob + explicit filename instead of a
 // real File — loadWorksheet on the server picks its CSV reader off that filename's
 // extension, not the content, so every chunk needs one ending in ".csv".
-async function postFileBlob<T>(path: string, blob: Blob, filename: string): Promise<T> {
+async function postFileBlob<T>(path: string, blob: Blob, filename: string, headers: Record<string, string> = {}): Promise<T> {
   const formData = new FormData();
   formData.append("file", blob, filename);
-  const res = await fetch(path, { method: "POST", body: formData });
+  const res = await fetch(path, { method: "POST", body: formData, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(body.error ?? `Request to ${path} failed with ${res.status}`, res.status);
@@ -705,7 +714,8 @@ export async function commitBulkUploadChunked(
   file: File,
   onProgress: (p: ChunkProgress) => void,
   chunkRows?: number,
-  findFileConflicts: (header: string[], dataLines: string[]) => ReturnType<typeof findDuplicateFarIds> = findDuplicateFarIds
+  findFileConflicts: (header: string[], dataLines: string[]) => ReturnType<typeof findDuplicateFarIds> = findDuplicateFarIds,
+  batchToken?: string
 ): Promise<BulkUploadResult> {
   const { header, dataLines } = await parseCsvFile(file);
   const duplicates = findFileConflicts(header, dataLines);
@@ -713,6 +723,7 @@ export async function commitBulkUploadChunked(
   const nonDuplicateLines = dataLines.filter((_, i) => !duplicateRows.has(i + 2));
   const chunks = chunkCsvRows(header, nonDuplicateLines, chunkRows);
 
+  let approvalDraft: BulkUploadResult["approvalDraft"];
   const errors: BulkUploadError[] = duplicates.map((d) => ({ row: d.row, farId: d.farId, message: d.message }));
   let processed = 0;
   let added = 0;
@@ -723,7 +734,10 @@ export async function commitBulkUploadChunked(
   onProgress({ current: 0, total: chunks.length, rowsDone, totalRows });
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
-    const result = await postFileBlob<BulkUploadResult>(path, chunk.blob, "chunk.csv");
+    // The real file name (always a .csv on this path), so an approval request reads
+    // "from <your file>.csv", not "from chunk.csv".
+    const result = await postFileBlob<BulkUploadResult>(path, chunk.blob, file.name.toLowerCase().endsWith(".csv") ? file.name : "chunk.csv", batchHeaders(batchToken, chunk.rowOffset));
+    approvalDraft ??= result.approvalDraft;
     processed += result.processed;
     added += result.added;
     updated += result.updated;
@@ -733,7 +747,7 @@ export async function commitBulkUploadChunked(
   }
 
   errors.sort((a, b) => a.row - b.row);
-  return { totalRows: dataLines.length, processed, added, updated, errors };
+  return { totalRows: dataLines.length, processed, added, updated, errors, approvalDraft };
 }
 
 export interface LocationSummary {

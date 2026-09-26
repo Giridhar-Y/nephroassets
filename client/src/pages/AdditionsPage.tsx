@@ -18,6 +18,7 @@ import { GridViewControls } from "../components/ui/GridViewControls.js";
 import { useDensity } from "../hooks/useDensity.js";
 import { fetchSubClassifications, undoAddition, type SubClassificationOption } from "../api/client.js";
 import { hasPermission } from "../lib/permissions.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
 
 type Tab = "new" | "log";
 
@@ -215,6 +216,7 @@ export function AdditionsPage() {
           </button>
         </div>
       </PageHeader>
+      <PendingRequestsStrip modules={["additions"]} className="mx-6 mt-3" />
 
       {tab === "new" && (
         <NewAdditionTab

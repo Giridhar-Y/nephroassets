@@ -23,13 +23,25 @@ import {
   ExportIcon,
   PassIcon,
   RetryIcon,
-  UploadIcon
+  UploadIcon,
+  ClockIcon
 } from "../lib/icons.js";
 import { useToast } from "../components/Toast.js";
 import { useNotifications } from "../lib/NotificationsContext.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
+import { finalizeBulk, startBulkResubmit, type ApprovalModule } from "../api/approvals.js";
+import { TASKS_CHANGED, useApprovalPreview } from "../lib/useApprovalPreview.js";
 
 type UploadType = "assets" | "disposals" | "transfers" | "merge" | "masters";
+
+// Which approval workflow each upload type goes through.
+const UPLOAD_TYPE_MODULE: Record<UploadType, ApprovalModule> = {
+  assets: "bulkCapitalization",
+  disposals: "bulkDisposals",
+  transfers: "bulkTransfers",
+  merge: "bulkMerge",
+  masters: "masters"
+};
 type MasterListType = "centers" | "subClassifications" | "statuses";
 type Step = "select" | "preview" | "result";
 
@@ -520,6 +532,11 @@ export function BulkUploadPage() {
     return MASTER_LIST_TABS.includes(requested as MasterListType) ? (requested as MasterListType) : "centers";
   });
   const [step, setStep] = useState<Step>("select");
+  // Approvals: a returned file being re-uploaded (from its Tasks panel), and the
+  // "Sent to … for approval" message once a captured file has been submitted.
+  const resubmitId = searchParams.get("resubmit") ? Number(searchParams.get("resubmit")) : null;
+  const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
+  const approval = useApprovalPreview(UPLOAD_TYPE_MODULE[type]);
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -681,9 +698,22 @@ export function BulkUploadPage() {
     if (needsChunking) chunkStartRef.current = Date.now();
     setChunkProgress(needsChunking ? { current: 0, total: 0, rowsDone: 0, totalRows: 0 } : null);
     try {
+      setApprovalNotice(null);
+      const batchToken = resubmitId ? (await startBulkResubmit(resubmitId)).batchToken : crypto.randomUUID();
       const res = needsChunking
-        ? await commitBulkUploadChunked(path, file, setChunkProgress, chunkRows, findFileConflicts)
-        : await commitBulkUpload(path, file);
+        ? await commitBulkUploadChunked(path, file, setChunkProgress, chunkRows, findFileConflicts, batchToken)
+        : await commitBulkUpload(path, file, batchToken);
+      if (res.approvalDraft || resubmitId) {
+        // Captured for approval: submit the whole file as one request.
+        const fin = await finalizeBulk(batchToken);
+        window.dispatchEvent(new Event(TASKS_CHANGED));
+        setApprovalNotice(fin.message);
+        setResult(res);
+        setStep("result");
+        showToast(`${file.name}: ${fin.message}`, "success");
+        addNotification(`${file.name}: ${fin.message}`, "success");
+        return;
+      }
       setResult(res);
       setStep("result");
       const skipped = res.errors.length > 0 ? ` ${res.errors.length} row${res.errors.length === 1 ? "" : "s"} skipped due to errors.` : "";
@@ -941,7 +971,7 @@ export function BulkUploadPage() {
             onClick={handleConfirm}
             disabled={!canConfirm || confirming}
           >
-            {confirming ? "Uploading…" : "Confirm Upload"}
+            {confirming ? (approval.applies || resubmitId ? "Sending…" : "Uploading…") : approval.applies || resubmitId ? "Submit for approval" : "Confirm Upload"}
           </button>
         </div>
       </div>
@@ -1153,7 +1183,16 @@ export function BulkUploadPage() {
             document.body
           )}
 
-        {step === "result" && result && !expanded && renderResultTable(false)}
+        {approvalNotice && step === "result" && (
+          <div className="animate-panel-in mb-4 flex items-start gap-2 rounded-xl border border-brand-blue/30 bg-brand-blue/10 p-4 text-sm text-ink" role="status">
+            <ClockIcon fontSize={18} className="mt-0.5 shrink-0 text-brand-blue" aria-hidden />
+            <div>
+              <p className="font-semibold">{approvalNotice}</p>
+              <p className="text-gray-600">Nothing has been changed yet. The file is applied once it's approved; you can follow it under Tasks → My requests.</p>
+            </div>
+          </div>
+        )}
+        {step === "result" && result && !expanded && !approvalNotice && renderResultTable(false)}
 
         {step === "result" &&
           result &&

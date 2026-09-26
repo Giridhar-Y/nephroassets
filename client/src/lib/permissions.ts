@@ -17,7 +17,8 @@ export const PERMISSION_REGISTRY = {
   activityLog: ["view", "export"],
   masters: ["view", "edit"],
   settings: ["view", "edit"],
-  admin: ["view", "create", "edit", "resetPassword", "managePermissions"]
+  admin: ["view", "create", "edit", "resetPassword", "managePermissions"],
+  approvals: ["manageWorkflows", "viewAll", "reassign"]
 } as const;
 
 export type Module = keyof typeof PERMISSION_REGISTRY;
@@ -39,7 +40,8 @@ export const MODULE_LABELS: Record<Module, string> = {
   activityLog: "Activity Log",
   masters: "Masters",
   settings: "Settings",
-  admin: "Admin"
+  admin: "Admin",
+  approvals: "Approvals"
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -52,6 +54,9 @@ const ACTION_LABELS: Record<string, string> = {
   undo: "Undo",
   resetPassword: "Reset Password",
   managePermissions: "Manage Permissions",
+  manageWorkflows: "Manage Workflows",
+  viewAll: "View All Requests",
+  reassign: "Reassign",
   // Bulk Upload's own actions are named after what they bulk-upload, not a verb.
   capitalization: "Capitalization",
   transfers: "Transfers",

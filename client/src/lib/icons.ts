@@ -57,5 +57,16 @@ export {
   PersonRegular as PersonIcon,
   MailRegular as MailIcon,
   MoreVerticalRegular as MoreVerticalIcon,
-  PersonProhibitedRegular as DisableUserIcon
+  PersonProhibitedRegular as DisableUserIcon,
+  TaskListLtrRegular as TasksIcon,
+  FlowchartRegular as WorkflowIcon,
+  ClockRegular as ClockIcon,
+  ArrowSyncRegular as ApplyingIcon,
+  PeopleTeamRegular as RoleIcon,
+  ArrowUpRegular as MoveUpIcon,
+  ArrowDownRegular as MoveDownIcon,
+  ArrowRightRegular as StepArrowIcon,
+  CommentRegular as CommentIcon,
+  PersonSwapRegular as ReassignIcon,
+  ArrowUndoRegular as WithdrawIcon
 } from "@fluentui/react-icons";

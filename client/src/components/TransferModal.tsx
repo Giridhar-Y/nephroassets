@@ -8,6 +8,7 @@ import { ErrorIcon, TransferIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 import { Modal } from "./ui/Modal.js";
 import { Button } from "./ui/Button.js";
+import { approvalMessage, useApprovalPreview } from "../lib/useApprovalPreview.js";
 
 type Step = "form" | "confirm";
 
@@ -67,8 +68,9 @@ export function TransferModal({
     setError(null);
     try {
       const res = await createTransfer({ farIds: assets.map((a) => a.asset.farId), toLocation, transactionDate });
-      const childNote = res.childrenIncluded.length > 0 ? ` (including ${res.childrenIncluded.length} child asset${res.childrenIncluded.length === 1 ? "" : "s"})` : "";
-      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} transferred to ${toLocation}${childNote}.`);
+      const pending = approvalMessage(res);
+      const childNote = !pending && res.childrenIncluded.length > 0 ? ` (including ${res.childrenIncluded.length} child asset${res.childrenIncluded.length === 1 ? "" : "s"})` : "";
+      showToast(pending ?? `${assets.length} asset${assets.length === 1 ? "" : "s"} transferred to ${toLocation}${childNote}.`);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transfer failed.");

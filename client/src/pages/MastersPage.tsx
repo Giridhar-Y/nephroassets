@@ -28,6 +28,16 @@ import { useToast } from "../components/Toast.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
 import { Input, Select } from "../components/ui/FormField.js";
+import { approvalMessage } from "../lib/useApprovalPreview.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
+
+/** A Masters save that a workflow sent for approval shows "Sent to … for approval";
+ *  anything else shows the save's usual success toast. */
+function toastResult(showToast: (message: string, variant?: "success" | "error") => void, result: unknown, message: string, variant?: "success" | "error") {
+  const pending = approvalMessage(result);
+  if (pending) showToast(pending, "success");
+  else showToast(message, variant);
+}
 
 type Tab = "centers" | "subClassifications" | "statuses" | "roles";
 
@@ -206,8 +216,8 @@ function CentersTab() {
     if (!code.trim()) return;
     setBusy(true);
     try {
-      await createMasterCenter({ code: code.trim(), description: description.trim() });
-      showToast(`${code.trim()} added successfully.`);
+      const __r = await createMasterCenter({ code: code.trim(), description: description.trim() });
+      toastResult(showToast, __r, `${code.trim()} added successfully.`);
       setCode("");
       setDescription("");
       load();
@@ -232,7 +242,7 @@ function CentersTab() {
       const parts: string[] = [];
       if (res.assetsUpdated) parts.push(`${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"}`);
       if (res.transfersUpdated) parts.push(`${res.transfersUpdated} transfer record${res.transfersUpdated === 1 ? "" : "s"}`);
-      showToast(parts.length > 0 ? `${res.code} updated — ${parts.join(" and ")} updated.` : `${res.code} updated successfully.`);
+      toastResult(showToast, res, parts.length > 0 ? `${res.code} updated — ${parts.join(" and ")} updated.` : `${res.code} updated successfully.`);
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not save changes.", "error");
@@ -244,8 +254,8 @@ function CentersTab() {
   async function toggleActive(row: MasterCenter) {
     setBusy(true);
     try {
-      await updateMasterCenter(row.id, { active: !row.active });
-      showToast(
+      const __r = await updateMasterCenter(row.id, { active: !row.active });
+      toastResult(showToast, __r, 
         row.active
           ? `${row.code} deactivated. It's hidden from new selections but existing assets are unaffected.`
           : `${row.code} reactivated.`
@@ -418,13 +428,13 @@ function SubClassificationsTab() {
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await createMasterSubClassification({
+      const __r = await createMasterSubClassification({
         name: name.trim(),
         defaultUsefulLifeC1Years: lifeC1 ? Number(lifeC1) : null,
         defaultUsefulLifeC2Years: hasC2 && lifeC2 ? Number(lifeC2) : null,
         hasComponent2: hasC2
       });
-      showToast(`${name.trim()} added successfully.`);
+      toastResult(showToast, __r, `${name.trim()} added successfully.`);
       setName("");
       setLifeC1("");
       setLifeC2("");
@@ -455,7 +465,7 @@ function SubClassificationsTab() {
         hasComponent2: editHasC2
       });
       setEditingId(null);
-      showToast(
+      toastResult(showToast, res, 
         res.assetsUpdated
           ? `${res.name} updated — ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"} updated.`
           : `${res.name} updated successfully.`
@@ -471,8 +481,8 @@ function SubClassificationsTab() {
   async function toggleActive(row: MasterSubClassification) {
     setBusy(true);
     try {
-      await updateMasterSubClassification(row.id, { active: !row.active });
-      showToast(
+      const __r = await updateMasterSubClassification(row.id, { active: !row.active });
+      toastResult(showToast, __r, 
         row.active
           ? `${row.name} deactivated. It's hidden from new selections but existing assets are unaffected.`
           : `${row.name} reactivated.`
@@ -688,8 +698,8 @@ function StatusesTab() {
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await createMasterStatus({ name: name.trim() });
-      showToast(`${name.trim()} added successfully.`);
+      const __r = await createMasterStatus({ name: name.trim() });
+      toastResult(showToast, __r, `${name.trim()} added successfully.`);
       setName("");
       load();
     } catch (err) {
@@ -709,7 +719,7 @@ function StatusesTab() {
     try {
       const res = await updateMasterStatus(row.id, { name: editName.trim() });
       setEditingId(null);
-      showToast(
+      toastResult(showToast, res, 
         res.assetsUpdated
           ? `${res.name} updated — ${res.assetsUpdated} asset${res.assetsUpdated === 1 ? "" : "s"} updated.`
           : `${res.name} updated successfully.`
@@ -725,8 +735,8 @@ function StatusesTab() {
   async function toggleActive(row: MasterStatus) {
     setBusy(true);
     try {
-      await updateMasterStatus(row.id, { active: !row.active });
-      showToast(
+      const __r = await updateMasterStatus(row.id, { active: !row.active });
+      toastResult(showToast, __r, 
         row.active
           ? `${row.name} deactivated. It's hidden from new selections but existing assets are unaffected.`
           : `${row.name} reactivated.`
@@ -892,8 +902,8 @@ function RolePermissionsPanel({ role, onClose, onSaved }: { role: MasterRole; on
         const [module, action] = key.split(":");
         return { module: module!, action: action! };
       });
-      await saveRolePermissions(role.id, grants);
-      showToast(`${role.name}'s permission template updated.`);
+      const __r = await saveRolePermissions(role.id, grants);
+      toastResult(showToast, __r, `${role.name}'s permission template updated.`);
       onSaved();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not save the template.", "error");
@@ -959,8 +969,8 @@ function RolesTab() {
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await createMasterRole({ name: name.trim(), grants: [] });
-      showToast(`${name.trim()} added — define its permission template with "Permissions" below.`);
+      const __r = await createMasterRole({ name: name.trim(), grants: [] });
+      toastResult(showToast, __r, `${name.trim()} added — define its permission template with "Permissions" below.`);
       setName("");
       load();
     } catch (err) {
@@ -978,9 +988,9 @@ function RolesTab() {
   async function saveEdit(row: MasterRole) {
     setBusy(true);
     try {
-      await updateMasterRole(row.id, { name: editName.trim() });
+      const __r = await updateMasterRole(row.id, { name: editName.trim() });
       setEditingId(null);
-      showToast(`Renamed to ${editName.trim()}.`);
+      toastResult(showToast, __r, `Renamed to ${editName.trim()}.`);
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not save changes.", "error");
@@ -992,8 +1002,8 @@ function RolesTab() {
   async function toggleActive(row: MasterRole) {
     setBusy(true);
     try {
-      await updateMasterRole(row.id, { active: !row.active });
-      showToast(
+      const __r = await updateMasterRole(row.id, { active: !row.active });
+      toastResult(showToast, __r, 
         row.active
           ? `${row.name} deactivated. It's hidden from the Create User dropdown but existing users are unaffected.`
           : `${row.name} reactivated.`
@@ -1187,6 +1197,7 @@ export function MastersPage() {
         }
       />
 
+      <PendingRequestsStrip modules={["masters"]} className="mt-3" />
       <div className="mt-4 flex gap-2">
         {TABS.map((t) => (
           <button

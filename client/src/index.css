@@ -51,6 +51,49 @@ html, body, #root {
   }
 }
 
+/* Panels and modals ease in: a short fade plus a slight rise (~180ms). */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animate-panel-in {
+  animation: panel-in 180ms ease-out;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 200ms ease-out;
+}
+/* A decided task row collapses out of the queue instead of vanishing. */
+.row-collapse {
+  transition: opacity 180ms ease-out, max-height 220ms ease-in 120ms, padding 220ms ease-in 120ms;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
 @media print {
   * {
     -webkit-print-color-adjust: exact;

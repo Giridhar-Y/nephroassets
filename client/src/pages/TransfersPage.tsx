@@ -20,6 +20,7 @@ import { DeleteIcon, EmptyIcon, ErrorIcon, HistoryIcon, RetryIcon, TransferIcon,
 import { hasPermission } from "../lib/permissions.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
 
 const PAGE_SIZE = 100;
 
@@ -374,6 +375,7 @@ export function TransfersPage() {
           </button>
         </div>
       </PageHeader>
+      <PendingRequestsStrip modules={["transfers", "bulkTransfers"]} className="mx-6 mt-3" />
 
       {tab === "new" && (
         <NewTransferTab

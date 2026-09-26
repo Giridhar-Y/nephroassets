@@ -7,6 +7,7 @@ import { useToast } from "./Toast.js";
 import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
 import { Modal } from "./ui/Modal.js";
 import { Button } from "./ui/Button.js";
+import { approvalMessage, useApprovalPreview } from "../lib/useApprovalPreview.js";
 
 type Step = "form" | "confirm" | "success";
 
@@ -31,6 +32,7 @@ export function EditAssetModal({
   onDone: () => void;
 }) {
   const { showToast } = useToast();
+  const approval = useApprovalPreview("editAsset");
   const [step, setStep] = useState<Step>("form");
   const [form, setForm] = useState<AssetEditInput>({
     farId: asset.farId,
@@ -93,7 +95,13 @@ export function EditAssetModal({
     setSubmitting(true);
     setError(null);
     try {
-      await updateAsset(asset.farId, form);
+      const res = await updateAsset(asset.farId, form);
+      const pending = approvalMessage(res);
+      if (pending) {
+        showToast(pending, "success");
+        onDone();
+        return;
+      }
       setStep("success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Update failed.");
@@ -308,7 +316,7 @@ export function EditAssetModal({
               <Button variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
-              <Button onClick={handleReview}>Save Changes</Button>
+              <Button onClick={handleReview}>{approval.applies ? "Submit for approval" : "Save Changes"}</Button>
             </div>
           </>
         )}

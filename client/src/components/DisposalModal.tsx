@@ -8,6 +8,7 @@ import { DeleteIcon, ErrorIcon } from "../lib/icons.js";
 import { useToast } from "./Toast.js";
 import { Modal } from "./ui/Modal.js";
 import { Button } from "./ui/Button.js";
+import { approvalSummary, useApprovalPreview } from "../lib/useApprovalPreview.js";
 
 type Step = "form" | "confirm";
 
@@ -49,6 +50,11 @@ export function DisposalModal({
   // rows get their own API call and which are left to the cascade.
   const selectedFarIds = new Set(assets.map((a) => a.asset.farId));
   const roots = assets.filter((a) => !(a.asset.parentFarId && selectedFarIds.has(a.asset.parentFarId)));
+  // Threshold rules compare against the gross being disposed (what the server uses).
+  const approval = useApprovalPreview(
+    "disposals",
+    roots.reduce((sum, a) => Math.max(sum, Number(a.asset.c1OpeningCost ?? 0) + Number(a.asset.c2OpeningCost ?? 0)), 0)
+  );
 
   async function handleReview() {
     if (assets.length === 0) {
@@ -77,9 +83,15 @@ export function DisposalModal({
     setError(null);
     try {
       const results = await Promise.all(roots.map((a) => disposeAsset(a.asset.farId, { dateOfDisposal, saleValue })));
-      const childrenDisposed = results.reduce((sum, r) => sum + r.childrenDisposed.length, 0);
+      const approvals = approvalSummary(results);
+      const applied = results.filter((r) => !("pendingApproval" in r));
+      const childrenDisposed = applied.reduce((sum, r) => sum + (r.childrenDisposed?.length ?? 0), 0);
       const childNote = childrenDisposed > 0 ? ` (including ${childrenDisposed} child asset${childrenDisposed === 1 ? "" : "s"})` : "";
-      showToast(`${assets.length} asset${assets.length === 1 ? "" : "s"} disposed${childNote}.`);
+      showToast(
+        approvals.pending === results.length
+          ? approvals.message!
+          : `${applied.length} asset${applied.length === 1 ? "" : "s"} disposed${childNote}.${approvals.message ? ` ${approvals.message}` : ""}`
+      );
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Disposal failed.");
@@ -236,7 +248,7 @@ export function DisposalModal({
                 Go back
               </Button>
               <Button onClick={handleConfirm} disabled={submitting || previewing}>
-                {submitting ? "Disposing…" : "Confirm & Dispose"}
+                {submitting ? (approval.applies ? "Sending…" : "Disposing…") : approval.applies ? "Submit for approval" : "Confirm & Dispose"}
               </Button>
             </div>
           </>

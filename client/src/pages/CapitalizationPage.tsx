@@ -25,6 +25,8 @@ import { PageHeader } from "../components/ui/PageHeader.js";
 import { Button } from "../components/ui/Button.js";
 import { GridViewControls } from "../components/ui/GridViewControls.js";
 import { useDensity } from "../hooks/useDensity.js";
+import { approvalMessage, useApprovalPreview } from "../lib/useApprovalPreview.js";
+import { PendingRequestsStrip } from "../components/approvals/PendingRequestsStrip.js";
 
 type Tab = "add" | "log";
 
@@ -182,6 +184,8 @@ export function CapitalizationPage() {
     return null;
   }
 
+  const approval = useApprovalPreview("capitalization", Number(form.c1OpeningCost || 0) + Number(form.c2OpeningCost || 0));
+
   async function handleSubmit() {
     const validation = validate();
     if (validation) {
@@ -191,11 +195,14 @@ export function CapitalizationPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await createAsset(form);
-      showToast(`Asset ${form.farId} (${form.assetDescription}) capitalized successfully.`, "success", {
-        label: "View in Log",
-        onClick: () => setTab("log")
-      });
+      const res = await createAsset(form);
+      const pending = approvalMessage(res);
+      if (pending) showToast(pending, "success");
+      else
+        showToast(`Asset ${form.farId} (${form.assetDescription}) capitalized successfully.`, "success", {
+          label: "View in Log",
+          onClick: () => setTab("log")
+        });
       setForm(blankForm(settings?.asAt ?? ""));
       reloadLog();
     } catch (err) {
@@ -247,6 +254,7 @@ export function CapitalizationPage() {
           </button>
         </div>
       </PageHeader>
+      <PendingRequestsStrip modules={["capitalization", "bulkCapitalization"]} className="mx-6 mt-3" />
 
       {tab === "add" && (
         <div className="flex-1 overflow-auto px-6 py-6">
@@ -501,7 +509,7 @@ export function CapitalizationPage() {
               onClick={handleSubmit}
               disabled={submitting}
             >
-              {submitting ? "Capitalizing…" : "Capitalize Asset"}
+              {submitting ? (approval.applies ? "Sending…" : "Capitalizing…") : approval.applies ? "Submit for approval" : "Capitalize Asset"}
             </button>
           </div>
         </div>

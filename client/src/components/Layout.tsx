@@ -40,10 +40,11 @@ import {
   PanelExpandIcon,
   BookDatabaseIcon,
   AdminIcon,
-  AuditLogIcon
-} from "../lib/icons.js";
+  AuditLogIcon, TasksIcon, WorkflowIcon } from "../lib/icons.js";
 import type { FluentIconsProps } from "@fluentui/react-icons";
 import { ApplyDateInput } from "./ui/ApplyDateInput.js";
+import { fetchTaskCount } from "../api/approvals.js";
+import { TASKS_CHANGED_EVENT } from "../pages/TasksPage.js";
 
 // Per-user scoped, same reasoning and pattern as useColumnPrefs.ts's Saved Views and
 // useDensity.ts: a personal display preference the user would expect to keep across
@@ -82,6 +83,8 @@ interface NavItem {
   /** Bulk Upload only — see RequirePermission's own comment on why it has no single
    *  umbrella permission. */
   anyOf?: string[];
+  /** Visible to every signed-in user (Tasks: anyone can be an approver or a maker). */
+  always?: boolean;
 }
 
 // Each item's module/action is the client-side mirror of exactly what its route
@@ -102,6 +105,7 @@ const NAV_ITEMS: NavItem[] = [
     module: "bulkUpload",
     anyOf: ["capitalization", "transfers", "disposals", "merge"]
   },
+  { to: "/tasks", label: "Tasks", icon: TasksIcon, module: "approvals", always: true },
   { to: "/reports", label: "Reports", icon: ReportsIcon, module: "reports", action: "view" },
   { to: "/activity-log", label: "Activity Log", icon: AuditLogIcon, module: "activityLog", action: "view" },
   { to: "/masters", label: "Masters", icon: BookDatabaseIcon, module: "masters", action: "view" },
@@ -109,6 +113,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const ADMIN_NAV_ITEM: NavItem = { to: "/admin", label: "Admin", icon: AdminIcon, module: "admin", action: "view" };
+const WORKFLOWS_NAV_ITEM: NavItem = { to: "/workflows", label: "Approval Workflows", icon: WorkflowIcon, module: "approvals", action: "manageWorkflows" };
 
 // Register publishes its own live "how many assets match the current view" count up
 // into the global header (next to Figures As Of) via this context — the header itself
@@ -238,6 +243,28 @@ function AsAtControl() {
   );
 }
 
+/** Live count for the Tasks badge: polled every minute, and refreshed right away after
+ *  any decision (TasksPage dispatches TASKS_CHANGED_EVENT). */
+function useTaskCount(): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () =>
+      fetchTaskCount()
+        .then((c) => alive && setCount(c.awaiting))
+        .catch(() => {});
+    refresh();
+    const t = setInterval(refresh, 60_000);
+    window.addEventListener(TASKS_CHANGED_EVENT, refresh);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      window.removeEventListener(TASKS_CHANGED_EVENT, refresh);
+    };
+  }, []);
+  return count;
+}
+
 export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -245,8 +272,9 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed(user!.id));
   const [registerAssetCount, setRegisterAssetCount] = useState<number | null>(null);
   const isVisible = (item: NavItem) =>
-    item.anyOf ? item.anyOf.some((a) => hasPermission(user, item.module, a)) : hasPermission(user, item.module, item.action!);
-  const navItems = [...NAV_ITEMS, ADMIN_NAV_ITEM].filter(isVisible);
+    item.always || (item.anyOf ? item.anyOf.some((a) => hasPermission(user, item.module, a)) : hasPermission(user, item.module, item.action!));
+  const navItems = [...NAV_ITEMS, WORKFLOWS_NAV_ITEM, ADMIN_NAV_ITEM].filter(isVisible);
+  const taskCount = useTaskCount();
 
   useEffect(() => {
     localStorage.setItem(sidebarCollapsedKey(user!.id), String(collapsed));
@@ -294,8 +322,21 @@ export function Layout() {
                 } ${isActive ? "bg-accent-light text-accent-hover" : "text-gray-600 hover:bg-gray-50"}`
               }
             >
-              <item.icon fontSize={collapsed ? 20 : 18} />
-              {!collapsed && item.label}
+              <span className="relative">
+                <item.icon fontSize={collapsed ? 20 : 18} />
+                {item.to === "/tasks" && taskCount > 0 && collapsed && (
+                  <span className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full bg-accent ring-2 ring-white" aria-hidden />
+                )}
+              </span>
+              {!collapsed && <span className="flex-1">{item.label}</span>}
+              {item.to === "/tasks" && taskCount > 0 && !collapsed && (
+                <span
+                  className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-white [animation:chip-in_180ms_ease-out]"
+                  aria-label={`${taskCount} waiting for your approval`}
+                >
+                  {taskCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

@@ -7,6 +7,7 @@ import { useToast } from "./Toast.js";
 import { FarIdAutocomplete } from "./FarIdAutocomplete.js";
 import { Modal } from "./ui/Modal.js";
 import { Button } from "./ui/Button.js";
+import { approvalMessage, useApprovalPreview } from "../lib/useApprovalPreview.js";
 
 type Step = "form" | "confirm";
 
@@ -32,6 +33,7 @@ export function AdditionModal({
   const [step, setStep] = useState<Step>("form");
   const [additionsC1, setAdditionsC1] = useState(0);
   const [additionsC2, setAdditionsC2] = useState(0);
+  const approval = useApprovalPreview("additions", Number(additionsC1 || 0) + Number(additionsC2 || 0));
   const [dateOfAddition, setDateOfAddition] = useState(defaultDate);
   // A smaller, separate affordance from Capitalization's own parent field — links this
   // *already-existing* asset to a parent while recording the addition, instead of a
@@ -62,8 +64,8 @@ export function AdditionModal({
     setSubmitting(true);
     setError(null);
     try {
-      await recordAddition(asset.farId, { additionsC1, additionsC2, dateOfAddition, parentFarId: linkParentFarId });
-      showToast(`Addition recorded on ${asset.farId}.`);
+      const res = await recordAddition(asset.farId, { additionsC1, additionsC2, dateOfAddition, parentFarId: linkParentFarId });
+      showToast(approvalMessage(res) ?? `Addition recorded on ${asset.farId}.`);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not record the addition.");
@@ -176,7 +178,7 @@ export function AdditionModal({
               <Button variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
-              <Button onClick={handleReview}>Record Addition</Button>
+              <Button onClick={handleReview}>{approval.applies ? "Submit for approval" : "Record Addition"}</Button>
             </div>
           </>
         )}

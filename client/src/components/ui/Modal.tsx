@@ -32,7 +32,7 @@ export function Modal({
 
   return (
     <div className={`fixed inset-0 ${stacked ? "z-[60]" : "z-30"} flex items-center justify-center bg-black/30`} onClick={onBackdropClick}>
-      <div className={`w-full rounded-xl bg-white p-6 shadow-xl ${widthClassName}`} onClick={(e) => e.stopPropagation()}>
+      <div className={`animate-panel-in w-full rounded-xl bg-white p-6 shadow-xl ${widthClassName}`} onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>

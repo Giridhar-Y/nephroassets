@@ -30,6 +30,8 @@ import { RequirePermission } from "./components/RequirePermission.js";
 import { ToastProvider } from "./components/Toast.js";
 import { ServiceWorkerUpdater } from "./components/ServiceWorkerUpdater.js";
 import { NotificationsProvider } from "./lib/NotificationsContext.js";
+import { TasksPage } from "./pages/TasksPage.js";
+import { WorkflowsPage } from "./pages/WorkflowsPage.js";
 
 export default function App() {
   return (
@@ -222,6 +224,15 @@ export default function App() {
                   element={
                     <RequirePermission module="masters" action="view">
                       <MastersPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route path="/tasks" element={<TasksPage />} />
+                <Route
+                  path="/workflows"
+                  element={
+                    <RequirePermission module="approvals" action="manageWorkflows">
+                      <WorkflowsPage />
                     </RequirePermission>
                   }
                 />
