@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { getPool } from "../db/pool.js";
@@ -7,6 +7,7 @@ import { requirePermission } from "../auth/middleware.js";
 import { blockingToggleMessage, findBlockingC2Assets } from "./componentTwoGuard.js";
 import { logMasterActivity } from "./masterActivityLog.js";
 import { isValidPermission, replaceRolePermissions, type Module, type Permission } from "../auth/permissions.js";
+import { submitIfWorkflow } from "../approvals/intercept.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -602,6 +603,22 @@ function handleMasterError(err: unknown, reply: { code: (n: number) => void }): 
   throw err;
 }
 
+/** Captures a Masters update for approval when a workflow applies (else null), with the
+ *  row as it stands now for the approver's before/after view. */
+async function mastersUpdatePending(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  db: Awaited<ReturnType<typeof getPool>>,
+  table: "centers" | "sub_classifications" | "statuses" | "roles",
+  noun: string,
+  id: number
+) {
+  const { rows } = await db.query<Record<string, unknown>>(`SELECT * FROM ${table} WHERE id = $1`, [id]);
+  const current = rows[0];
+  const name = current ? String(current.code ?? current.name ?? `#${id}`) : `#${id}`;
+  return submitIfWorkflow(req, reply, { module: "masters", summary: `Update ${noun} ${name}`, before: current ?? null });
+}
+
 export default async function mastersRoutes(app: FastifyInstance) {
   // --- Centers ---------------------------------------------------------------------
 
@@ -619,6 +636,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add center ${parsed.data.code}` });
+      if (pending) return pending;
       const result = await createCenter(db, parsed.data);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
@@ -640,6 +659,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await mastersUpdatePending(req, reply, db, "centers", "center", paramsParsed.data.id);
+      if (pending) return pending;
       const result = await updateCenterById(db, paramsParsed.data.id, bodyParsed.data);
       // A rename rewrites assets.location/revised_location + transfers.location.
       await invalidateReportTotalsCache(db);
@@ -679,6 +700,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add sub classification ${parsed.data.name}` });
+      if (pending) return pending;
       const result = await createSubClassification(db, parsed.data);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
@@ -703,6 +726,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await mastersUpdatePending(req, reply, db, "sub_classifications", "sub classification", paramsParsed.data.id);
+      if (pending) return pending;
       const result = await updateSubClassificationById(db, paramsParsed.data.id, bodyParsed.data);
       // A rename rewrites assets.sub_classification; has_component2 changes C2 figures.
       await invalidateReportTotalsCache(db);
@@ -733,6 +758,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add status ${parsed.data.name}` });
+      if (pending) return pending;
       const result = await createStatus(db, parsed.data);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
@@ -754,6 +781,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await mastersUpdatePending(req, reply, db, "statuses", "status", paramsParsed.data.id);
+      if (pending) return pending;
       const result = await updateStatusById(db, paramsParsed.data.id, bodyParsed.data);
       // A rename rewrites assets.status, which the exception counts filter on.
       await invalidateReportTotalsCache(db);
@@ -790,6 +819,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await submitIfWorkflow(req, reply, { module: "masters", summary: `Add role ${parsed.data.name}` });
+      if (pending) return pending;
       const result = await createRole(db, parsed.data);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
@@ -811,6 +842,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
     }
     const db = await getPool();
     try {
+      const pending = await mastersUpdatePending(req, reply, db, "roles", "role", paramsParsed.data.id);
+      if (pending) return pending;
       const result = await updateRoleById(db, paramsParsed.data.id, bodyParsed.data);
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
@@ -835,6 +868,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
       }
       const db = await getPool();
       try {
+        const pending = await mastersUpdatePending(req, reply, db, "roles", "role permissions", paramsParsed.data.id);
+        if (pending) return pending;
         const { grants, added, removed } = await replaceRolePermissionsById(db, paramsParsed.data.id, bodyParsed.data.grants);
         if (added.length > 0 || removed.length > 0) {
           await logMasterActivity(db, {

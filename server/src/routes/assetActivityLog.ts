@@ -1,6 +1,6 @@
 import type pg from "pg";
 
-export type AssetActivityAction = "capitalization_create" | "addition_create" | "transfer_create" | "disposal_create";
+export type AssetActivityAction = "capitalization_create" | "addition_create" | "transfer_create" | "disposal_create" | "asset_edit";
 
 /** Writes one row to asset_activity_log — the entered details of a Capitalization/
  *  Addition/Transfer/Disposal CREATE event. See schema.sql's table comment for what

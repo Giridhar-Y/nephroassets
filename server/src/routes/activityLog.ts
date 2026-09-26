@@ -7,7 +7,7 @@ import { centerScopeSql } from "../auth/centerScope.js";
 import type { AuthedUser } from "../auth/middleware.js";
 import { isoToDDMMYYYY } from "./bulkParse.js";
 
-const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "delete", "masters"] as const;
+const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "edit", "delete", "masters"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Record<Category, string> = {
@@ -15,14 +15,16 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   addition: "Addition",
   transfer: "Transfer",
   disposal: "Disposal",
+  edit: "Asset Edit",
   delete: "Delete",
   masters: "Masters"
 };
 
 // Which single asset_activity_log action each of the four "create" categories maps to
 // (1:1, unlike "delete"/"masters" below, which each cover several distinct actions).
-const CREATE_ACTION_BY_CATEGORY: Record<"capitalization" | "addition" | "transfer" | "disposal", string> = {
+const CREATE_ACTION_BY_CATEGORY: Record<"capitalization" | "addition" | "transfer" | "disposal" | "edit", string> = {
   capitalization: "capitalization_create",
+  edit: "asset_edit",
   addition: "addition_create",
   transfer: "transfer_create",
   disposal: "disposal_create"
@@ -452,6 +454,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
       addition: 0,
       transfer: 0,
       disposal: 0,
+      edit: 0,
       delete: 0,
       masters: 0
     };

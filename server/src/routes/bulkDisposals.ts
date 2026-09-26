@@ -17,6 +17,7 @@ import { requirePermission } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
+import { captureBulkChunkIfWorkflow } from "../approvals/intercept.js";
 
 const disposalRowSchema = z.object({
   farId: z.string().min(1),
@@ -151,6 +152,18 @@ export default async function bulkDisposalsRoutes(app: FastifyInstance) {
       }
       return mergePreviewRows(classified, errors);
     }
+
+    // Stored for approval instead of written when a workflow applies (approvals/intercept.ts).
+    const pending = await captureBulkChunkIfWorkflow(req, reply, {
+      module: "bulkDisposals",
+      path: "/api/assets/bulk-dispose",
+      filename: file.filename,
+      content: buffer,
+      totalRows: validRows.length + errors.length,
+      errors: errors.map(({ data, ...e }) => e),
+      rows: validRows.map(({ row, data }) => ({ row, farId: data.farId, data: stringifyRowData(data) }))
+    });
+    if (pending) return pending;
 
     const totalRows = validRows.length + errors.length;
     let processed = 0;

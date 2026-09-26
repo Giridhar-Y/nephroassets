@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
-import { backfillUserPermissions, seedBuiltInRoles } from "../auth/permissions.js";
+import { backfillUserPermissions, grantApprovalPermissionsOnce, seedBuiltInRoles } from "../auth/permissions.js";
 
 // Return DATE columns as raw "YYYY-MM-DD" strings instead of pg's default JS Date
 // (which applies local-timezone conversion and can shift the day). The calc engine
@@ -146,6 +146,8 @@ function schemaFingerprint(): string {
     .update(backfillUserPermissions.toString())
     .update(readFileSync(path.resolve(import.meta.dirname, "schema.sql"), "utf-8"))
     .update(readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8"))
+    .update(readFileSync(path.resolve(import.meta.dirname, "approvalsSchema.sql"), "utf-8"))
+    .update(grantApprovalPermissionsOnce.toString())
     .digest("hex");
 }
 
@@ -582,8 +584,12 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);
   `);
 
+  // Approval workflows — tables + the Edit Asset logging constraint (idempotent file).
+  await db.query(readFileSync(path.resolve(import.meta.dirname, "approvalsSchema.sql"), "utf-8"));
+
   // Must run before backfillUserPermissions — a pre-existing user backfilled from a
   // role whose row/template doesn't exist yet would silently get zero permissions.
   await seedBuiltInRoles(db);
   await backfillUserPermissions(db);
+  await grantApprovalPermissionsOnce(db);
 }

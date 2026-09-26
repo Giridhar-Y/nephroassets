@@ -37,6 +37,7 @@ const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   addition: "Addition",
   transfer: "Transfer",
   disposal: "Disposal",
+  edit: "Asset Edit",
   delete: "Delete",
   masters: "Masters"
 };
@@ -53,6 +54,7 @@ const CATEGORY_BADGE_CLASS: Record<ActivityCategory, string> = {
   addition: "bg-brand-teal/15 text-ink",
   transfer: "bg-brand-sky/20 text-ink",
   disposal: "bg-brand-rose/30 text-ink",
+  edit: "bg-brand-deepBlue/10 text-ink",
   delete: "bg-accent-light text-accent-hover",
   masters: "bg-gray-100 text-gray-700"
 };

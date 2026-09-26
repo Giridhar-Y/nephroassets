@@ -380,7 +380,7 @@ describe("Activity Log", () => {
 
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/summary" });
       expect(res.json()).toEqual({
-        counts: { capitalization: 1, addition: 0, transfer: 0, disposal: 0, delete: 1, masters: 1 },
+        counts: { capitalization: 1, addition: 0, transfer: 0, disposal: 0, edit: 0, delete: 1, masters: 1 },
         total: 3
       });
     });

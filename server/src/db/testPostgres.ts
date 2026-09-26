@@ -46,6 +46,7 @@ export async function startTestPostgres(): Promise<void> {
   // needs the same two-file sequence explicitly.
   const calcSql = readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8");
   await pool.query(calcSql);
+  await pool.query(readFileSync(path.resolve(import.meta.dirname, "approvalsSchema.sql"), "utf-8"));
   await pool.end();
 }
 

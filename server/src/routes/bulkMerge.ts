@@ -5,6 +5,7 @@ import { getPool } from "../db/pool.js";
 import { loadWorksheet, MAX_BULK_UPLOAD_FILE_SIZE_BYTES, parseWorksheetRows, type RowError } from "./bulkParse.js";
 import { requirePermission, type AuthedUser } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
+import { captureBulkChunkIfWorkflow } from "../approvals/intercept.js";
 
 const bulkMergeRowSchema = z.object({
   parentFarId: z.string().min(1),
@@ -233,6 +234,18 @@ export default async function bulkMergeRoutes(app: FastifyInstance) {
     if ((req.query as Record<string, string>).preview === "true") {
       return { totalRows: rows.length, summary, rows };
     }
+
+    // Stored for approval instead of written when a workflow applies (approvals/intercept.ts).
+    const pending = await captureBulkChunkIfWorkflow(req, reply, {
+      module: "bulkMerge",
+      path: "/api/assets/bulk-merge",
+      filename: file.filename,
+      content: buffer,
+      totalRows: rows.length,
+      errors: rows.filter((r) => r.status === "error").map((r) => ({ row: r.row, farId: r.farId, message: (r as { message?: string }).message })),
+      rows: rows.filter((r) => r.status !== "error").map((r) => ({ row: r.row, farId: r.farId, data: r.data as Record<string, unknown> }))
+    });
+    if (pending) return pending;
 
     const passing = outcomes.filter((o) => o.errors.length === 0);
     let applied = 0;

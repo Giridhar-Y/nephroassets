@@ -19,6 +19,7 @@ import { findDirectChildActionViolations } from "./parentLink.js";
 import { requirePermission } from "../auth/middleware.js";
 import { isCenterInScope } from "../auth/centerScope.js";
 import { logAssetActivity } from "./assetActivityLog.js";
+import { captureBulkChunkIfWorkflow } from "../approvals/intercept.js";
 
 const transferRowSchema = z.object({
   farId: z.string().min(1),
@@ -227,6 +228,18 @@ export default async function bulkTransfersRoutes(app: FastifyInstance) {
       }
       return mergePreviewRows(classified, errors);
     }
+
+    // Stored for approval instead of written when a workflow applies (approvals/intercept.ts).
+    const pending = await captureBulkChunkIfWorkflow(req, reply, {
+      module: "bulkTransfers",
+      path: "/api/transfers/bulk-upload",
+      filename: file.filename,
+      content: buffer,
+      totalRows: validRows.length + errors.length,
+      errors: errors.map(({ data, ...e }) => e),
+      rows: validRows.map(({ row, data }) => ({ row, farId: data.farId, center: data.toLocation, data: stringifyRowData(data) }))
+    });
+    if (pending) return pending;
 
     const totalRows = validRows.length + errors.length;
     let processed = 0;

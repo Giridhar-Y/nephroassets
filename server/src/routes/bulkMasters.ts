@@ -25,6 +25,7 @@ import {
   updateSubClassificationById
 } from "./masters.js";
 import { logMasterActivity, type MasterActivityAction } from "./masterActivityLog.js";
+import { captureBulkChunkIfWorkflow } from "../approvals/intercept.js";
 
 const centerRowSchema = z.object({ code: z.string().min(1), description: z.string().optional(), active: bulkActive });
 // defaultUsefulLifeC1Years/C2Years mirror the single-entry Masters form (masters.ts's
@@ -144,6 +145,18 @@ async function handleMasterBulk<Data extends { active?: boolean }, Row extends {
     });
     return mergePreviewRows(previewRows, errors);
   }
+
+  // Masters files go through the Masters workflow (approvals/intercept.ts).
+  const pending = await captureBulkChunkIfWorkflow(req, reply, {
+    module: "masters",
+    path: req.url.split("?")[0]!,
+    filename: file.filename,
+    content: buffer,
+    totalRows: classified.length + errors.length,
+    errors: errors.map(({ data, ...e }) => e),
+    rows: classified.map(({ row, data }) => ({ row, data: stringifyRowData(data) }))
+  });
+  if (pending) return pending;
 
   const totalRows = classified.length + errors.length;
   let processed = 0;

@@ -24,6 +24,8 @@ import bulkMergeRoutes from "./routes/bulkMerge.js";
 import activityLogRoutes from "./routes/activityLog.js";
 import activityLogExportJobsRoutes from "./routes/activityLogExportJobs.js";
 import aiSearchRoutes from "./routes/aiSearch.js";
+import approvalsRoutes from "./routes/approvals.js";
+import { setApprovalsApp } from "./approvals/engine.js";
 
 // Builds and registers the Fastify app but never calls `.listen(...)` — shared by the
 // local/Render entry (index.ts, which also seeds the DB and listens on a port) and the
@@ -89,6 +91,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(activityLogRoutes);
   await app.register(activityLogExportJobsRoutes);
   await app.register(aiSearchRoutes);
+  await app.register(approvalsRoutes);
+  // A final approval replays the original request through its own route (see
+  // approvals/engine.ts), which needs the app instance.
+  setApprovalsApp(app);
 
   // Fastify's default error handler already logs, but doesn't guarantee a JSON body —
   // an error thrown before the response starts can still leave the platform (Vercel) to

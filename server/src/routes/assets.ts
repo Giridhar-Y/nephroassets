@@ -19,6 +19,7 @@ import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
 import { diffPrevious } from "./masters.js";
 import { buildCalcCteExtras, buildConditionSql, conditionsQuerySchema, TOTAL_WDV_AND_PROFIT_LOSS_SQL } from "./assetColumnFilters.js";
 import { buildExceptionPredicate, EXCEPTION_KEYS } from "./exceptionPredicates.js";
+import { submitIfWorkflow } from "../approvals/intercept.js";
 
 const disposalSchema = z.object({
   dateOfDisposal: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -615,6 +616,17 @@ export default async function assetsRoutes(app: FastifyInstance) {
       }
     }
 
+    // Everything above is today's validation; if a workflow applies to this maker the
+    // entry is captured for approval here instead of written (approvals/intercept.ts).
+    const pending = await submitIfWorkflow(req, reply, {
+      module: "capitalization",
+      summary: `Capitalize ${input.farId}: ${input.assetDescription} at ${input.location}`,
+      farIds: [input.farId],
+      centers: [input.location],
+      amount: Number(input.c1OpeningCost ?? 0) + Number(input.c2OpeningCost ?? 0)
+    });
+    if (pending) return pending;
+
     const client = await db.connect();
     try {
       await client.query("BEGIN");
@@ -766,6 +778,48 @@ export default async function assetsRoutes(app: FastifyInstance) {
       }
     }
 
+    // Before/after of every editable field — logged on every edit (Edit Asset used to
+    // leave no audit trail at all) and shown to approvers when a workflow applies.
+    const { rows: beforeRows } = await db.query<Record<string, unknown>>(
+      `SELECT far_id, sub_classification, asset_description, serial_no, useful_life_c1_years, useful_life_c2_years,
+              acc_dep_c1_opening, acc_dep_c2_opening, parent_far_id
+       FROM assets WHERE far_id = $1`,
+      [farId]
+    );
+    const b = beforeRows[0]!;
+    const editBefore = {
+      farId: b.far_id as string,
+      subClassification: b.sub_classification as string,
+      assetDescription: b.asset_description as string,
+      serialNo: (b.serial_no as string | null) ?? "",
+      usefulLifeC1Years: Number(b.useful_life_c1_years),
+      usefulLifeC2Years: Number(b.useful_life_c2_years),
+      accDepC1Opening: Number(b.acc_dep_c1_opening),
+      accDepC2Opening: Number(b.acc_dep_c2_opening),
+      parentFarId: (b.parent_far_id as string | null) ?? null
+    };
+    const editAfter = {
+      farId: input.farId,
+      subClassification: canonicalSubClass,
+      assetDescription: input.assetDescription,
+      serialNo: input.serialNo ?? "",
+      usefulLifeC1Years: Number(input.usefulLifeC1Years),
+      usefulLifeC2Years: Number(input.usefulLifeC2Years),
+      accDepC1Opening: Number(input.accDepC1Opening),
+      accDepC2Opening: Number(input.accDepC2Opening),
+      parentFarId: input.parentFarId
+    };
+    const changed = (Object.keys(editAfter) as Array<keyof typeof editAfter>).filter((k) => editAfter[k] !== editBefore[k]);
+
+    const pending = await submitIfWorkflow(req, reply, {
+      module: "editAsset",
+      summary: `Edit ${farId}${changed.length ? `: ${changed.join(", ")}` : ""}`,
+      farIds: [...new Set([farId, input.farId])],
+      centers: [existing[0]!.revised_location ?? existing[0]!.location],
+      before: editBefore
+    });
+    if (pending) return pending;
+
     // A single UPDATE renaming far_id relies on transfers_far_id_fkey's ON UPDATE CASCADE
     // (see pool.ts) to carry that asset's transfer history to the new FAR ID atomically —
     // no separate repoint-then-rename dance needed.
@@ -788,6 +842,18 @@ export default async function assetsRoutes(app: FastifyInstance) {
         farId
       ]
     );
+    if (changed.length > 0) {
+      await logAssetActivity(db, {
+        actorUserId: req.user!.id,
+        action: "asset_edit",
+        farId: input.farId,
+        details: {
+          changed,
+          before: Object.fromEntries(changed.map((k) => [k, editBefore[k]])),
+          after: Object.fromEntries(changed.map((k) => [k, editAfter[k]]))
+        }
+      });
+    }
     await bustReportTotalsCache(db);
     return { farId: input.farId, updated: true };
   });
@@ -913,7 +979,17 @@ export default async function assetsRoutes(app: FastifyInstance) {
       }
     }
 
-    const setClauses = ["additions_c1 = $1", "additions_c2 = $2", "date_of_addition = $3"];
+    const pending = await submitIfWorkflow(req, reply, {
+      module: "additions",
+      summary: `Addition to ${farId} dated ${input.dateOfAddition}`,
+      farIds: [farId],
+      centers: [row.revised_location ?? row.location],
+      amount: Number(input.additionsC1 ?? 0) + Number(input.additionsC2 ?? 0),
+      before: { additionsC1: Number(row.additions_c1), additionsC2: Number(row.additions_c2), dateOfAddition: row.date_of_addition }
+    });
+    if (pending) return pending;
+
+        const setClauses = ["additions_c1 = $1", "additions_c2 = $2", "date_of_addition = $3"];
     const values: unknown[] = [input.additionsC1, input.additionsC2, input.dateOfAddition];
     if (input.parentFarId !== undefined) {
       setClauses.push(`parent_far_id = $${values.length + 1}`);
@@ -1120,6 +1196,17 @@ export default async function assetsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: `Sale Value (${saleValue}) cannot exceed the asset's Written Down Value at disposal (${totalWdv}).` };
     }
+    const pending = await submitIfWorkflow(req, reply, {
+      module: "disposals",
+      summary: `Dispose ${farId} on ${dateOfDisposal} (sale value ${saleValue})`,
+      farIds: [farId],
+      centers: [assetRowForWdv.revised_location ?? assetRowForWdv.location],
+      amount:
+        Number(assetRowForWdv.c1_opening_cost) + Number(assetRowForWdv.c2_opening_cost) + Number(assetRowForWdv.additions_c1) + Number(assetRowForWdv.additions_c2),
+      before: { status: assetRowForWdv.status, dateOfDisposal: assetRowForWdv.date_of_disposal, saleValue: Number(assetRowForWdv.sale_value) }
+    });
+    if (pending) return pending;
+
     const client = await db.connect();
     let result: { written: boolean; childrenDisposed: string[] };
     try {

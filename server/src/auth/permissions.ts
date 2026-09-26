@@ -37,7 +37,11 @@ export const PERMISSION_REGISTRY = {
   // `managePermissions` is the "Super Admin" tier this whole project introduces — not a
   // new role, just a specific action within Admin that not every Admin necessarily
   // holds, separate from ordinary user CRUD.
-  admin: ["view", "create", "edit", "resetPassword", "managePermissions"]
+  admin: ["view", "create", "edit", "resetPassword", "managePermissions"],
+  // Approval workflows: configure the rules, see every request (not just your own/your
+  // tasks), and reassign a pending step (an approver on leave or deactivated). Who
+  // APPROVES is never a permission — it's whoever a workflow step names (users/roles).
+  approvals: ["manageWorkflows", "viewAll", "reassign"]
 } as const;
 
 export type Module = keyof typeof PERMISSION_REGISTRY;
@@ -95,7 +99,8 @@ const BUILT_IN_ROLE_TEMPLATES: Record<"viewer" | "editor" | "admin", Permission[
     ...grants("activityLog", "view", "export"),
     ...grants("masters", "view", "edit"),
     ...grants("settings", "view", "edit"),
-    ...grants("admin", "view", "create", "edit", "resetPassword", "managePermissions")
+    ...grants("admin", "view", "create", "edit", "resetPassword", "managePermissions"),
+    ...grants("approvals", "manageWorkflows", "viewAll", "reassign")
   ]
 };
 
@@ -274,5 +279,32 @@ export async function backfillUserPermissions(db: Pick<pg.Pool | pg.PoolClient, 
   );
   for (const row of rows) {
     await seedPermissionsFromRole(db, Number(row.id), row.role, null);
+  }
+}
+
+/** One-time forward migration for the approvals permissions: role templates are only
+ *  seeded when a role is first created, so an existing database's Admin role and users
+ *  would otherwise never receive them. Grants them once — to every role/user that can
+ *  already manage permissions (the existing top-level admin capability) — and only if no
+ *  approvals grant exists anywhere yet, so a later deliberate revoke is never undone. */
+export async function grantApprovalPermissionsOnce(db: Pick<pg.Pool | pg.PoolClient, "query">): Promise<void> {
+  const { rows } = await db.query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM role_permissions WHERE module = 'approvals')
+         OR EXISTS (SELECT 1 FROM user_permissions WHERE module = 'approvals') AS exists`
+  );
+  if (rows[0]?.exists) return;
+  for (const action of PERMISSION_REGISTRY.approvals) {
+    await db.query(
+      `INSERT INTO role_permissions (role_id, module, action)
+       SELECT DISTINCT role_id, 'approvals', $1 FROM role_permissions WHERE module = 'admin' AND action = 'managePermissions'
+       ON CONFLICT DO NOTHING`,
+      [action]
+    );
+    await db.query(
+      `INSERT INTO user_permissions (user_id, module, action)
+       SELECT DISTINCT user_id, 'approvals', $1 FROM user_permissions WHERE module = 'admin' AND action = 'managePermissions'
+       ON CONFLICT DO NOTHING`,
+      [action]
+    );
   }
 }

@@ -403,7 +403,7 @@ export function deleteTransfer(
   return request(`/api/transfers/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
 }
 
-export type ActivityCategory = "capitalization" | "addition" | "transfer" | "disposal" | "delete" | "masters";
+export type ActivityCategory = "capitalization" | "addition" | "transfer" | "disposal" | "edit" | "delete" | "masters";
 
 export interface ActivityLogEntry {
   id: number;

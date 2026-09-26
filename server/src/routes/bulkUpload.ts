@@ -17,6 +17,7 @@ import { isCenterInScope } from "../auth/centerScope.js";
 import { blockingAssetMessage, hasRealC2Data } from "./componentTwoGuard.js";
 import { logAssetActivity, logAssetActivityBatch } from "./assetActivityLog.js";
 import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
+import { captureBulkChunkIfWorkflow } from "../approvals/intercept.js";
 
 // Center-scoped access: an upsert row can either create a brand-new asset (only its
 // target `location` matters) or correct an existing one (whose `location` column CAN
@@ -343,6 +344,25 @@ export default async function bulkUploadRoutes(app: FastifyInstance) {
       }));
       return mergePreviewRows(classified, errors);
     }
+
+    // With a workflow for this maker, the validated chunk is stored for approval instead
+    // of written (approvals/intercept.ts); the approved apply replays these exact bytes.
+    const pending = await captureBulkChunkIfWorkflow(req, reply, {
+      module: "bulkCapitalization",
+      path: "/api/assets/bulk-upload",
+      filename: sourceFilename,
+      content: buffer,
+      totalRows: validRows.length + errors.length,
+      errors: errors.map(({ data, ...e }) => e),
+      rows: validRows.map(({ row, data }) => ({
+        row,
+        farId: data.farId,
+        center: data.location,
+        amount: Number(data.c1OpeningCost ?? 0) + Number(data.c2OpeningCost ?? 0),
+        data: stringifyRowData(data)
+      }))
+    });
+    if (pending) return pending;
 
     // Captured before the commit loop below can push more entries into `errors`, so a
     // row that fails at the DB-write step isn't double-counted (once as a valid row,

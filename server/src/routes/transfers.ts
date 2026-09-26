@@ -11,6 +11,7 @@ import { buildTransferConditionSql, transferConditionsQuerySchema } from "./tran
 import { logAssetDelete } from "./assetDeleteAudit.js";
 import { logAssetActivity } from "./assetActivityLog.js";
 import { diffPrevious } from "./masters.js";
+import { submitIfWorkflow } from "../approvals/intercept.js";
 
 const deleteReasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.") });
 
@@ -170,6 +171,17 @@ export default async function transfersRoutes(app: FastifyInstance) {
           .join("; ")}.`
       };
     }
+
+    // An approver must be able to see every center involved: each asset's current
+    // location and the destination.
+    const pending = await submitIfWorkflow(req, reply, {
+      module: "transfers",
+      summary: `Transfer ${farIds.length === 1 ? farIds[0] : `${farIds.length} assets`} to ${toLocation} on ${transactionDate}`,
+      farIds,
+      centers: [...farIds.map((id) => currentLocationByFarId.get(id) ?? ""), toLocation],
+      before: Object.fromEntries(farIds.map((id) => [id, { location: currentLocationByFarId.get(id) ?? null }]))
+    });
+    if (pending) return pending;
 
     const client = await db.connect();
     try {
