@@ -146,7 +146,7 @@ function BulkSection({ detail }: { detail: RequestDetail }) {
       current = false;
     };
   }, [detail.id, page, search]);
-  const columns = data?.rows[0] ? Object.keys(data.rows[0].data).slice(0, 8) : [];
+  const columns = data?.rows[0] ? previewColumns(Object.keys(data.rows[0].data)) : [];
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const progress = bulk.progress;
   return (
@@ -358,6 +358,17 @@ function bulkUploadQuery(path: string | undefined): string {
     "/api/masters/statuses/bulk-upload": "type=masters&list=statuses"
   };
   return (path && types[path]) || "type=assets";
+}
+
+// The row data comes back as jsonb, which stores keys shortest-first (qty, farId,
+// status…); show the columns a reviewer reads first, then whatever else fits.
+const PREVIEW_COLUMN_ORDER = [
+  "farId", "assetDescription", "subClassification", "location", "fromLocation", "toLocation", "status", "dateAcquired",
+  "transferDate", "dateOfDisposal", "saleValue", "c1OpeningCost", "c2OpeningCost", "parentFarId", "childFarId", "code", "name", "description"
+];
+function previewColumns(keys: string[]): string[] {
+  const rank = (k: string) => (PREVIEW_COLUMN_ORDER.includes(k) ? PREVIEW_COLUMN_ORDER.indexOf(k) : PREVIEW_COLUMN_ORDER.length);
+  return [...keys].sort((a, b) => rank(a) - rank(b)).slice(0, 8);
 }
 
 export function RequestPanel({
