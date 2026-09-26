@@ -125,13 +125,13 @@ export function decodeCursor(raw: string): Cursor | null {
 // caller's own SELECT list sandwiched between them (row detail vs. a grouped count).
 const COMBINED_WITH_SQL = `
   WITH combined AS (
-    SELECT id, action, far_id, details, NULL::text AS reason, created_at, actor_user_id, 'activity'::text AS src
+    SELECT id, action, far_id, details, NULL::text AS reason, created_at, actor_user_id, 'activity'::text AS src, approval_request_id
     FROM asset_activity_log
     UNION ALL
-    SELECT id, action, far_id, details, reason, created_at, actor_user_id, 'delete'::text AS src
+    SELECT id, action, far_id, details, reason, created_at, actor_user_id, 'delete'::text AS src, NULL::bigint AS approval_request_id
     FROM asset_delete_audit_log
     UNION ALL
-    SELECT id, action, NULL::text AS far_id, details, NULL::text AS reason, created_at, actor_user_id, 'masters'::text AS src
+    SELECT id, action, NULL::text AS far_id, details, NULL::text AS reason, created_at, actor_user_id, 'masters'::text AS src, approval_request_id
     FROM master_activity_log
   )
 `;
@@ -140,7 +140,17 @@ const COMBINED_JOIN_SQL = `
   LEFT JOIN users u ON u.id = c.actor_user_id
   LEFT JOIN assets a ON a.far_id = c.far_id
 `;
-export const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username ${COMBINED_JOIN_SQL}`;
+// For an entry applied by an approved change request: every approval of the cycle that
+// was applied (step, approver, time, comment), oldest step first.
+const APPROVALS_SQL = `
+  CASE WHEN c.approval_request_id IS NULL THEN NULL ELSE (
+    SELECT jsonb_agg(jsonb_build_object('step', x.step + 1, 'by', ux.username, 'at', x.created_at, 'comment', x.comment) ORDER BY x.step, x.id)
+    FROM change_request_actions x
+    JOIN change_requests cr ON cr.id = x.request_id
+    LEFT JOIN users ux ON ux.id = x.actor_id
+    WHERE x.request_id = c.approval_request_id AND x.action = 'approve' AND x.cycle = cr.cycle
+  ) END`;
+export const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username, c.approval_request_id, ${APPROVALS_SQL} AS approvals ${COMBINED_JOIN_SQL}`;
 
 export interface FilterQuery {
   farId?: string;
@@ -211,6 +221,8 @@ export interface RawRow {
   details: Record<string, unknown> | null;
   created_at: string;
   username: string | null;
+  approval_request_id?: string | null;
+  approvals?: Array<{ step: number; by: string | null; at: string; comment: string | null }> | null;
 }
 
 export interface ShapedItem {
@@ -222,6 +234,8 @@ export interface ShapedItem {
   details: Record<string, unknown> | null;
   createdAt: string;
   actorUsername: string | null;
+  /** Set when the entry was applied by an approved change request. */
+  approval?: { requestId: number; approvals: Array<{ step: number; by: string | null; at: string; comment: string | null }> };
 }
 
 /** One raw UNION row -> the shape both the list JSON and the export share: category
@@ -240,6 +254,16 @@ export function shapeRow(r: RawRow): ShapedItem {
   } else {
     category = CATEGORY_BY_CREATE_ACTION[r.action] ?? "capitalization";
   }
+  const approvals = r.approvals ?? [];
+  if (r.approval_request_id) {
+    // Also as text in details, so both exports' "Other Details" carry the approvers too.
+    details = {
+      ...details,
+      approvedBy: approvals.length
+        ? approvals.map((a) => `Step ${a.step}: ${a.by ?? "Unknown user"}, ${formatIstTimestamp(new Date(a.at).toISOString())}${a.comment ? ` ("${a.comment}")` : ""}`).join("; ")
+        : `Request #${r.approval_request_id} (applied without an approval step)`
+    };
+  }
   return {
     id: Number(r.id),
     source: r.src,
@@ -248,7 +272,8 @@ export function shapeRow(r: RawRow): ShapedItem {
     farId: r.far_id,
     details,
     createdAt: new Date(r.created_at).toISOString(),
-    actorUsername: r.username
+    actorUsername: r.username,
+    ...(r.approval_request_id ? { approval: { requestId: Number(r.approval_request_id), approvals } } : {})
   };
 }
 

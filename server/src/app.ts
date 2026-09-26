@@ -25,7 +25,7 @@ import activityLogRoutes from "./routes/activityLog.js";
 import activityLogExportJobsRoutes from "./routes/activityLogExportJobs.js";
 import aiSearchRoutes from "./routes/aiSearch.js";
 import approvalsRoutes from "./routes/approvals.js";
-import { setApprovalsApp } from "./approvals/engine.js";
+import { approvalApplyContextHook, setApprovalsApp } from "./approvals/engine.js";
 
 // Builds and registers the Fastify app but never calls `.listen(...)` — shared by the
 // local/Render entry (index.ts, which also seeds the DB and listens on a port) and the
@@ -72,6 +72,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // route file added later is protected automatically instead of by remembering to add
   // a guard to it.
   app.addHook("preHandler", authGateHook);
+  app.addHook("preHandler", approvalApplyContextHook);
 
   await app.register(authRoutes);
   await app.register(adminUsersRoutes);

@@ -414,6 +414,8 @@ export interface ActivityLogEntry {
   details: Record<string, unknown> | null;
   createdAt: string;
   actorUsername: string | null;
+  /** Set when the entry was applied by an approved change request. */
+  approval?: { requestId: number; approvals: Array<{ step: number; by: string | null; at: string; comment: string | null }> };
 }
 
 export interface FetchActivityLogParams {

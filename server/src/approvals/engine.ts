@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import { applyingRequest } from "../routes/assetActivityLog.js";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { signSession, SESSION_COOKIE_NAME } from "../auth/session.js";
 import type { AuthedUser } from "../auth/middleware.js";
@@ -117,6 +118,16 @@ async function replayAsMaker(
       ...opts.headers
     }
   });
+}
+
+/** Global preHandler: inside an approved replay (signed header), tag the rest of that
+ *  request's async work with its change request id, so the activity-log rows it writes
+ *  link back to the request and its approvers. Set here rather than around inject()
+ *  because Fastify parses the body from stream events outside the caller's context.
+ *  The signature alone is enough for a tag; routes still fully verify the header. */
+export async function approvalApplyContextHook(req: FastifyRequest): Promise<void> {
+  const parsed = parseApplyHeader(req.headers["x-approval-apply"]);
+  if (parsed) applyingRequest.enterWith(parsed.requestId);
 }
 
 // ---------------------------------------------------------------------------------------

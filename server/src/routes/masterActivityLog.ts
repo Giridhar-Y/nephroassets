@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { applyingRequest } from "./assetActivityLog.js";
 
 export type MasterActivityAction =
   | "center_create"
@@ -23,8 +24,8 @@ export async function logMasterActivity(
   }
 ): Promise<void> {
   await db.query(
-    `INSERT INTO master_activity_log (actor_user_id, action, details)
-     VALUES ($1, $2, $3)`,
-    [params.actorUserId, params.action, JSON.stringify(params.details)]
+    `INSERT INTO master_activity_log (actor_user_id, action, details, approval_request_id)
+     VALUES ($1, $2, $3, $4)`,
+    [params.actorUserId, params.action, JSON.stringify(params.details), applyingRequest.getStore() ?? null]
   );
 }

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   createActivityLogExportJob,
   fetchActivityLog,
@@ -97,16 +97,39 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // `previous` renders as a real "Field / Old → New" row instead of just the flat
 // new-value line every other field still gets below. `previous` itself, and every field
 // it already covers, are skipped from the flat list so nothing renders twice.
-function DetailsSummary({ details }: { details: Record<string, unknown> | null }) {
-  if (!details || Object.keys(details).length === 0) {
+function DetailsSummary({ details, approval }: { details: Record<string, unknown> | null; approval?: ActivityLogEntry["approval"] }) {
+  if (approval) details = Object.fromEntries(Object.entries(details ?? {}).filter(([key]) => key !== "approvedBy"));
+  if ((!details || Object.keys(details).length === 0) && !approval) {
     return <span className="text-gray-400">No details recorded.</span>;
   }
-  const previous = isPlainObject(details.previous) ? details.previous : null;
+  const previous = details && isPlainObject(details.previous) ? details.previous : null;
   const changedEntries = previous ? Object.entries(previous) : [];
-  const flatEntries = Object.entries(details).filter(([key]) => key !== "previous" && !(previous && key in previous));
+  const flatEntries = Object.entries(details ?? {}).filter(([key]) => key !== "previous" && !(previous && key in previous));
 
   return (
     <div className="space-y-3">
+      {approval && (
+        <div className="max-w-xl rounded-lg border border-brand-teal/30 bg-brand-teal/5 px-3 py-2 text-xs">
+          <p className="mb-1 font-semibold text-ink">
+            Applied after approval ·{" "}
+            <Link to={`/tasks?tab=all&request=${approval.requestId}`} className="text-accent hover:underline">
+              request #{approval.requestId}
+            </Link>
+          </p>
+          {approval.approvals.length === 0 ? (
+            <p className="text-gray-500">No approval step (no matching rule when the file was finalized).</p>
+          ) : (
+            <ol className="space-y-0.5">
+              {approval.approvals.map((a, i) => (
+                <li key={i} className="text-gray-700">
+                  <span className="font-medium">Step {a.step}:</span> approved by {a.by ?? "Unknown user"}, {formatDateTime(a.at)}
+                  {a.comment && <span className="text-gray-500"> — “{a.comment}”</span>}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
       {changedEntries.length > 0 && (
         <table className="w-full max-w-xl border-collapse text-xs">
           <thead>
@@ -121,7 +144,7 @@ function DetailsSummary({ details }: { details: Record<string, unknown> | null }
               <tr key={key} className="border-b border-gray-100 last:border-0">
                 <td className="py-1 pr-3 font-medium text-gray-500">{humanizeKey(key)}</td>
                 <td className="py-1 pr-3 text-gray-400 line-through">{formatDetailValue(oldValue)}</td>
-                <td className="py-1 font-semibold text-ink">{formatDetailValue(details[key])}</td>
+                <td className="py-1 font-semibold text-ink">{formatDetailValue(details?.[key])}</td>
               </tr>
             ))}
           </tbody>
@@ -516,7 +539,7 @@ export function ActivityLogPage() {
                   </div>
                   {expanded && (
                     <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-xs">
-                      <DetailsSummary details={entry.details} />
+                      <DetailsSummary details={entry.details} approval={entry.approval} />
                     </div>
                   )}
                 </Fragment>

@@ -136,3 +136,8 @@ BEGIN
       CHECK (action IN ('capitalization_create', 'addition_create', 'transfer_create', 'disposal_create', 'asset_edit'));
   END IF;
 END $$;
+
+-- An entry written by an approved change request's apply carries that request's id, so
+-- the Activity Log can show every approver (step, who, when, comment), not only the maker.
+ALTER TABLE asset_activity_log ADD COLUMN IF NOT EXISTS approval_request_id BIGINT;
+ALTER TABLE master_activity_log ADD COLUMN IF NOT EXISTS approval_request_id BIGINT;
