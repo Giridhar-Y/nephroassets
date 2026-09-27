@@ -170,7 +170,7 @@ Disable it in that repo's Actions settings if that's unwanted.
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Approval screens: UX polish from UAT
-Commits: `a5bc553`, plus the follow-up commit that adds value formatting (`git log -- client/src/pages/TasksPage.tsx`)
+Commits: `a5bc553`, `97f9dcf`
 
 **What changed**
 - A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
