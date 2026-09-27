@@ -15,7 +15,7 @@ DevOps handover when the release is signed off.
 ## At a glance for DevOps
 
 - **Env vars:** no new or changed variables. `.env` stays as it is.
-- **Database:** additive only (new tables and columns, one widened CHECK constraint).
+- **Database:** additive only (new tables and columns, two widened CHECK constraints).
   Applied automatically, once, on the first boot of the new image. No manual SQL.
 - **First boot:** the one-time schema update takes seconds. It clears the cached report
   figures once, and the built-in pre-warm then rebuilds them (allow up to ~15 minutes).
@@ -219,7 +219,72 @@ Commits: `a5bc553`, `97f9dcf`, `8618ef0`, `5d657c3`
   - Masters #7 on "Medical Equipment-Dialysis": Default C1 Life **11 → —** (emptied) and
     Default C2 Life **7 → 0**. Only the submitted fields were listed.
 
-### 6. Test tooling (developers only)
+### 6. Exports: paisa precision, Activity Log workbook, background exports
+Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`
+
+**What changed**
+- **Amounts rounded to the paisa in exports only.** Register (CSV, .xlsx and the background
+  CSV), Register Summary and Audit Reconciliation round amount columns to 2 decimals, round
+  half up, with the same rule the Transfer & Depreciation export already uses, so the same
+  asset matches across files.
+  - Qty and Useful Life are never rounded (Useful Life holds part-years, e.g. 3.5).
+  - Each export says "Amounts rounded to the paisa": in its first/note line, or as a
+    header note on the Register .xlsx so its table still starts at row 1.
+  - The calc engine, stored values and on-screen figures are unchanged.
+- **Audit Reconciliation .xlsx:** amounts show 2 decimals, and the export reuses the
+  figures the screen cached, so it matches the screen and no longer recomputes (it timed
+  out on Vercel). On Vercel, a date not cached yet queues the pre-warm and says "still
+  being prepared, try again shortly"; on Docker it computes and caches.
+- **Register .xlsx:** Qty shows as a whole number; Useful Life keeps its 2-decimal format.
+- **Activity Log export** is a two-sheet .xlsx:
+  - **Events**: one row per entry, with date, user, module, action, FAR ID or master
+    record, center, submitted by, approved by (every step: who, when, comment), a request
+    link, reason and notes.
+  - **Changes**: one row per changed field, with Event ID (linked to Events), form
+    label, Old Value and New Value. Amounts are number cells with 2 decimals.
+  - It covers creates, edits (including Edit Asset, whose before/after values weren't
+    read before), deletes/undos and Masters.
+  - The CSV (background export) uses the Changes layout, with each event's date, user
+    and FAR ID repeated; an event with no field changes still gets one line.
+  - Masters updates now also log which record they changed (they previously logged only
+    the changed fields, so an update couldn't be tied to its center or role). This only
+    applies to new entries.
+- **Background exports:** the unfiltered Register Summary now runs as a background export
+  (sliced by FAR ID, merged exactly; the file is identical to the direct export). The
+  Activity Log already switched to background above 10,000 entries. Both show a progress
+  percentage on the button while they run.
+- **Found while doing this:** without background-export storage (`EXPORT_S3_*` blank,
+  as on the company's Docker server), a Register or Activity Log export over the
+  background threshold used to **fail with an error**. It now falls back to the direct
+  download, which has no time limit on Docker. The Register Summary behaves the same.
+
+**Database (automatic on first boot)**
+- `export_jobs.job_type` CHECK widened to allow `REGISTER_SUMMARY` (guarded, runs once).
+- New nullable column `export_jobs.state` (JSONB): a Register Summary job's running sums
+  between hops.
+
+**Env vars:** none new. `EXPORT_S3_*` stay optional:
+- unset (Docker today): exports download directly, with no time limit;
+- set: large exports run in the background, as on Vercel.
+
+**DevOps must do / expect:** nothing. Note for Finance: export layouts changed. The
+Activity Log .xlsx now has two sheets (Events, Changes), and CSV amounts are rounded to
+the paisa.
+
+**Verified**
+- Server tests: 1059/1059. They cover:
+  - rounding half up (10000.125 → 10000.13) and extra decimals (2632.5678 → 2632.57);
+  - Qty and Useful Life untouched, the notes, and the .xlsx Qty format;
+  - Audit Reconciliation reading a sentinel value planted in its cache;
+  - the Vercel cache-miss message;
+  - every Activity Log shape (create, Masters update, disposal to "Disposed", Edit Asset
+    before/after, delete) plus the approval links;
+  - the Register Summary job merging 2-asset slices into a file byte-identical to the
+    direct export, and its lease.
+- Client tests: 155/155, including the 503 fallback and the progress percentage.
+- UAT on personal Vercel: see below.
+
+### 7. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
 Windows can reserve the default port. No effect on the app, the image or the deployment.
 
