@@ -210,22 +210,30 @@ export function ActivityLogPage() {
   };
   const exportUrl = getActivityLogExportUrl(exportParams);
   const { exporting: exportingSync, runExport: runSyncExport } = useExport(exportUrl);
-  const { isExporting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
+  const {
+    isExporting: backgroundExporting,
+    startExport: startBackgroundExport,
+    progressLabel: backgroundProgressLabel
+  } = useBackgroundExport<
     Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo">
   >({
     createJob: createActivityLogExportJob,
     fetchJob: fetchActivityLogExportJob,
     startingMessage: `Exporting ${(summary?.total ?? 0).toLocaleString()} activity logs in the background. We'll notify you when ready.`,
-    buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString()} rows).`
+    buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString()} entries).`,
+    // No background storage on this server (Docker without S3/R2): the direct .xlsx
+    // export has no time limit there.
+    fallback: () => runSyncExport()
   });
   // Filtered count too large for the synchronous .xlsx export runs as a background job
   // instead — same toolbar button, just a different path once the count is known, exactly
   // Register's own overLimit/handleExportClick split (RegisterPage.tsx).
   const overLimit = summary !== null && summary.total > ACTIVITY_LOG_EXPORT_ROW_LIMIT;
-  const exporting = overLimit ? backgroundExporting : exportingSync;
+  // Either can be running over the limit: the direct export is the fallback without background storage.
+  const exporting = backgroundExporting || exportingSync;
   const handleExportClick = useCallback(() => {
     if (overLimit) {
-      void startBackgroundExport(exportParams);
+      void startBackgroundExport(exportParams, summary?.total);
     } else {
       runSyncExport();
     }
@@ -233,7 +241,7 @@ export function ActivityLogPage() {
     // above) — including it here would defeat useCallback's memoization for no benefit,
     // since every filter it's built from is already its own dependency below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overLimit, startBackgroundExport, runSyncExport, farId, actor, category, dateFrom, dateTo]);
+  }, [overLimit, startBackgroundExport, runSyncExport, farId, actor, category, dateFrom, dateTo, summary]);
 
   // Writes every filter back to the URL (replace, so Back doesn't step through every
   // keystroke) whenever one changes, so the current view can be shared as a direct link.
@@ -333,7 +341,7 @@ export function ActivityLogPage() {
           <ExportButton
             url={exportUrl}
             label="Export"
-            exportingLabel={overLimit ? "Exporting in background…" : "Exporting…"}
+            exportingLabel={overLimit && backgroundExporting ? backgroundProgressLabel : "Exporting…"}
             exporting={exporting}
             onExport={handleExportClick}
           />

@@ -897,6 +897,16 @@ export function getRegisterSummaryExportUrl(filters: RegisterSummaryFilters): st
   return `/api/reports/register-summary/export?${registerSummaryParams(filters)}`;
 }
 
+/** The unfiltered Register Summary as a background export (too slow for one request on
+ *  Vercel). 503 when the server has no background storage: use the direct export then. */
+export function createRegisterSummaryExportJob(filters: RegisterSummaryFilters): Promise<{ jobId: string }> {
+  return request(`/api/reports/register-summary/export/jobs?${registerSummaryParams(filters)}`, { method: "POST" });
+}
+
+export function fetchRegisterSummaryExportJob(jobId: string): Promise<ExportJobStatus> {
+  return request(`/api/reports/register-summary/export/jobs/${encodeURIComponent(jobId)}`);
+}
+
 // Finance FAR Dashboard — mirrors server/src/routes/reports.ts's computeDashboardFast/
 // computeDashboardTotals/computeDashboardTrend response shapes field-for-field. Split
 // into 3 independent requests (2026-09-05) rather than one combined endpoint — see

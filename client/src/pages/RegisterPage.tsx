@@ -180,13 +180,18 @@ export function RegisterPage() {
   // below and the toolbar button share one `exporting` state — see ExportButton's own
   // exporting/onExport props for why two independent copies would be a race.
   const { exporting: exportingRegister, runExport: runRegisterExport } = useExport(exportUrl);
-  const { isExporting: backgroundExporting, startExport: startBackgroundExport } = useBackgroundExport<
-    { asAt: string } & AssetFilters
-  >({
+  const {
+    isExporting: backgroundExporting,
+    startExport: startBackgroundExport,
+    progressLabel: backgroundProgressLabel
+  } = useBackgroundExport<{ asAt: string } & AssetFilters>({
     createJob: createExportJob,
     fetchJob: fetchExportJob,
     startingMessage: "Large export started in the background — you'll get a notification when it's ready.",
-    buildCompletedMessage: (job) => `Register export ready (${job.processedRows.toLocaleString()} rows).`
+    buildCompletedMessage: (job) => `Register export ready (${job.processedRows.toLocaleString()} rows).`,
+    // No background storage on this server (Docker without S3/R2): the direct export
+    // has no time limit there.
+    fallback: () => runRegisterExport()
   });
 
   const [centers, setCenters] = useState<string[]>([]);
@@ -216,11 +221,11 @@ export function RegisterPage() {
   const overLimit = total !== null && total > EXPORT_ROW_LIMIT;
   const handleExportClick = useCallback(() => {
     if (overLimit) {
-      if (asAt) void startBackgroundExport({ asAt, ...assetListFilters });
+      if (asAt) void startBackgroundExport({ asAt, ...assetListFilters }, total ?? undefined);
     } else {
       runRegisterExport();
     }
-  }, [overLimit, asAt, assetListFilters, startBackgroundExport, runRegisterExport]);
+  }, [overLimit, asAt, assetListFilters, startBackgroundExport, runRegisterExport, total]);
 
   // FAR module keyboard shortcut: Ctrl+Shift+E (Cmd+Shift+E on Mac) triggers the same
   // export the toolbar button does. Suppressed while focus is inside an editable field
@@ -479,9 +484,9 @@ export function RegisterPage() {
           <ExportButton
             url={exportUrl}
             label="Export"
-            exportingLabel={overLimit ? "Exporting in background…" : "Exporting…"}
+            exportingLabel={overLimit && backgroundExporting ? backgroundProgressLabel : "Exporting…"}
             shortcutHint="Export (Ctrl+Shift+E)"
-            exporting={overLimit ? backgroundExporting : exportingRegister}
+            exporting={backgroundExporting || exportingRegister}
             onExport={handleExportClick}
           />
           <ColumnPicker prefs={columnPrefs} />

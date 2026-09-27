@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  createRegisterSummaryExportJob,
+  fetchRegisterSummaryExportJob,
   fetchCenters,
   fetchRegisterSummary,
   fetchStatuses,
@@ -14,6 +16,8 @@ import { DATE_INPUT_CLASS } from "../components/CustomPeriodBadge.js";
 import { EmptyIcon, ErrorIcon, RegisterIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
+import { useExport } from "../hooks/useExport.js";
+import { useBackgroundExport } from "../hooks/useBackgroundExport.js";
 import { ApplyDateInput } from "../components/ui/ApplyDateInput.js";
 
 const SELECT_CLASS =
@@ -94,16 +98,37 @@ export function RegisterSummaryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asAt, center, subClassification, status, dateAcquiredFrom, dateAcquiredTo]);
 
-  const exportUrl = asAt
-    ? getRegisterSummaryExportUrl({
-        asAt,
-        center: center || undefined,
-        subClassification: subClassification || undefined,
-        status: status || undefined,
-        dateAcquiredFrom: dateAcquiredFrom || undefined,
-        dateAcquiredTo: dateAcquiredTo || undefined
-      })
-    : undefined;
+  const exportFilters = {
+    asAt: asAt ?? "",
+    center: center || undefined,
+    subClassification: subClassification || undefined,
+    status: status || undefined,
+    dateAcquiredFrom: dateAcquiredFrom || undefined,
+    dateAcquiredTo: dateAcquiredTo || undefined
+  };
+  const exportUrl = asAt ? getRegisterSummaryExportUrl(exportFilters) : undefined;
+  const { exporting: exportingDirect, runExport: runDirectExport } = useExport(exportUrl);
+  const {
+    isExporting: exportingBackground,
+    startExport: startBackgroundExport,
+    progressLabel
+  } = useBackgroundExport<typeof exportFilters>({
+    createJob: createRegisterSummaryExportJob,
+    fetchJob: fetchRegisterSummaryExportJob,
+    startingMessage: "Register Summary export started in the background. We'll notify you when it's ready.",
+    buildCompletedMessage: (job) => `Register Summary export ready (${job.processedRows.toLocaleString()} assets summarised).`,
+    // No background storage on this server (Docker without S3/R2): the direct export
+    // has no time limit there.
+    fallback: () => runDirectExport()
+  });
+  // Unfiltered = every asset, two full scans: too slow for one request on Vercel, so it
+  // runs as a background export. A filtered view is small enough to download directly.
+  const unfiltered = !center && !subClassification && !status && !dateAcquiredFrom && !dateAcquiredTo;
+  const handleExport = () => {
+    if (!asAt) return;
+    if (unfiltered) void startBackgroundExport(exportFilters);
+    else runDirectExport();
+  };
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white">
@@ -112,7 +137,14 @@ export function RegisterSummaryPage() {
         title="Register Summary"
         subtitle="The Register Export's own figures, totaled by Sub Classification, Status, and Location instead of listed
           one row per asset — for cross-checking against a manually-maintained FAR file organized the same way."
-        actions={<ExportButton url={exportUrl} />}
+        actions={
+          <ExportButton
+            url={exportUrl}
+            exporting={exportingBackground || exportingDirect}
+            exportingLabel={exportingBackground ? progressLabel : "Exporting…"}
+            onExport={handleExport}
+          />
+        }
       >
         <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
           <div className="flex flex-col gap-1">

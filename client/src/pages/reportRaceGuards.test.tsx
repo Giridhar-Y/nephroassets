@@ -29,6 +29,11 @@ function nextFor(key: string) {
 
 // The export button pulls in app-level providers (toasts, notifications) irrelevant here.
 vi.mock("../components/ui/ExportButton.js", () => ({ ExportButton: () => null }));
+// The page drives its own export (direct or background); not what these tests are about.
+vi.mock("../hooks/useExport.js", () => ({ useExport: () => ({ exporting: false, runExport: () => {} }) }));
+vi.mock("../hooks/useBackgroundExport.js", () => ({
+  useBackgroundExport: () => ({ isExporting: false, startExport: () => {}, progressLabel: "" })
+}));
 
 vi.mock("../api/client.js", () => ({
   fetchDepreciationPosting: (asAt: string) => nextFor(`dep:${asAt}`),
@@ -37,6 +42,8 @@ vi.mock("../api/client.js", () => ({
   fetchSubClassifications: async () => [],
   fetchStatuses: async () => [],
   getRegisterSummaryExportUrl: () => "",
+  createRegisterSummaryExportJob: vi.fn(),
+  fetchRegisterSummaryExportJob: vi.fn(),
   getDepreciationPostingExportUrl: () => ""
 }));
 

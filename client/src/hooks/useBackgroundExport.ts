@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { ExportJobStatus } from "../api/client.js";
+import { ApiError, type ExportJobStatus } from "../api/client.js";
 import { useToast } from "../components/Toast.js";
 import { useNotifications } from "../lib/NotificationsContext.js";
 
@@ -34,10 +34,14 @@ export function useBackgroundExport<TParams>(config: {
    *  real, final processedRows — never a stale count captured before the job ran. */
   buildCompletedMessage: (job: ExportJobStatus) => string;
   downloadLabel?: string;
+  /** Run instead when the server has no background-export storage (503): a Docker
+   *  deployment without S3/R2 configured, where the direct export has no time limit. */
+  fallback?: () => void;
 }) {
   const { showToast } = useToast();
   const { addNotification } = useNotifications();
   const [isExporting, setIsExporting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number | null } | null>(null);
 
   // RegisterPage/ActivityLogPage build `config` as a fresh object literal every render
   // (startingMessage in particular often embeds a just-computed row count) — a ref
@@ -47,20 +51,32 @@ export function useBackgroundExport<TParams>(config: {
   const configRef = useRef(config);
   configRef.current = config;
 
-  const startExport = useCallback(async (params: TParams) => {
+  /** `expectedTotal`: the row count the page already knows, for the progress
+   *  percentage until the job reports its own total. */
+  const startExport = useCallback(async (params: TParams, expectedTotal?: number) => {
     if (isExporting) return;
     setIsExporting(true);
+    setProgress({ done: 0, total: expectedTotal ?? null });
     try {
       const { jobId } = await configRef.current.createJob(params);
       showToast(configRef.current.startingMessage);
-      pollExportJob(jobId, configRef.current, addNotification, setIsExporting);
+      pollExportJob(jobId, configRef.current, addNotification, setIsExporting, (job) =>
+        setProgress({ done: job.processedRows, total: job.totalRows ?? expectedTotal ?? null })
+      );
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not start the export.", "error");
       setIsExporting(false);
+      setProgress(null);
+      if (err instanceof ApiError && err.status === 503 && configRef.current.fallback) {
+        configRef.current.fallback();
+        return;
+      }
+      showToast(err instanceof Error ? err.message : "Could not start the export.", "error");
     }
   }, [isExporting, showToast, addNotification]);
 
-  return { isExporting, startExport };
+  const percent = progress?.total ? Math.min(99, Math.floor((progress.done / progress.total) * 100)) : null;
+  const progressLabel = percent === null ? "Exporting in background…" : `Exporting in background… ${percent}%`;
+  return { isExporting, startExport, progressLabel };
 }
 
 function pollExportJob(
@@ -71,7 +87,8 @@ function pollExportJob(
     downloadLabel?: string;
   },
   addNotification: ReturnType<typeof useNotifications>["addNotification"],
-  setIsExporting: (value: boolean) => void
+  setIsExporting: (value: boolean) => void,
+  onProgress: (job: ExportJobStatus) => void
 ): void {
   const tick = async () => {
     let job;
@@ -81,6 +98,7 @@ function pollExportJob(
       setTimeout(tick, POLL_INTERVAL_MS);
       return;
     }
+    onProgress(job);
     if (job.status === "COMPLETED") {
       setIsExporting(false);
       addNotification(config.buildCompletedMessage(job), "success", {
