@@ -220,7 +220,7 @@ Commits: `a5bc553`, `97f9dcf`, `8618ef0`, `5d657c3`
     Default C2 Life **7 → 0**. Only the submitted fields were listed.
 
 ### 6. Exports: paisa precision, Activity Log workbook, background exports
-Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`
+Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`, `21533cd`, `f9cf8c5`
 
 **What changed**
 - **Amounts rounded to the paisa in exports only.** Register (CSV, .xlsx and the background
@@ -253,6 +253,13 @@ Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`
   (sliced by FAR ID, merged exactly; the file is identical to the direct export). The
   Activity Log already switched to background above 10,000 entries. Both show a progress
   percentage on the button while they run.
+- **Found during live UAT, fixed:** background exports (Register, Activity Log) could run
+  two hops at once: the page's poll plus the self-nudge, which only started working once
+  the self-call fix above made nudges authenticate. Both hops wrote the same batches, and
+  the first to finish closed the upload the other was still writing to. Seen live: a full
+  Activity Log export counted 284,000 of 220,087 entries, then failed with "The specified
+  multipart upload does not exist". Every background job now holds a lease (in
+  `export_jobs.state`) while a hop runs, so one hop runs at a time.
 - **Found while doing this:** without background-export storage (`EXPORT_S3_*` blank,
   as on the company's Docker server), a Register or Activity Log export over the
   background threshold used to **fail with an error**. It now falls back to the direct
