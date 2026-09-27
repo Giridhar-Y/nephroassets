@@ -170,7 +170,7 @@ Disable it in that repo's Actions settings if that's unwanted.
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Approval screens: UX polish from UAT
-Commits: `a5bc553`, `97f9dcf`, plus the paise-precision commit that follows `affb553`
+Commits: `a5bc553`, `97f9dcf`, `8618ef0`
 
 **What changed**
 - A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
