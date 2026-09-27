@@ -220,7 +220,7 @@ Commits: `a5bc553`, `97f9dcf`, `8618ef0`, `5d657c3`
     Default C2 Life **7 → 0**. Only the submitted fields were listed.
 
 ### 6. Exports: paisa precision, Activity Log workbook, background exports
-Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`, `21533cd`, `f9cf8c5`
+Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`, `21533cd`, `f9cf8c5`, `1f5123f`
 
 **What changed**
 - **Amounts rounded to the paisa in exports only.** Register (CSV, .xlsx and the background
@@ -260,6 +260,16 @@ Commits: `5ca1a3c`, `c9425cb`, `26b382c`, `824e2bc`, `21533cd`, `f9cf8c5`
   Activity Log export counted 284,000 of 220,087 entries, then failed with "The specified
   multipart upload does not exist". Every background job now holds a lease (in
   `export_jobs.state`) while a hop runs, so one hop runs at a time.
+- **Found during live UAT, fixed (older bug):** the Activity Log's paging cursor lost
+  microseconds. The database driver returns timestamps as JavaScript dates (milliseconds
+  only), and a bulk import writes thousands of entries with one identical microsecond
+  timestamp. As a result:
+  - the Activity Log screen's "load more" **silently skipped** entries (a test paging 2 at
+    a time through 5 such entries returned only 2);
+  - the oldest-first exports (direct .xlsx and background CSV) **re-read** the same batch
+    over and over. This, not only the concurrent hops, is why the full export counted
+    284,000 of 220,087 entries.
+  - The cursor now carries Postgres's own full-precision timestamp.
 - **Found while doing this:** without background-export storage (`EXPORT_S3_*` blank,
   as on the company's Docker server), a Register or Activity Log export over the
   background threshold used to **fail with an error**. It now falls back to the direct
