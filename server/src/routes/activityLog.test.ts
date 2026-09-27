@@ -474,6 +474,31 @@ describe("Activity Log", () => {
   // covered by permissionEnforcement.test.ts's shared registry; these tests cover that
   // the export actually contains the right rows and columns, sharing the same
   // buildActivityLogConditions/shapeRow the list endpoint uses.
+  it("paging through entries that share one microsecond timestamp returns every entry exactly once (no skips)", async () => {
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location, useful_life_c1_years, useful_life_c2_years, c1_opening_cost, c2_opening_cost)
+       SELECT 'PAGETS-' || g, 'Test-Sub', 'Same-timestamp test', 'Active', '2025-01-01', 'Center-Test', 5, 5, 1000, 0 FROM generate_series(1, 5) g`
+    );
+    await db.query(
+      `INSERT INTO asset_activity_log (action, far_id, details, created_at)
+       SELECT 'capitalization_create', 'PAGETS-' || g, NULL, '2026-01-01 10:00:00.123456+00' FROM generate_series(1, 5) g`
+    );
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const res = await authedInject(app, {
+        method: "GET",
+        url: `/api/audit-log/activity?limit=2&farId=PAGETS${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+      });
+      const body = res.json();
+      seen.push(...body.items.map((i: { farId: string }) => i.farId));
+      cursor = body.nextCursor;
+      if (!cursor) break;
+    }
+    expect(seen.sort()).toEqual(["PAGETS-1", "PAGETS-2", "PAGETS-3", "PAGETS-4", "PAGETS-5"]);
+  });
+
   describe("Export to Excel (GET /api/audit-log/activity/export): Events + Changes sheets", () => {
     // Both sheets: row 1 title band, row 2 generated-by, row 3 filter summary, row 4
     // blank, row 5 headers, row 6+ data.

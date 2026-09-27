@@ -150,7 +150,7 @@ const APPROVALS_SQL = `
     LEFT JOIN users ux ON ux.id = x.actor_id
     WHERE x.request_id = c.approval_request_id AND x.action = 'approve' AND x.cycle = cr.cycle
   ) END`;
-export const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username, c.approval_request_id, ${APPROVALS_SQL} AS approvals, COALESCE(a.revised_location, a.location) AS asset_center ${COMBINED_JOIN_SQL}`;
+export const COMBINED_SELECT_SQL = `${COMBINED_WITH_SQL} SELECT c.id, c.src, c.action, c.far_id, c.reason, c.details, c.created_at, u.username, c.approval_request_id, ${APPROVALS_SQL} AS approvals, COALESCE(a.revised_location, a.location) AS asset_center, c.created_at::text AS cursor_ts ${COMBINED_JOIN_SQL}`;
 
 export interface FilterQuery {
   farId?: string;
@@ -225,6 +225,11 @@ export interface RawRow {
   approvals?: Array<{ step: number; by: string | null; at: string; comment: string | null }> | null;
   /** The asset's current center (for the export's Center column when the entry itself doesn't name one). */
   asset_center?: string | null;
+  /** created_at as Postgres text, microseconds intact, for the paging cursor. The driver
+   *  turns created_at into a JS Date (milliseconds only), and a bulk import writes
+   *  thousands of entries with one identical microsecond timestamp: a millisecond cursor
+   *  then skipped entries (newest-first list) or re-read them forever (oldest-first export). */
+  cursor_ts: string;
 }
 
 export interface ShapedItem {
@@ -444,7 +449,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
     const items = rows.map(shapeRow);
     const last = rows[rows.length - 1];
     const nextCursor =
-      last && items.length === q.limit ? encodeCursor({ createdAt: last.created_at, src: last.src, id: Number(last.id) }) : null;
+      last && items.length === q.limit ? encodeCursor({ createdAt: last.cursor_ts, src: last.src, id: Number(last.id) }) : null;
 
     return { items, nextCursor };
   });
@@ -555,7 +560,7 @@ export default async function activityLogRoutes(app: FastifyInstance) {
         for (const r of rows) book.addEvent(toExportEvent(r, fyStartMonth, fyStartDay), deriveChanges(r));
 
         const last = rows[rows.length - 1]!;
-        cursor = { createdAt: last.created_at, src: last.src, id: Number(last.id) };
+        cursor = { createdAt: last.cursor_ts, src: last.src, id: Number(last.id) };
         if (rows.length < EXPORT_BATCH_SIZE) break;
       }
 

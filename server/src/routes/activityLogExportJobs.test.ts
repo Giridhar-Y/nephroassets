@@ -173,6 +173,28 @@ describe("Background Activity Log export: advanceActivityLogExportJob", () => {
     expect(farIds).toEqual(["ACTLEASE-A", "ACTLEASE-B", "ACTLEASE-C"]);
   });
 
+  it("entries sharing one microsecond timestamp (a bulk import) are each exported exactly once across batches", async () => {
+    const db = await getPool();
+    await db.query(
+      `INSERT INTO assets (far_id, sub_classification, asset_description, status, date_acquired, location, useful_life_c1_years, useful_life_c2_years, c1_opening_cost, c2_opening_cost)
+       SELECT 'BULKTS-' || lpad(g::text, 5, '0'), 'Test-Sub', 'Same-timestamp test', 'Active', '2025-01-01', 'Center-Test', 5, 5, 1000, 0 FROM generate_series(1, 2005) g`
+    );
+    await db.query(
+      `INSERT INTO asset_activity_log (action, far_id, details, created_at)
+       SELECT 'capitalization_create', 'BULKTS-' || lpad(g::text, 5, '0'), NULL, '2026-01-01 10:00:00.123456+00'
+       FROM generate_series(1, 2005) g`
+    );
+    const storage = new FakeObjectStorage();
+    await insertJobRow("act-job-samets", userId, {});
+    await advanceActivityLogExportJob(db, "act-job-samets", storage, 60_000);
+    const job = await fetchJobRow("act-job-samets");
+    expect(job.status).toBe("COMPLETED");
+    expect(job.processed_rows).toBe(2005);
+    const farIds = storage.completed.get(job.object_key)!.split("\r\n").filter((l) => l.includes("BULKTS-")).map((l) => l.split(",")[3]);
+    expect(farIds.length).toBe(2005);
+    expect(new Set(farIds).size).toBe(2005);
+  });
+
   it("resumes across multiple hops without losing or duplicating rows, in created_at order", async () => {
     for (const [suffix, hour] of [["A", "10"], ["B", "11"], ["C", "12"], ["D", "13"], ["E", "14"]] as const) {
       await insertAsset(`ACTRESUME-${suffix}`);

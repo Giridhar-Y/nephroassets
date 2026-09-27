@@ -206,7 +206,7 @@ async function advanceActivityLogExportJobUnleased(
       appendText(lines.join("\r\n") + "\r\n");
       processedRows += batchRows.length;
       const last = batchRows[batchRows.length - 1]!;
-      cursor = { createdAt: last.created_at, src: last.src, id: Number(last.id) };
+      cursor = { createdAt: last.cursor_ts, src: last.src, id: Number(last.id) };
 
       await flushFullParts();
       await db.query(
