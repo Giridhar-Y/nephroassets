@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type InjectOptions } from "fastify";
+import ExcelJS from "exceljs";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -156,6 +157,17 @@ describe("state machine", () => {
       { step: 2, by: cfo.username, comment: null }
     ]);
     expect(entry.details.approvedBy).toMatch(/^Step 1: .*\("Matches the PO"\); Step 2: /);
+    // ...and in the export's Events sheet: submitter, every approver, and the request.
+    const xlsx = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?farId=APR-1" });
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(xlsx.rawPayload as any);
+    const eventsSheet = book.getWorksheet("Events")!;
+    const eventRow = eventsSheet.getRow(6);
+    expect(eventRow.getCell(9).value).toBe(editor.username); // Submitted By
+    expect(String(eventRow.getCell(10).value)).toMatch(/^Step 1: .*\("Matches the PO"\); Step 2: /); // Approved By
+    const request = eventRow.getCell(11).value as { text: string; hyperlink: string };
+    expect(request.text).toBe(`#${pending.requestId}`);
+    expect(request.hyperlink).toContain(`request=${pending.requestId}`);
     // Notifications: CFO got a task, the maker got "applied".
     const notes = (await as(editor, { method: "GET", url: "/api/notifications" })).json();
     expect(notes.items[0].message).toMatch(/^Approved and applied/);

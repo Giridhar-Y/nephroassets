@@ -10,18 +10,15 @@ import {
   activityLogExportQuerySchema,
   buildActivityLogConditions,
   buildActivityLogFilterSummaryText,
-  buildChangedFields,
-  buildOtherDetailsText,
-  CATEGORY_LABELS,
   COMBINED_SELECT_SQL,
   decodeCursor,
+  DEFAULT_FY_START_DAY,
+  DEFAULT_FY_START_MONTH,
   encodeCursor,
-  formatIstTimestamp,
-  humanizeAction,
-  shapeRow,
   type Cursor,
   type RawRow
 } from "./activityLog.js";
+import { CHANGES_CSV_HEADER, changesCsvLines, deriveChanges, toExportEvent } from "./activityLogExport.js";
 import { PART_SIZE_BYTES, PROCESS_TIME_BUDGET_MS, SIGNED_URL_EXPIRY_SECONDS, fireSelfNudge } from "./assetsExportJobs.js";
 import { isObjectStorageConfigured, s3ObjectStorage, type ObjectStorage, type UploadPart } from "../storage/objectStorage.js";
 
@@ -31,12 +28,6 @@ type ExportQuery = z.infer<typeof activityLogExportQuerySchema>;
 // query shape (a 3-table UNION joined to users/assets) is identical, so the value that's
 // already proven out there is the sane starting point here too.
 const JOB_BATCH_SIZE = 2000;
-
-const SOURCE_LABELS: Record<RawRow["src"], string> = {
-  activity: "Activity Log",
-  delete: "Delete Log",
-  masters: "Masters Log"
-};
 
 /** activity-log-DD-MM-YYYY_HH-mm.csv, IST — same convention as assetsExportJobs.ts's own
  *  buildDownloadFilename (filesystem-safe hyphens, not colons). Duplicated rather than
@@ -127,7 +118,10 @@ export async function advanceActivityLogExportJob(
     // via fetchCenterScope rather than trusting anything captured at POST time.
     const centerScope = await fetchCenterScope(db, Number(job.user_id));
     const { conditions, params } = buildActivityLogConditions(q, { centerScope });
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const { rows: settingsRows } = await db.query<{ fy_start: string }>(`SELECT fy_start FROM settings WHERE id = TRUE`);
+    const fyParts = settingsRows[0]?.fy_start.split("-").map(Number);
+    const fyStartMonth = fyParts?.[1] ?? DEFAULT_FY_START_MONTH;
+    const fyStartDay = fyParts?.[2] ?? DEFAULT_FY_START_DAY;
 
     let pendingBuffer: Buffer = job.pending_buffer ? Buffer.from(job.pending_buffer, "base64") : Buffer.alloc(0);
     const uploadParts: UploadPart[] = [...job.upload_parts];
@@ -147,7 +141,9 @@ export async function advanceActivityLogExportJob(
       // bytes of the file.
       appendText(String.fromCharCode(0xfeff));
       appendText(csvLine([`Filters applied: ${buildActivityLogFilterSummaryText(q)}`]) + "\r\n");
-      appendText(csvLine(["Timestamp", "Category", "Action", "FAR ID", "Actor", "Details (Summary)", "Source"]) + "\r\n");
+      // The Changes layout: one line per changed field, each repeating its event's date,
+      // user and FAR ID (see activityLogExport.ts).
+      appendText(CHANGES_CSV_HEADER + "\r\n");
       await db.query(`UPDATE export_jobs SET upload_id = $1, pending_buffer = $2 WHERE id = $3`, [
         uploadId,
         pendingBuffer.toString("base64"),
@@ -194,23 +190,8 @@ export async function advanceActivityLogExportJob(
         break;
       }
 
-      const lines: string[] = new Array(batchRows.length);
-      for (let i = 0; i < batchRows.length; i++) {
-        const item = shapeRow(batchRows[i]!);
-        const changedFields = buildChangedFields(item.details);
-        const changedText = changedFields.map((f) => `${f.label}: ${f.oldValue} → ${f.newValue}`).join("; ");
-        const otherDetails = buildOtherDetailsText(item.details);
-        const detailsSummary = [changedText, otherDetails].filter(Boolean).join("; ") || "-";
-        lines[i] = csvLine([
-          formatIstTimestamp(item.createdAt),
-          CATEGORY_LABELS[item.category],
-          (item.details?.type as string | undefined) ?? humanizeAction(item.action),
-          item.farId ?? "",
-          item.actorUsername ?? "Unknown user",
-          detailsSummary,
-          SOURCE_LABELS[item.source]
-        ]);
-      }
+      const lines: string[] = [];
+      for (const r of batchRows) lines.push(...changesCsvLines(toExportEvent(r, fyStartMonth, fyStartDay), deriveChanges(r)));
       appendText(lines.join("\r\n") + "\r\n");
       processedRows += batchRows.length;
       const last = batchRows[batchRows.length - 1]!;

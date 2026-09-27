@@ -712,6 +712,8 @@ export default async function mastersRoutes(app: FastifyInstance) {
         actorUserId: req.user!.id,
         action: "center_update",
         details: {
+          // Which center (its code after the update): an update names only its changed fields.
+          record: result.code,
           ...bodyParsed.data,
           assetsUpdated: result.assetsUpdated,
           transfersUpdated: result.transfersUpdated,
@@ -778,7 +780,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "sub_classification_update",
-        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
+        details: { record: result.name, ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {
@@ -833,7 +835,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "status_update",
-        details: { ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
+        details: { record: result.name, ...bodyParsed.data, assetsUpdated: result.assetsUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {
@@ -892,7 +894,7 @@ export default async function mastersRoutes(app: FastifyInstance) {
       await logMasterActivity(db, {
         actorUserId: req.user!.id,
         action: "role_update",
-        details: { ...bodyParsed.data, usersUpdated: result.usersUpdated, previous: result.previous, source: "single" }
+        details: { record: result.name, ...bodyParsed.data, usersUpdated: result.usersUpdated, previous: result.previous, source: "single" }
       });
       return result;
     } catch (err) {
@@ -916,10 +918,12 @@ export default async function mastersRoutes(app: FastifyInstance) {
         if (pending) return pending;
         const { grants, added, removed } = await replaceRolePermissionsById(db, paramsParsed.data.id, bodyParsed.data.grants);
         if (added.length > 0 || removed.length > 0) {
+          const { rows: roleRows } = await db.query<{ name: string }>(`SELECT name FROM roles WHERE id = $1`, [paramsParsed.data.id]);
           await logMasterActivity(db, {
             actorUserId: req.user!.id,
             action: "role_update",
             details: {
+              record: roleRows[0]?.name ?? null,
               roleId: paramsParsed.data.id,
               added: added.map((g) => `${g.module}:${g.action}`),
               removed: removed.map((g) => `${g.module}:${g.action}`),

@@ -107,11 +107,14 @@ describe("Background Activity Log export: advanceActivityLogExportJob", () => {
   beforeEach(async () => {
     const db = await getPool();
     await db.query(`DELETE FROM asset_activity_log`);
+    // The feed is a union of all three logs; other suites leave rows in the other two.
+    await db.query(`DELETE FROM master_activity_log`);
+    await db.query(`DELETE FROM asset_delete_audit_log`);
     await db.query(`DELETE FROM export_jobs`);
     await db.query(`DELETE FROM assets`);
   });
 
-  it("completes a small export in one hop and uploads the expected flat CSV", async () => {
+  it("completes a small export in one hop and uploads the Changes-layout CSV", async () => {
     await insertAsset("ACTJOB-001");
     await insertAsset("ACTJOB-002");
     await insertActivityLogRow("ACTJOB-001", "2026-01-01T10:00:00Z");
@@ -137,12 +140,13 @@ describe("Background Activity Log export: advanceActivityLogExportJob", () => {
     // wrong encoding for a BOM-less file — no longer possible either, per the BOM
     // assertion above).
     expect(lines[0]).toContain("Filters: None - showing all activity");
-    expect(lines[1]).toBe("Timestamp,Category,Action,FAR ID,Actor,Details (Summary),Source");
-    expect(lines.length).toBe(4); // filter row + header row + 2 data rows, oldest first
+    expect(lines[1]).toBe("Event ID,Date & Time (IST),User,FAR ID / Master,Module,Action,Field,Old Value,New Value,Request");
+    // filter row + header row + one line per event here, oldest first: ACTJOB-001 has no
+    // field changes (still one line, so no event is dropped); ACTJOB-002 has one.
+    expect(lines.length).toBe(4);
     expect(lines[2]).toContain("ACTJOB-001");
-    expect(lines[2]).toContain("Activity Log");
-    expect(lines[3]).toContain("ACTJOB-002");
-    expect(lines[3]).toContain("Status"); // humanized `previous` key, in the Details (Summary) column
+    expect(lines[2]).toContain("Capitalization");
+    expect(lines[3]).toMatch(/ACTJOB-002,Capitalization,Capitalization Create,Status,Active,Disposed,$/);
   });
 
   it("resumes across multiple hops without losing or duplicating rows, in created_at order", async () => {
