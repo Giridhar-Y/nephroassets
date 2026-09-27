@@ -510,6 +510,8 @@ describe("Edit Asset logging", () => {
     const d = await detail(id);
     expect(d.before).toMatchObject({ assetDescription: "Approval Test Asset", usefulLifeC1Years: 5 });
     expect(d.payload.body).toMatchObject({ assetDescription: "Renamed" });
+    expect(d.summary).toMatch(/^Edit APR-1: .*Asset Description/); // form labels, not field names
+    expect(d.summary).not.toMatch(/assetDescription/);
     const db = await getPool();
     expect((await db.query(`SELECT asset_description FROM assets WHERE far_id = 'APR-1'`)).rows[0].asset_description).toBe("Approval Test Asset");
     await decideAs(fm1, id, "approve");

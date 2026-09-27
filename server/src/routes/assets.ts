@@ -186,6 +186,20 @@ async function bustReportTotalsCache(db: Awaited<ReturnType<typeof getPool>>): P
   await invalidateReportTotalsCache(db);
 }
 
+/** The Edit Asset form's own labels, for an approval request's title
+ *  ("Edit CI0724: Opening Accumulated Depreciation (Component 1)"), not field names. */
+const EDIT_FIELD_LABELS: Record<string, string> = {
+  farId: "FAR ID",
+  subClassification: "Sub Classification",
+  assetDescription: "Asset Description",
+  serialNo: "Serial No",
+  usefulLifeC1Years: "Component 1 Useful Life (Years)",
+  usefulLifeC2Years: "Component 2 Useful Life (Years)",
+  accDepC1Opening: "Opening Accumulated Depreciation (Component 1)",
+  accDepC2Opening: "Opening Accumulated Depreciation (Component 2)",
+  parentFarId: "Parent Asset"
+};
+
 export default async function assetsRoutes(app: FastifyInstance) {
   app.get("/api/assets", { preHandler: requirePermission("register", "view") }, async (req, reply) => {
     const parsed = querySchema.safeParse(req.query);
@@ -813,7 +827,7 @@ export default async function assetsRoutes(app: FastifyInstance) {
 
     const pending = await submitIfWorkflow(req, reply, {
       module: "editAsset",
-      summary: `Edit ${farId}${changed.length ? `: ${changed.join(", ")}` : ""}`,
+      summary: `Edit ${farId}${changed.length ? `: ${changed.map((k) => EDIT_FIELD_LABELS[k]).join(", ")}` : ""}`,
       farIds: [...new Set([farId, input.farId])],
       centers: [existing[0]!.revised_location ?? existing[0]!.location],
       before: editBefore

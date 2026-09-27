@@ -170,7 +170,7 @@ Disable it in that repo's Actions settings if that's unwanted.
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Approval screens: UX polish from UAT
-Commits: `a5bc553`, `97f9dcf`, `8618ef0`
+Commits: `a5bc553`, `97f9dcf`, `8618ef0`, plus the Edit-title commit that follows `5d0f852`
 
 **What changed**
 - A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
@@ -193,6 +193,9 @@ Commits: `a5bc553`, `97f9dcf`, `8618ef0`
     bulk preview and the bulk totals.
   - Note: the Register and other screens still show whole rupees (the app-wide
     `formatCurrency`). Only the approval panel shows paise.
+- Edit Asset request titles use the form labels ("Edit CI0724: Opening Accumulated
+  Depreciation (Component 1)"), not field names. This only applies to new requests;
+  titles already stored keep their old text.
 - Found during UAT of the above:
   - The "Awaiting my approval" count badge showed a red "0". It's now hidden at zero.
   - A `/tasks?tab=…` link opened while already on Tasks didn't switch tabs. It does now,
@@ -208,6 +211,13 @@ Commits: `a5bc553`, `97f9dcf`, `8618ef0`
   - My requests shows #2 as "Returned" in crimson, and the status filter lists "Returned";
   - with filters that match nothing, it shows "No requests match. Try clearing the filters.";
   - #2's detail panel shows only the nine capitalization fields, with the form labels.
+- UAT on personal Vercel as Krupal (2026-09-28), using two temporary rules that were
+  removed straight afterwards; both requests were withdrawn and nothing was applied:
+  - Edit Asset #6 on CI0724: Opening Accumulated Depreciation (Component 1)
+    **₹21,598.50 → ₹0.00** was shown and highlighted (changed to zero, not hidden; paise
+    kept). Unchanged fields were dimmed.
+  - Masters #7 on "Medical Equipment-Dialysis": Default C1 Life **11 → —** (emptied) and
+    Default C2 Life **7 → 0**. Only the submitted fields were listed.
 
 ### 6. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
