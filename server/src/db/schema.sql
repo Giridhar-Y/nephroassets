@@ -435,7 +435,9 @@ CREATE TABLE export_jobs (
   -- (rather than a second one) since every other column already generalizes across both:
   -- the resumable-multipart-upload state (upload_id/upload_parts/pending_buffer/
   -- bytes_uploaded) has zero row-shape dependency, and `filters` is already opaque JSONB.
-  job_type           TEXT NOT NULL DEFAULT 'REGISTER' CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG')),
+  job_type           TEXT NOT NULL DEFAULT 'REGISTER' CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG', 'REGISTER_SUMMARY')),
+  -- Register Summary job only: its running per-group sums between hops.
+  state              JSONB,
   filters            JSONB NOT NULL DEFAULT '{}'::jsonb,
   as_at              DATE NOT NULL,
   object_key         TEXT NOT NULL,

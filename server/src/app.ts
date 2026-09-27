@@ -23,6 +23,7 @@ import bulkMastersRoutes from "./routes/bulkMasters.js";
 import bulkMergeRoutes from "./routes/bulkMerge.js";
 import activityLogRoutes from "./routes/activityLog.js";
 import activityLogExportJobsRoutes from "./routes/activityLogExportJobs.js";
+import registerSummaryExportJobsRoutes from "./routes/registerSummaryExportJobs.js";
 import aiSearchRoutes from "./routes/aiSearch.js";
 import approvalsRoutes from "./routes/approvals.js";
 import { approvalApplyContextHook, setApprovalsApp } from "./approvals/engine.js";
@@ -91,6 +92,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(bulkMergeRoutes);
   await app.register(activityLogRoutes);
   await app.register(activityLogExportJobsRoutes);
+  await app.register(registerSummaryExportJobsRoutes);
   await app.register(aiSearchRoutes);
   await app.register(approvalsRoutes);
   // A final approval replays the original request through its own route (see

@@ -550,6 +550,21 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     -- has_component2/deleted_at above.
     ALTER TABLE export_jobs ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'REGISTER' CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG'));
     ALTER TABLE export_jobs ADD COLUMN IF NOT EXISTS resume_cursor TEXT;
+    -- The Register Summary background export (registerSummaryExportJobs.ts): a third job
+    -- type, and state for its running per-group sums between hops. The CHECK is widened
+    -- once, guarded on its own definition.
+    ALTER TABLE export_jobs ADD COLUMN IF NOT EXISTS state JSONB;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'export_jobs_job_type_check' AND pg_get_constraintdef(oid) LIKE '%REGISTER_SUMMARY%'
+      ) THEN
+        ALTER TABLE export_jobs DROP CONSTRAINT IF EXISTS export_jobs_job_type_check;
+        ALTER TABLE export_jobs ADD CONSTRAINT export_jobs_job_type_check
+          CHECK (job_type IN ('REGISTER', 'ACTIVITY_LOG', 'REGISTER_SUMMARY'));
+      END IF;
+    END $$;
 
     -- See schema.sql's own report_totals_cache comment — mirrored here (IF NOT EXISTS)
     -- so an already-running production database picks it up on its next cold start.
