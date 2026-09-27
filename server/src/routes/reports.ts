@@ -35,7 +35,7 @@ import {
   type RawCondition
 } from "./reportColumnFilters.js";
 import { buildExceptionPredicate, EPSILON, EXCEPTION_KEYS, type ExceptionKey } from "./exceptionPredicates.js";
-import { csvLine, EXPORT_COLUMNS, resolveLabel, SQL_SUM_EXPRESSIONS, type LabelContext } from "./assetsExport.js";
+import { csvLine, ddmmyyyy, EXPORT_COLUMNS, isAmountColumn, PAISA_NOTE, resolveLabel, SQL_SUM_EXPRESSIONS, type LabelContext } from "./assetsExport.js";
 
 export async function requireFySettings(
   db: Awaited<ReturnType<typeof getPool>>,
@@ -403,8 +403,9 @@ const PASS_FILL = "FFC6EFCE";
 const PASS_FONT = "FF375623";
 const FAIL_FILL = "FFFFCCCC";
 const FAIL_FONT = "FFC00000";
-const MONEY_FMT = "#,##0;(#,##0);-";
-const CHECK_FMT = '#,##0;(#,##0);"✓"';
+// Paise shown (2 decimals): Finance reconciles these to the ledger to the paisa.
+const MONEY_FMT = "#,##0.00;(#,##0.00);-";
+const CHECK_FMT = '#,##0.00;(#,##0.00);"✓"';
 
 // One row per Sub Classification, C1/C2/Combined as column groups on that same row —
 // 9 fields per group, each repeated 3 times starting at GROUP_STYLE[key].startCol.
@@ -517,7 +518,7 @@ function writeGroupCells(row: ExcelJS.Row, startCol: number, data: GroupRowData 
       if (i === 6 || i === 8) styleNotApplicableCell(cell);
       return; // i === 5 / 7 (the value cells): left with no value at all — genuinely blank.
     }
-    cell.value = value;
+    cell.value = round2(value); // export-only rounding to the paisa, same rule as Transfer & Depreciation
     if (i === 4) styleCheckCell(cell, data.costCheckPass);
     else if (i === 6) {
       styleCheckCell(cell, data.depCheckPass);
@@ -604,7 +605,7 @@ async function buildReconciliationWorkbook(
   titleRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
   titleRow.getCell(1).font = { color: { argb: "FFFFFFFF" }, bold: true, size: 12 };
   titleRow.commit();
-  addNoteRow(sheet, RECONCILIATION_NOTE, TOTAL_COLUMNS);
+  addNoteRow(sheet, `${RECONCILIATION_NOTE} ${PAISA_NOTE}.`, TOTAL_COLUMNS);
   if (!isCurrentFy) {
     const warningRow = sheet.addRow([NOT_CURRENT_FY_WARNING]);
     sheet.mergeCells(warningRow.number, 1, warningRow.number, TOTAL_COLUMNS);
@@ -1055,7 +1056,7 @@ async function streamTransferDepreciationWorkbook(
     { width: 18 }
   ];
   addNoteRow(sheet, note, 10);
-  addNoteRow(sheet, SCHEDULE_NOTE, 10);
+  addNoteRow(sheet, `${SCHEDULE_NOTE} ${PAISA_NOTE}.`, 10);
   const header = sheet.addRow([
     "FAR ID",
     "Sub Classification",
@@ -1499,7 +1500,7 @@ const registerSummaryMultiValue = z
   .optional()
   .transform((v) => (v ? v.split(",").filter(Boolean) : undefined));
 
-const registerSummaryQuerySchema = z.object({
+export const registerSummaryQuerySchema = z.object({
   asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   center: registerSummaryMultiValue,
   subClassification: registerSummaryMultiValue,
@@ -1508,9 +1509,9 @@ const registerSummaryQuerySchema = z.object({
   dateAcquiredTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   conditions: conditionsQuerySchema
 });
-type RegisterSummaryQuery = z.infer<typeof registerSummaryQuerySchema>;
+export type RegisterSummaryQuery = z.infer<typeof registerSummaryQuerySchema>;
 
-interface RegisterSummaryGroup {
+export interface RegisterSummaryGroup {
   subClassification: string;
   status: string;
   location: string;
@@ -1518,7 +1519,7 @@ interface RegisterSummaryGroup {
   [key: string]: string | number;
 }
 
-interface RegisterSummaryResult {
+export interface RegisterSummaryResult {
   asAt: string;
   fyStart: string;
   filterSummaryText: string;
@@ -1542,11 +1543,24 @@ interface RegisterSummaryResult {
  *  totals query, just without a GROUP BY), so a test comparing it against the sum of
  *  the grouped rows is checking two different code paths agree, not restating the same
  *  arithmetic twice. */
-async function computeRegisterSummary(
+/** Everything a Register Summary query needs, resolved once: settings, the WHERE clause
+ *  (filters, center scope, as-at/FY cut-offs) and the computed-column conditions. Shared
+ *  by the JSON route, its CSV export and the background export job. */
+export interface RegisterSummaryPlan {
+  asAt: string;
+  fyStart: string;
+  fy: { fyStart: string; fyEnd: string; daysInFy: number };
+  params: unknown[];
+  whereClause: string;
+  computedWhereClause: string;
+  filterSummaryText: string;
+}
+
+export async function planRegisterSummary(
   db: Db,
   q: RegisterSummaryQuery,
   user: Pick<AuthedUser, "centerScope">
-): Promise<{ ok: true; result: RegisterSummaryResult } | { ok: false; status: number; error: string }> {
+): Promise<{ ok: true; plan: RegisterSummaryPlan } | { ok: false; status: number; error: string }> {
   const { rows: settingsRows } = await db.query<SettingsRow>(
     `SELECT as_at, fy_start, fy_end, days_in_fy FROM settings WHERE id = TRUE`
   );
@@ -1555,17 +1569,6 @@ async function computeRegisterSummary(
   const asAt = q.asAt ?? settingsRow.as_at;
   const fyStart = settingsRow.fy_start;
   const fy = { fyStart, fyEnd: settingsRow.fy_end, daysInFy: settingsRow.days_in_fy };
-
-  // See reportCache.ts's own comment for why this exists and how it's invalidated.
-  // Keyed on the RESOLVED asAt (not the raw, possibly-absent q.asAt) so a request that
-  // omits asAt and one that explicitly names today's settings.as_at share one entry.
-  const cacheKey = reportCacheKey("register-summary", {
-    q,
-    asAt,
-    centerScope: user.centerScope ? [...user.centerScope].sort() : null
-  });
-  const cached = getCachedReport<RegisterSummaryResult>(cacheKey);
-  if (cached) return { ok: true, result: cached };
 
   const conditions: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
@@ -1609,77 +1612,128 @@ async function computeRegisterSummary(
   }
   const computedWhereClause = computedConditions.length > 0 ? `WHERE ${computedConditions.join(" AND ")}` : "";
   const filterSummaryText = buildFilterSummaryText(q, q.conditions);
-  const selectSql = summableSelectSql();
+  return { ok: true, plan: { asAt, fyStart, fy, params, whereClause, computedWhereClause, filterSummaryText } };
+}
 
-  // Errors intentionally NOT caught here — this function has no `req` to log through,
-  // so both callers below wrap their own call in a try/catch that logs via req.log.error
-  // and reports the same plain-language 500, matching assetsExport.ts's own totals-query
-  // guard exactly.
-  //
-  // The two queries below each run a full far_calc_component() scan over every matching
-  // asset (LOCKED calc engine — see calcFunction.sql's header — so the per-row cost
-  // itself isn't something this route can reduce). Originally sequential (grand total
-  // awaited only after the grouped query fully returned) — measured at 78s wall-clock
-  // for 250,000 assets against this repo's own scale-test harness while investigating a
-  // reported production incident (every screen, not just this one, went unresponsive at
-  // 217,000+ real assets). Running them concurrently instead doesn't reduce the total DB
-  // work, but roughly halves wall-clock time by not making the grand total wait its turn
-  // behind the grouped query — the same two-connections-instead-of-one tradeoff
-  // Dashboard's own totals+status queries already make, well within the pool's `max: 5`
-  // (db/pool.ts). The independent-cross-check property (a real second computation, not a
-  // JS sum of the grouped rows) is unchanged — only when it runs changed, not what it
-  // computes.
-  const groupParams = [...params];
-  const groupCalcExtras = buildCalcCteExtras(groupParams, asAt, fy);
-  const totalParams = [...params];
-  const totalCalcExtras = buildCalcCteExtras(totalParams, asAt, fy);
-  const [{ rows: groupRows }, { rows: totalRows }] = await Promise.all([
-    db.query(
-      `WITH calc_base AS (
-         SELECT assets.*,
-           ${groupCalcExtras}
-         FROM assets ${whereClause}
-       ), calc AS (
-         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
-         FROM calc_base
-       )
-       SELECT
-         sub_classification, status, effective_location AS location,
-         COUNT(*) AS asset_count,
-         ${selectSql}
-       FROM calc ${computedWhereClause}
-       GROUP BY sub_classification, status, effective_location
-       ORDER BY sub_classification, status, effective_location`,
-      groupParams
-    ),
-    db.query(
-      `WITH calc_base AS (
-         SELECT assets.*,
-           ${totalCalcExtras}
-         FROM assets ${whereClause}
-       ), calc AS (
-         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
-         FROM calc_base
-       )
-       SELECT COUNT(*) AS asset_count, ${selectSql}
-       FROM calc ${computedWhereClause}`,
-      totalParams
-    )
-  ]);
-
-  const ctx: LabelContext = { asAt, fyStart };
-  const columns = SUMMABLE_COLUMNS.map((c) => ({ key: c.key, label: resolveLabel(c, ctx) }));
-  const groups: RegisterSummaryGroup[] = groupRows.map((r) => ({
+/** The grouped (Sub Classification x Status x Location) sums for the plan, optionally
+ *  restricted to a FAR ID range (afterFarId, upToFarId] — the background export job's
+ *  slice. Sums add across slices, so merging slices gives the same groups. */
+export async function aggregateRegisterSummaryGroups(
+  db: Db,
+  plan: RegisterSummaryPlan,
+  range?: { afterFarId: string | null; upToFarId: string }
+): Promise<RegisterSummaryGroup[]> {
+  const params = [...plan.params];
+  let whereClause = plan.whereClause;
+  if (range) {
+    if (range.afterFarId !== null) {
+      params.push(range.afterFarId);
+      whereClause += ` AND far_id > $${params.length}`;
+    }
+    params.push(range.upToFarId);
+    whereClause += ` AND far_id <= $${params.length}`;
+  }
+  const calcExtras = buildCalcCteExtras(params, plan.asAt, plan.fy);
+  const { rows } = await db.query(
+    `WITH calc_base AS (
+       SELECT assets.*,
+         ${calcExtras}
+       FROM assets ${whereClause}
+     ), calc AS (
+       SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+       FROM calc_base
+     )
+     SELECT
+       sub_classification, status, effective_location AS location,
+       COUNT(*) AS asset_count,
+       ${summableSelectSql()}
+     FROM calc ${plan.computedWhereClause}
+     GROUP BY sub_classification, status, effective_location
+     ORDER BY sub_classification, status, effective_location`,
+    params
+  );
+  return rows.map((r) => ({
     subClassification: r.sub_classification as string,
     status: r.status as string,
     location: r.location as string,
     assetCount: Number(r.asset_count),
     ...extractSummableTotals(r)
   }));
+}
+
+export function registerSummaryColumns(asAt: string, fyStart: string): Array<{ key: string; label: string }> {
+  const ctx: LabelContext = { asAt, fyStart };
+  return SUMMABLE_COLUMNS.map((c) => ({ key: c.key, label: resolveLabel(c, ctx) }));
+}
+
+const SUMMARY_NON_AMOUNT = new Set(SUMMABLE_COLUMNS.filter((c) => !isAmountColumn(c)).map((c) => c.key));
+
+/** The Register Summary CSV (direct export and background job): amounts rounded to the
+ *  paisa like every export; counts and Qty as they are. */
+export function registerSummaryCsvLines(
+  result: Pick<RegisterSummaryResult, "filterSummaryText" | "columns" | "groups" | "grandTotal">
+): string[] {
+  const { filterSummaryText, columns, groups, grandTotal } = result;
+  const cellOf = (key: string, v: unknown) => (SUMMARY_NON_AMOUNT.has(key) ? Number(v ?? 0) : round2(Number(v ?? 0)));
+  return [
+    csvLine([`Filters applied: ${filterSummaryText}  -  ${PAISA_NOTE}`]),
+    csvLine(["Sub Classification", "Status", "Location", "Asset Count", ...columns.map((c) => c.label)]),
+    ...groups.map((g) =>
+      csvLine([g.subClassification, g.status, g.location, g.assetCount, ...columns.map((c) => cellOf(c.key, g[c.key]))])
+    ),
+    csvLine(["GRAND TOTAL", "", "", grandTotal.assetCount, ...columns.map((c) => cellOf(c.key, grandTotal[c.key]))])
+  ];
+}
+
+async function computeRegisterSummary(
+  db: Db,
+  q: RegisterSummaryQuery,
+  user: Pick<AuthedUser, "centerScope">
+): Promise<{ ok: true; result: RegisterSummaryResult } | { ok: false; status: number; error: string }> {
+  const planned = await planRegisterSummary(db, q, user);
+  if (!planned.ok) return planned;
+  const { plan } = planned;
+  const { asAt, fyStart } = plan;
+
+  // See reportCache.ts's own comment for why this exists and how it's invalidated.
+  // Keyed on the RESOLVED asAt (not the raw, possibly-absent q.asAt) so a request that
+  // omits asAt and one that explicitly names today's settings.as_at share one entry.
+  const cacheKey = reportCacheKey("register-summary", {
+    q,
+    asAt,
+    centerScope: user.centerScope ? [...user.centerScope].sort() : null
+  });
+  const cached = getCachedReport<RegisterSummaryResult>(cacheKey);
+  if (cached) return { ok: true, result: cached };
+
+  // The grouped query and an independent grand-total query (a genuine second
+  // computation, not a JS sum of the grouped rows, so a test comparing the two checks
+  // two code paths agree), run concurrently: each is a full far_calc_component() scan
+  // (locked calc engine), and running them side by side roughly halves wall-clock time.
+  const totalParams = [...plan.params];
+  const totalCalcExtras = buildCalcCteExtras(totalParams, asAt, plan.fy);
+  const [groups, { rows: totalRows }] = await Promise.all([
+    aggregateRegisterSummaryGroups(db, plan),
+    db.query(
+      `WITH calc_base AS (
+         SELECT assets.*,
+           ${totalCalcExtras}
+         FROM assets ${plan.whereClause}
+       ), calc AS (
+         SELECT *, ${TOTAL_WDV_AND_PROFIT_LOSS_SQL}
+         FROM calc_base
+       )
+       SELECT COUNT(*) AS asset_count, ${summableSelectSql()}
+       FROM calc ${plan.computedWhereClause}`,
+      totalParams
+    )
+  ]);
+
+  const columns = registerSummaryColumns(asAt, fyStart);
   const t = totalRows[0]!;
   const grandTotal = { assetCount: Number(t.asset_count), ...extractSummableTotals(t) };
 
-  const result: RegisterSummaryResult = { asAt, fyStart, filterSummaryText, columns, groups, grandTotal };
+  const result: RegisterSummaryResult = { asAt, fyStart, filterSummaryText: plan.filterSummaryText, columns, groups, grandTotal };
   setCachedReport(cacheKey, result);
   return { ok: true, result };
 }
@@ -1807,7 +1861,35 @@ export default async function reportsRoutes(app: FastifyInstance) {
       return { error: "Financial year settings have not been configured yet." };
     }
 
-    const items = await computeReconciliationItems(db, fy, req.user!);
+    // The same cached figures the screen shows (and the pre-warm fills), so the export
+    // matches the screen and doesn't recompute two full scans inside one request (it
+    // timed out on Vercel). A miss is computed and cached, except on Vercel where the
+    // unscoped view is queued for the pre-warm like the screen's "preparing" state.
+    const cacheKey = auditReconciliationCacheKey({
+      asAt: fy.asAt,
+      fyStart: fy.fyStart,
+      fyEnd: fy.fyEnd,
+      daysInFy: fy.daysInFy,
+      centerScope: req.user!.centerScope
+    });
+    type Items = Awaited<ReturnType<typeof computeReconciliationItems>>;
+    const cached = await getCachedReportTotals<{ items: Items }>(db, cacheKey);
+    let items: Items;
+    if (cached) {
+      items = cached.items;
+    } else if (req.user!.centerScope === null && deferColdReportCompute()) {
+      await requestPrewarm(db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+      reply.code(409);
+      return {
+        error: `The figures as at ${ddmmyyyy(fy.asAt)} are still being prepared (usually 2–4 minutes). Try the export again shortly.`,
+        code: "PREPARING"
+      };
+    } else {
+      const version = await getReportDataVersion(db);
+      const result = await computeAuditReconciliation(db, fy, req.user!);
+      await setCachedReportTotals(db, cacheKey, result, version);
+      items = result.items;
+    }
     const buffer = await buildReconciliationWorkbook(items, fy.asAt, fy.isCurrentFy);
 
     reply.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1940,16 +2022,8 @@ export default async function reportsRoutes(app: FastifyInstance) {
       reply.code(outcome.status);
       return { error: outcome.error };
     }
-    const { asAt, filterSummaryText, columns, groups, grandTotal } = outcome.result;
-
-    const lines = [
-      csvLine([`Filters applied: ${filterSummaryText}`]),
-      csvLine(["Sub Classification", "Status", "Location", "Asset Count", ...columns.map((c) => c.label)]),
-      ...groups.map((g) =>
-        csvLine([g.subClassification, g.status, g.location, g.assetCount, ...columns.map((c) => g[c.key] as number)])
-      ),
-      csvLine(["GRAND TOTAL", "", "", grandTotal.assetCount, ...columns.map((c) => grandTotal[c.key] as number)])
-    ];
+    const { asAt } = outcome.result;
+    const lines = registerSummaryCsvLines(outcome.result);
 
     reply.header("Content-Type", "text/csv; charset=utf-8");
     reply.header("Content-Disposition", `attachment; filename="register-summary-${asAt}.csv"`);

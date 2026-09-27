@@ -258,6 +258,21 @@ describe("Register Export: GET /api/assets/export", () => {
     );
   });
 
+  it("rounds amount columns to the paisa (half up, like Transfer & Depreciation) but never Qty or Useful Life", async () => {
+    await insertAsset("EXP-PAISA", { c1_opening_cost: 10000.125, acc_dep_c1_opening: 2632.5678, useful_life_c1_years: 3.5, qty: 3 });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export" });
+    const rows = readCsv(res.rawPayload);
+    const header = readRow(rows, HEADER_ROW);
+    const col = (label: RegExp) => header.findIndex((h) => label.test(h)) + 1;
+    const data = rows.find((r) => r[0] === "EXP-PAISA")!;
+    expect(data[col(/^C1 Opening/) - 1]).toBe("10000.13"); // .125 -> .13, round half up
+    expect(data[col(/^Acc Dep C1 \(as at/) - 1]).toBe("2632.57");
+    expect(data[col(/^Useful Life C1/) - 1]).toBe("3.5"); // part-years, untouched
+    expect(data[col(/^Qty$/) - 1]).toBe("3");
+    expect(cell(rows, TOTALS_ROW, col(/^C1 Opening/))).toBe("10000.13");
+    expect(cell(rows, NOTE_ROW, 1)).toContain("Amounts rounded to the paisa");
+  });
+
   describe("filter-summary note (row 1)", () => {
     it("reads 'No filters applied' plus an export timestamp when nothing is filtered", async () => {
       await insertAsset("EXP-NOTE-1");
@@ -740,6 +755,22 @@ describe("Register Export: GET /api/assets/export?format=xlsx (styled, two-tier 
     // Data starts row 3.
     const farIds = [sheet.getCell(3, 1).value, sheet.getCell(4, 1).value];
     expect(farIds.sort()).toEqual(["XLS-1", "XLS-2"]);
+  });
+
+  it("rounds amounts to the paisa, shows Qty as a whole number and keeps Useful Life's 2-decimal format and value", async () => {
+    await insertAsset("XLS-PAISA", { c1_opening_cost: 10000.125, useful_life_c1_years: 3.5, qty: 3 });
+    const res = await authedInject(app, { method: "GET", url: "/api/assets/export?format=xlsx" });
+    const sheet = (await readXlsx(res.rawPayload)).getWorksheet(1)!;
+    const header = sheet.getRow(2).values as unknown[];
+    const col = (label: RegExp) => header.findIndex((h) => typeof h === "string" && label.test(h));
+    const qty = sheet.getCell(3, col(/^Qty$/));
+    expect(qty.value).toBe(3);
+    expect(qty.numFmt).toBe("0");
+    const life = sheet.getCell(3, col(/^Useful Life C1/));
+    expect(life.value).toBe(3.5);
+    expect(life.numFmt).toContain("0.00");
+    expect(sheet.getCell(3, col(/^C1 Opening/)).value).toBe(10000.13);
+    expect(String(sheet.getCell(1, 1).note)).toContain("Amounts rounded to the paisa");
   });
 
   it("writes real numeric values (never the text '-') with the accounting numFmt on financial columns", async () => {

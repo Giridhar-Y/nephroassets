@@ -20,6 +20,7 @@ import {
 import { loadActiveMasterMaps, lookupCanonical } from "./bulkParse.js";
 import { buildExceptionPredicate, EXCEPTION_KEYS, EXCEPTION_LABELS } from "./exceptionPredicates.js";
 import { acquireExportSlot, releaseExportSlot } from "./exportConcurrency.js";
+import { round2 } from "../reports/transferDepreciationSplit.js";
 
 // Every Component 2 export column key — mirrors client/src/lib/columns.ts's
 // C2_COLUMN_IDS (minus expiryDateC1/C2, which are Register-screen-only, never
@@ -171,6 +172,28 @@ export function ddmmyyyy(value: string | null): string {
   return `${d}-${m}-${y}`;
 }
 
+/** Exports round rupee amounts to the paisa (2 decimals, round half up) with the same
+ *  rule as the Transfer & Depreciation export (round2), so the same asset matches across
+ *  files. Export-only: the calc engine, stored values and on-screen figures are untouched.
+ *  Non-amount numbers (Qty, Useful Life, counts) are never rounded. */
+export const PAISA_NOTE = "Amounts rounded to the paisa";
+
+export function isAmountColumn(c: Pick<ExportColumn, "kind" | "nonAmount">): boolean {
+  return c.kind === "number" && !c.nonAmount;
+}
+
+export function roundAmount(v: number): number {
+  return round2(v);
+}
+
+/** One export cell: dates DD-MM-YYYY, amounts rounded to the paisa, everything else as is. */
+export function exportCellValue(c: ExportColumn, asset: AssetInput, result: AssetCalculationResult): string | number | null {
+  const v = c.value(asset, result);
+  if (c.kind === "date") return ddmmyyyy(v as string | null);
+  if (isAmountColumn(c) && typeof v === "number") return round2(v);
+  return v;
+}
+
 // RFC4180 field escaping — same rule as the client's own csvEscape (BulkUploadPage.tsx's
 // downloadTemplate, csvChunking.ts): quote only when the value actually contains a
 // comma/quote/newline, doubling up any embedded quote. Numbers are written as plain,
@@ -216,6 +239,9 @@ export interface ExportColumn {
   /** Only meaningful when kind === "number". Defaults to true — set false for a rate
    *  (e.g. Useful Life in years) that isn't meaningful to sum across dissimilar assets. */
   totalable?: boolean;
+  /** A number that isn't a rupee amount (Qty, Useful Life): never rounded to the paisa by
+   *  exportCellValue, and not given the money format. */
+  nonAmount?: true;
   value: (asset: AssetInput, result: AssetCalculationResult) => string | number | null;
 }
 
@@ -246,7 +272,7 @@ export const EXPORT_COLUMNS: ExportColumn[] = [
   { key: "parentFarId", label: "Parent FAR ID", width: 18, groupKey: "g1", kind: "text", value: (a) => a.parentFarId },
   { key: "status", label: "Status", width: 14, groupKey: "g1", kind: "text", value: (a) => a.status },
   { key: "assetDescription", label: "Asset Description", width: 34, groupKey: "g1", kind: "text", value: (a) => a.assetDescription },
-  { key: "qty", label: "Qty", width: 10, groupKey: "g1", kind: "number", value: (a) => a.qty },
+  { key: "qty", label: "Qty", width: 10, groupKey: "g1", kind: "number", nonAmount: true, value: (a) => a.qty },
   {
     key: "usefulLifeC1Years",
     label: "Useful Life C1 (Yrs)",
@@ -254,6 +280,8 @@ export const EXPORT_COLUMNS: ExportColumn[] = [
     groupKey: "g1",
     kind: "number",
     totalable: false,
+    // Part-years (3.5 = 3 years 6 months): never rounded.
+    nonAmount: true,
     value: (a) => a.usefulLifeC1Years
   },
   {
@@ -263,6 +291,7 @@ export const EXPORT_COLUMNS: ExportColumn[] = [
     groupKey: "g1",
     kind: "number",
     totalable: false,
+    nonAmount: true,
     value: (a) => a.usefulLifeC2Years
   },
 
@@ -669,6 +698,8 @@ async function buildXlsxExport(
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GROUP_HEADER_FILL } };
     cell.alignment = { horizontal: "center", vertical: "middle" };
   }
+  // A header note rather than a note row, so the table still starts at row 1.
+  groupRow.getCell(1).note = `${PAISA_NOTE} (2 decimals, round half up). Qty and Useful Life are not rounded.`;
   groupRow.commit();
 
   const headerRow = sheet.getRow(2);
@@ -685,13 +716,12 @@ async function buildXlsxExport(
     const asset = mapAssetRow(row);
     const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
     const result = computeAsset(asset, fy, relevantTransfers);
-    const values = exportColumns.map((c) => {
-      const v = c.value(asset, result);
-      return c.kind === "date" ? ddmmyyyy(v as string | null) : v;
-    });
+    const values = exportColumns.map((c) => exportCellValue(c, asset, result));
     const excelRow = sheet.addRow(values);
     exportColumns.forEach((c, i) => {
-      if (c.kind === "number") excelRow.getCell(i + 1).numFmt = MONEY_FMT;
+      // Qty is a whole number; Useful Life keeps its 2-decimal format (part-years).
+      if (c.key === "qty") excelRow.getCell(i + 1).numFmt = "0";
+      else if (c.kind === "number") excelRow.getCell(i + 1).numFmt = MONEY_FMT;
     });
   }
 
@@ -1025,14 +1055,14 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       // so it's never mistaken for the full register once it's out of context (e.g.
       // forwarded, or opened weeks later). A single field, not one per column (nothing
       // to merge across in CSV).
-      stream.write(csvLine([`Filters applied: ${filterSummaryText}  -  Exported: ${exportedAtText} IST`]) + "\r\n");
+      stream.write(csvLine([`Filters applied: ${filterSummaryText}  -  Exported: ${exportedAtText} IST  -  ${PAISA_NOTE}`]) + "\r\n");
 
       // Row 2: totals — "TOTAL" in the first column, a sum under every totalable numeric
       // column, blank everywhere else (text/date columns, and non-totalable numbers like
       // Useful Life).
       const totalsRowValues = exportColumns.map((c, i) => {
         if (i === 0) return "TOTAL";
-        if (c.kind === "number" && c.totalable !== false) return totals[c.key] ?? 0;
+        if (c.kind === "number" && c.totalable !== false) return isAmountColumn(c) ? round2(totals[c.key] ?? 0) : (totals[c.key] ?? 0);
         return "";
       });
       stream.write(csvLine(totalsRowValues) + "\r\n");
@@ -1153,12 +1183,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
           const asset = mapAssetRow(row);
           const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
           const result = computeAsset(asset, fy, relevantTransfers);
-          const values = exportColumns.map((c) => {
-            const v = c.value(asset, result);
-            if (c.kind === "date") return ddmmyyyy(v as string | null);
-            return v;
-          });
-          lines[i] = csvLine(values);
+          lines[i] = csvLine(exportColumns.map((c) => exportCellValue(c, asset, result)));
         }
         stream.write(lines.join("\r\n") + "\r\n");
 

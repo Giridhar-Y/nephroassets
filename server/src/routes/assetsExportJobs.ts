@@ -17,7 +17,8 @@ import {
   EXPORT_COLUMNS,
   GROUP_INFO,
   csvLine,
-  ddmmyyyy,
+  exportCellValue,
+  PAISA_NOTE,
   exportQuerySchema,
   groupRuns,
   resolveLabel,
@@ -293,7 +294,7 @@ export async function advanceExportJob(
       // below are byte-identical in shape to the synchronous export's own.
       const filterSummaryText =
         buildFilterSummaryText(q, q.conditions) + (q.exception ? `; Dashboard Exception: ${EXCEPTION_LABELS[q.exception]}` : "");
-      appendText(csvLine([`Filters applied: ${filterSummaryText}`]) + "\r\n");
+      appendText(csvLine([`Filters applied: ${filterSummaryText}  -  ${PAISA_NOTE}`]) + "\r\n");
       const groupRowValues = exportColumns.map<string>(() => "");
       for (const run of groupRuns(exportColumns)) {
         groupRowValues[run.startCol - 1] = GROUP_INFO[run.groupKey]!.label;
@@ -388,11 +389,7 @@ export async function advanceExportJob(
         const asset = mapAssetRow(row);
         const relevantTransfers = (transfersByFarId.get(row.far_id) ?? []).map(mapTransferRow);
         const result = computeAsset(asset, fy, relevantTransfers);
-        const values = exportColumns.map((c) => {
-          const v = c.value(asset, result);
-          return c.kind === "date" ? ddmmyyyy(v as string | null) : v;
-        });
-        lines[i] = csvLine(values);
+        lines[i] = csvLine(exportColumns.map((c) => exportCellValue(c, asset, result)));
       }
       appendText(lines.join("\r\n") + "\r\n");
       processedRows += batchRows.length;

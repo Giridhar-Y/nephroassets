@@ -550,6 +550,43 @@ describe("Audit Reconciliation report", () => {
     expect(res.rawPayload.length).toBeGreaterThan(0);
   });
 
+  it("Excel export reuses the figures the screen cached (no second computation), rounded to the paisa with a 2-decimal format", async () => {
+    const db = await getPool();
+    await clearReportTotalsCacheForTests(db);
+    expect((await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation" })).statusCode).toBe(200);
+    // Plant a sentinel in the cached payload: the export must show it, proving it read
+    // the cache rather than recomputing.
+    const { rowCount } = await db.query(
+      `UPDATE report_totals_cache SET payload = jsonb_set(payload, '{items,0,c1,openingSum}', '1234.567'::jsonb)
+       WHERE cache_key LIKE 'audit-reconciliation%'`
+    );
+    expect(rowCount).toBe(1);
+    const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+    expect(res.statusCode).toBe(200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.rawPayload as any);
+    const sheet = workbook.worksheets[0]!;
+    const opening = sheet.getRow(5).getCell(2); // first data row, C1 Opening
+    expect(opening.value).toBe(1234.57);
+    expect(opening.numFmt).toBe("#,##0.00;(#,##0.00);-");
+    expect(String(sheet.getRow(2).getCell(1).value)).toContain("Amounts rounded to the paisa");
+  });
+
+  it("Excel export on Vercel with nothing cached yet: queues the pre-warm and says so, instead of timing out", async () => {
+    const db = await getPool();
+    await clearReportTotalsCacheForTests(db);
+    vi.stubEnv("VERCEL", "1");
+    try {
+      const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "PREPARING" });
+      expect(res.json().error).toMatch(/still being prepared/);
+    } finally {
+      vi.unstubAllEnvs();
+      await db.query(`DELETE FROM report_prewarm_requests`);
+    }
+  });
+
   it("Excel export: one row per Sub Classification, with C1/C2/Combined as merged-header column groups on that same row", async () => {
     const res = await authedInject(app, { method: "GET", url: "/api/reports/audit-reconciliation/export" });
     expect(res.statusCode).toBe(200);
@@ -2262,6 +2299,22 @@ describe("Register Summary report (GET /api/reports/register-summary)", () => {
       const lastLine = splitCsvFields(lines[lines.length - 1]!);
       expect(lastLine[0]).toBe("GRAND TOTAL");
       expect(Number(lastLine[3])).toBe(jsonBody.grandTotal.assetCount);
+    });
+
+    it("rounds amount columns to the paisa (half up) but leaves Qty and Asset Count alone, and says so", async () => {
+      await insertAsset({
+        far_id: "SUM-PAISA", sub_classification: "Dialysis Machines", asset_description: "Paisa", serial_no: "SP", qty: 3,
+        useful_life_c1_years: 10, c1_opening_cost: 10000.125, additions_c1: 0, deletions_c1: 0, acc_dep_c1_opening: 0,
+        date_of_disposal: null, status: "Active", location: "Center-P"
+      });
+      const csvRes = await authedInject(app, { method: "GET", url: "/api/reports/register-summary/export?center=Center-P" });
+      const lines = csvRes.rawPayload.toString("utf-8").split("\r\n").filter((l) => l.length > 0);
+      expect(lines[0]).toContain("Amounts rounded to the paisa");
+      const header = splitCsvFields(lines[1]!);
+      const row = splitCsvFields(lines[2]!);
+      expect(row[header.findIndex((h) => h.startsWith("C1 Opening"))]).toBe("10000.13");
+      expect(row[header.indexOf("Qty")]).toBe("3");
+      expect(row[header.indexOf("Asset Count")]).toBe("1");
     });
   });
 });
