@@ -14,7 +14,7 @@ import {
   type RequestDetail
 } from "../../api/approvals.js";
 import { ApiError } from "../../api/client.js";
-import { formatCurrency, formatDateDDMMYYYY, formatDateTime } from "../../lib/format.js";
+import { formatCurrencyPrecise, formatDateDDMMYYYY, formatDateTime } from "../../lib/format.js";
 import { CommentIcon, DismissIcon, ErrorIcon, PassIcon, FailIcon, ReassignIcon, SearchIcon, WithdrawIcon } from "../../lib/icons.js";
 import { Button } from "../ui/Button.js";
 import { useToast } from "../Toast.js";
@@ -73,7 +73,7 @@ const AMOUNT_FIELDS = new Set(["c1OpeningCost", "c2OpeningCost", "additionsC1", 
 /** A value as the forms show it: dates DD-MM-YYYY, amounts in rupees. */
 export function displayField(key: string, value: unknown): string {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDateDDMMYYYY(value);
-  if (AMOUNT_FIELDS.has(camel(key)) && value !== null && value !== "" && Number.isFinite(Number(value))) return formatCurrency(Number(value));
+  if (AMOUNT_FIELDS.has(camel(key)) && value !== null && value !== "" && Number.isFinite(Number(value))) return formatCurrencyPrecise(Number(value));
   return display(value);
 }
 
@@ -228,7 +228,7 @@ function BulkSection({ detail }: { detail: RequestDetail }) {
         {[
           ["Rows", bulk.rows.toLocaleString("en-IN")],
           ["New / updates", `${bulk.creates.toLocaleString("en-IN")} / ${bulk.updates.toLocaleString("en-IN")}`],
-          ["Amount", bulk.amount === null ? "—" : formatCurrency(bulk.amount)]
+          ["Amount", bulk.amount === null ? "—" : formatCurrencyPrecise(bulk.amount)]
         ].map(([label, value]) => (
           <div key={label} className="rounded-lg border border-gray-200 px-3 py-2">
             <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500">{label}</p>
@@ -268,7 +268,7 @@ function BulkSection({ detail }: { detail: RequestDetail }) {
           {bulk.byCenter.map((c) => (
             <span key={c.center} className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-ink">
               {c.center}: {c.rows.toLocaleString("en-IN")}
-              {c.amount !== null && ` · ${formatCurrency(c.amount)}`}
+              {c.amount !== null && ` · ${formatCurrencyPrecise(c.amount)}`}
             </span>
           ))}
         </div>

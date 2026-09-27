@@ -170,7 +170,7 @@ Disable it in that repo's Actions settings if that's unwanted.
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Approval screens: UX polish from UAT
-Commits: `a5bc553`, `97f9dcf`
+Commits: `a5bc553`, `97f9dcf`, plus the paise-precision commit that follows `affb553`
 
 **What changed**
 - A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
@@ -188,8 +188,11 @@ Commits: `a5bc553`, `97f9dcf`
     Mid-Year Additions, zero opening accumulated depreciation, or an empty serial number.
   - For an update, it shows only the submitted fields.
   - The same labels are used in the bulk preview headers and the resubmit form.
-  - Values are shown the way the forms show them: dates as DD-MM-YYYY, amounts in ₹
-    (the detail table and the bulk preview).
+  - Values: dates as DD-MM-YYYY. Amounts in ₹ are **never rounded**: at least 2 decimals,
+    more only if the value has them (for example ₹22,632.56), in the detail table, the
+    bulk preview and the bulk totals.
+  - Note: the Register and other screens still show whole rupees (the app-wide
+    `formatCurrency`). Only the approval panel shows paise.
 - Found during UAT of the above:
   - The "Awaiting my approval" count badge showed a red "0". It's now hidden at zero.
   - A `/tasks?tab=…` link opened while already on Tasks didn't switch tabs. It does now,

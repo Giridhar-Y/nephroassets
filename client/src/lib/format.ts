@@ -13,6 +13,21 @@ export function formatCurrency(value: number): string {
   return currencyFormatter.format(value);
 }
 
+// Paise precision, for places that show an entered figure exactly as submitted (the
+// approval panel's before/after): at least 2 decimals, more only if the value has them
+// (the amount columns are unbounded NUMERIC), so nothing entered is rounded away.
+const preciseCurrencyFormatter = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  currencySign: "accounting",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 6
+});
+
+export function formatCurrencyPrecise(value: number): string {
+  return preciseCurrencyFormatter.format(value);
+}
+
 /** True when a formatCurrency (or similarly accounting-signed) string represents a
  *  negative value — i.e. it's wrapped in parentheses. Lets a generic cell renderer that
  *  only has the formatted text (not the original number) apply the brand's negative-value

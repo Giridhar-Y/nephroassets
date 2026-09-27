@@ -106,7 +106,11 @@ describe("request detail values", () => {
   it("shows dates and amounts the way the forms do", async () => {
     const { displayField } = await import("./RequestPanel.js");
     expect(displayField("dateAcquired", "2026-09-26")).toBe("26-09-2026");
-    expect(displayField("c1OpeningCost", 1000)).toBe(formatCurrency(1000));
+    expect(displayField("c1OpeningCost", 1000)).toBe("₹1,000.00");
+    // Never rounded to whole rupees: paise always shown, extra precision kept.
+    expect(displayField("accDepC1Opening", 22632.56)).toBe("₹22,632.56");
+    expect(displayField("saleValue", "1234.5")).toBe("₹1,234.50");
+    expect(displayField("additionsC1", 0.125)).toBe("₹0.125");
     expect(displayField("qty", 1000)).toBe("1000");
     expect(displayField("serialNo", "")).toBe("—");
   });
