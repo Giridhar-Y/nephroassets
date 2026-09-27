@@ -19,7 +19,7 @@ import {
   type RawRow
 } from "./activityLog.js";
 import { CHANGES_CSV_HEADER, changesCsvLines, deriveChanges, toExportEvent } from "./activityLogExport.js";
-import { PART_SIZE_BYTES, PROCESS_TIME_BUDGET_MS, SIGNED_URL_EXPIRY_SECONDS, fireSelfNudge } from "./assetsExportJobs.js";
+import { PART_SIZE_BYTES, PROCESS_TIME_BUDGET_MS, SIGNED_URL_EXPIRY_SECONDS, fireSelfNudge, withExportJobLease } from "./assetsExportJobs.js";
 import { isObjectStorageConfigured, s3ObjectStorage, type ObjectStorage, type UploadPart } from "../storage/objectStorage.js";
 
 type ExportQuery = z.infer<typeof activityLogExportQuerySchema>;
@@ -95,6 +95,17 @@ export async function advanceActivityLogExportJob(
   storage: ObjectStorage,
   timeBudgetMs: number,
   log: { error: (obj: unknown, msg: string) => void } = console
+): Promise<void> {
+  // One hop at a time (see withExportJobLease).
+  return withExportJobLease(db, jobId, () => advanceActivityLogExportJobUnleased(db, jobId, storage, timeBudgetMs, log));
+}
+
+async function advanceActivityLogExportJobUnleased(
+  db: pg.Pool,
+  jobId: string,
+  storage: ObjectStorage,
+  timeBudgetMs: number,
+  log: { error: (obj: unknown, msg: string) => void }
 ): Promise<void> {
   const { rows } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [jobId]);
   const job = rows[0];

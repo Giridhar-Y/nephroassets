@@ -202,12 +202,47 @@ function buildComputedConditions(q: ExportQuery, params: unknown[], asAt: string
  *  its own persisted state; COMPLETED/FAILED is a no-op. This is the one and only place
  *  export_jobs actually moves forward — both the client's poll (GET .../jobs/:id) and the
  *  best-effort internal self-nudge call it. */
+/** Longer than any hop can run (a 45s budget plus one batch, inside Vercel's 60s cap). */
+const EXPORT_JOB_LEASE_SECONDS = 120;
+
+/** Runs `advance` only if no other hop holds this job's lease, then releases it. A poll
+ *  and a self-nudge arriving together used to run two hops at once from the same resume
+ *  position: batches written twice, and the first to finish closed the upload the other
+ *  was still writing to ("multipart upload does not exist"), seen live on a full
+ *  Activity Log export. The lease lives in export_jobs.state. */
+export async function withExportJobLease(db: pg.Pool, jobId: string, advance: () => Promise<void>): Promise<void> {
+  const { rows } = await db.query(
+    `UPDATE export_jobs
+     SET state = COALESCE(state, '{}'::jsonb) || jsonb_build_object('leaseUntil', (now() + interval '${EXPORT_JOB_LEASE_SECONDS} seconds')::text)
+     WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')
+       AND (state->>'leaseUntil' IS NULL OR (state->>'leaseUntil')::timestamptz < now())
+     RETURNING id`,
+    [jobId]
+  );
+  if (!rows[0]) return; // another hop is running this job right now
+  try {
+    await advance();
+  } finally {
+    await db.query(`UPDATE export_jobs SET state = state - 'leaseUntil' WHERE id = $1 AND state IS NOT NULL`, [jobId]).catch(() => {});
+  }
+}
+
 export async function advanceExportJob(
   db: pg.Pool,
   jobId: string,
   storage: ObjectStorage,
   timeBudgetMs: number,
   log: { error: (obj: unknown, msg: string) => void } = console
+): Promise<void> {
+  return withExportJobLease(db, jobId, () => advanceExportJobUnleased(db, jobId, storage, timeBudgetMs, log));
+}
+
+async function advanceExportJobUnleased(
+  db: pg.Pool,
+  jobId: string,
+  storage: ObjectStorage,
+  timeBudgetMs: number,
+  log: { error: (obj: unknown, msg: string) => void }
 ): Promise<void> {
   const { rows } = await db.query<JobRow>(`SELECT * FROM export_jobs WHERE id = $1`, [jobId]);
   const job = rows[0];

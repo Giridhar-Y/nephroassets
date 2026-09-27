@@ -149,6 +149,30 @@ describe("Background Activity Log export: advanceActivityLogExportJob", () => {
     expect(lines[3]).toMatch(/ACTJOB-002,Capitalization,Capitalization Create,Status,Active,Disposed,$/);
   });
 
+  it("a hop arriving while another holds the job's lease does nothing; the job then completes with every entry once", async () => {
+    for (const [suffix, hour] of [["A", "10"], ["B", "11"], ["C", "12"]] as const) {
+      await insertAsset(`ACTLEASE-${suffix}`);
+      await insertActivityLogRow(`ACTLEASE-${suffix}`, `2026-01-01T${hour}:00:00Z`);
+    }
+    const storage = new FakeObjectStorage();
+    await insertJobRow("act-job-lease", userId, {});
+    const db = await getPool();
+    await db.query(`UPDATE export_jobs SET state = jsonb_build_object('leaseUntil', (now() + interval '1 minute')::text) WHERE id = 'act-job-lease'`);
+    await advanceActivityLogExportJob(db, "act-job-lease", storage, 60_000);
+    expect((await fetchJobRow("act-job-lease")).processed_rows).toBe(0);
+    await db.query(`UPDATE export_jobs SET state = state - 'leaseUntil' WHERE id = 'act-job-lease'`);
+    await advanceActivityLogExportJob(db, "act-job-lease", storage, 60_000);
+    const job = await fetchJobRow("act-job-lease");
+    expect(job.status).toBe("COMPLETED");
+    expect(job.processed_rows).toBe(3);
+    const farIds = storage.completed
+      .get(job.object_key)!
+      .split("\r\n")
+      .filter((l) => l.includes("ACTLEASE-"))
+      .map((l) => l.split(",")[3]);
+    expect(farIds).toEqual(["ACTLEASE-A", "ACTLEASE-B", "ACTLEASE-C"]);
+  });
+
   it("resumes across multiple hops without losing or duplicating rows, in created_at order", async () => {
     for (const [suffix, hour] of [["A", "10"], ["B", "11"], ["C", "12"], ["D", "13"], ["E", "14"]] as const) {
       await insertAsset(`ACTRESUME-${suffix}`);

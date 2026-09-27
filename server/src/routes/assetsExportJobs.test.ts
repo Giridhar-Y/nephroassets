@@ -173,6 +173,29 @@ describe("Background Register export: advanceExportJob", () => {
     await db.query(`DELETE FROM export_jobs`);
   });
 
+  it("a hop arriving while another holds the job's lease does nothing; the job then completes with every row once", async () => {
+    for (const n of ["001", "002", "003", "004"]) await insertAsset(`JOBLEASE-${n}`);
+    const storage = new FakeObjectStorage();
+    await insertJobRow("job-lease", userId, { filters: { search: "JOBLEASE" } });
+    const db = await getPool();
+    // Another hop (a poll or a self-nudge) is mid-run: it holds the lease.
+    await db.query(`UPDATE export_jobs SET state = jsonb_build_object('leaseUntil', (now() + interval '1 minute')::text) WHERE id = 'job-lease'`);
+    await advanceExportJob(db, "job-lease", storage, 60_000);
+    expect((await fetchJobRow("job-lease")).processed_rows).toBe(0);
+    expect((await fetchJobRow("job-lease")).status).toBe("PENDING");
+    // That hop ends and releases the lease: the next one runs normally.
+    await db.query(`UPDATE export_jobs SET state = state - 'leaseUntil' WHERE id = 'job-lease'`);
+    await advanceExportJob(db, "job-lease", storage, 60_000);
+    const job = await fetchJobRow("job-lease");
+    expect(job.status).toBe("COMPLETED");
+    expect(job.processed_rows).toBe(4);
+    const farIds = storage.completed.get(job.object_key)!.split("\r\n").filter((l) => l.startsWith("JOBLEASE-")).map((l) => l.split(",")[0]);
+    expect(farIds).toEqual(["JOBLEASE-001", "JOBLEASE-002", "JOBLEASE-003", "JOBLEASE-004"]);
+    // And the lease is released after a hop.
+    const { rows } = await db.query(`SELECT state->>'leaseUntil' AS lease FROM export_jobs WHERE id = 'job-lease'`);
+    expect(rows[0].lease).toBeNull();
+  });
+
   it("completes a small export in one hop and uploads the expected CSV", async () => {
     await insertAsset("JOBTEST-001");
     await insertAsset("JOBTEST-002");
