@@ -299,7 +299,27 @@ the paisa.
   - the Register Summary job merging 2-asset slices into a file byte-identical to the
     direct export, and its lease.
 - Client tests: 155/155, including the 503 fallback and the progress percentage.
-- UAT on personal Vercel: see below.
+- UAT on personal Vercel (2026-09-28, 219,329 assets):
+  - **Register CSV** (one center, 1,407 rows): no value with more than 2 decimals, and
+    the note is present. **Register .xlsx**: Qty uses Excel's whole-number format,
+    Useful Life keeps 2 decimals, and the header note is attached.
+  - **Register Summary** (filtered): a row that exported `354939.93461044` /
+    `411933.68571943935` before now exports `354939.93` / `411933.69`.
+  - **Register Summary, unfiltered background export:** 219,329 assets in 3 min 37 s,
+    with progress reported throughout. File: 3,019 lines, BOM, note, GRAND TOTAL of
+    219,329 assets. Its 113-AP-GTR-PPP-C row is identical to the filtered direct export.
+  - **Audit Reconciliation:** on a cold cache, "still being prepared" came back in
+    217 ms (before this change: a 504 after 60 s). Once warm, the export takes 836 ms,
+    in the 2-decimal format with the note. Its C1 Opening grand total (4,572,287,396.22)
+    matches the Register Summary's to the paisa.
+  - **Activity Log .xlsx:** Events and Changes sheets. An approved bulk row shows the
+    submitter, "Step 1: … ("comment")", request #5 (a link) and the bulk file name.
+  - **Activity Log, full background CSV:** 220,087 entries in 2 min 4 s. It holds exactly
+    220,087 unique events, with no duplicated lines, in 3,961,496 lines (480 MB).
+- **Size limit to know about:** the full-log CSV in the Changes layout (about 18 lines per
+  capitalization) is 3.96 million lines, well over Excel's 1,048,576-row limit. It's a
+  valid CSV for Power Query or a database, and filtered exports (date, category, FAR ID)
+  stay small.
 
 ### 7. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
