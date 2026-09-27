@@ -528,6 +528,10 @@ describe("Activity Log", () => {
       // Amounts are number cells with 2 decimals; the Event ID links back to Events.
       const amountCell = changes.getRow(FIRST_DATA_ROW + rows.findIndex((r) => r[2] === "Component 1 Opening Cost")).getCell(5);
       expect(amountCell.numFmt).toBe("#,##0.00;(#,##0.00);0.00");
+      // Qty and Useful Life are numbers but not amounts: no money format.
+      const lifeCell = changes.getRow(FIRST_DATA_ROW + rows.findIndex((r) => r[2] === "Component 1 Useful Life (Years)")).getCell(5);
+      expect(lifeCell.value).toBe(5);
+      expect(lifeCell.numFmt ?? "General").not.toContain("0.00");
       expect((changes.getRow(FIRST_DATA_ROW).getCell(1).value as { hyperlink: string }).hyperlink).toBe(`#'Events'!A${FIRST_DATA_ROW}`);
     });
 

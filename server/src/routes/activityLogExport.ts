@@ -109,6 +109,8 @@ export interface ExportChange {
   field: string;
   oldValue: string | number | null;
   newValue: string | number | null;
+  /** A rupee amount: 2-decimal number format. Other numbers (Qty, Useful Life) stay plain. */
+  amount: boolean;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -165,7 +167,12 @@ export function deriveChanges(row: Pick<RawRow, "src" | "action" | "details">): 
   return rows
     .filter((r) => !(isEmpty(r.oldValue) && isEmpty(r.newValue)))
     .sort((a, b) => (FIELD_ORDER.get(a.key) ?? 999) - (FIELD_ORDER.get(b.key) ?? 999))
-    .map((r) => ({ field: fieldLabel(r.key), oldValue: exportValue(r.key, r.oldValue), newValue: exportValue(r.key, r.newValue) }));
+    .map((r) => ({
+      field: fieldLabel(r.key),
+      oldValue: exportValue(r.key, r.oldValue),
+      newValue: exportValue(r.key, r.newValue),
+      amount: AMOUNT_FIELDS.has(r.key)
+    }));
 }
 
 function eventNotes(d: Record<string, unknown>): string {
@@ -296,7 +303,7 @@ export function createActivityWorkbook(header: { generatedLine: string; filterLi
           [5, change.newValue]
         ] as const) {
           c.getCell(col).value = v;
-          if (typeof v === "number") c.getCell(col).numFmt = AMOUNT_FMT;
+          if (typeof v === "number" && change.amount) c.getCell(col).numFmt = AMOUNT_FMT;
         }
       }
     },
