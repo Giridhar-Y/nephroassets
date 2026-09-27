@@ -30,6 +30,13 @@ export function TasksPage() {
   const canViewAll = hasPermission(user, "approvals", "viewAll");
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState<TaskTab>((params.get("tab") as TaskTab) ?? "mine");
+  // A link to /tasks?tab=… while already on Tasks changes only the query string, not the
+  // page, so follow it here too (initial state above only covers the first load).
+  const urlTab = params.get("tab") as TaskTab | null;
+  useEffect(() => {
+    if (urlTab && urlTab !== tab) setTab(urlTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTab]);
   const [modules, setModules] = useState<ModuleInfo[]>([]);
   const [filters, setFilters] = useState({ module: "", center: "", status: "", aging: false });
   const [items, setItems] = useState<TaskItem[] | null>(null);
@@ -116,13 +123,19 @@ export function TasksPage() {
               onClick={() => {
                 setTab(t.key);
                 setFilters((f) => ({ ...f, status: "" }));
+                // Keep the URL in step, so the effect below (links from notifications and
+                // module logs) never switches back to a stale ?tab=.
+                const next = new URLSearchParams(params);
+                next.set("tab", t.key);
+                next.delete("request");
+                setParams(next, { replace: true });
               }}
               className={`-mb-px border-b-2 py-3 text-sm font-semibold transition-colors ${
                 tab === t.key ? "border-accent text-ink" : "border-transparent text-gray-500 hover:text-ink"
               }`}
             >
               {t.label}
-              {t.key === "mine" && items && tab === "mine" && (
+              {t.key === "mine" && items && tab === "mine" && items.some((i) => i.canAct) && (
                 <span className="ml-2 rounded-full bg-accent px-2 py-0.5 text-xs text-white">{items.filter((i) => i.canAct).length}</span>
               )}
             </button>

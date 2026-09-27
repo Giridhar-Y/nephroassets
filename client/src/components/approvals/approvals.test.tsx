@@ -101,3 +101,13 @@ describe("request detail fields", () => {
     expect(screen.queryByText("Rejected")).toBeNull();
   });
 });
+
+describe("request detail values", () => {
+  it("shows dates and amounts the way the forms do", async () => {
+    const { displayField } = await import("./RequestPanel.js");
+    expect(displayField("dateAcquired", "2026-09-26")).toBe("26-09-2026");
+    expect(displayField("c1OpeningCost", 1000)).toBe(formatCurrency(1000));
+    expect(displayField("qty", 1000)).toBe("1000");
+    expect(displayField("serialNo", "")).toBe("—");
+  });
+});

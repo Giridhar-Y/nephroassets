@@ -170,7 +170,7 @@ Disable it in that repo's Actions settings if that's unwanted.
   `ENOENT … approvalsSchema.sql`. The branch was deleted afterwards.
 
 ### 5. Approval screens: UX polish from UAT
-Commit: see `git log -- client/src/components/approvals/RequestPanel.tsx` (after `84a8a19`)
+Commits: `a5bc553`, plus the follow-up commit that adds value formatting (`git log -- client/src/pages/TasksPage.tsx`)
 
 **What changed**
 - A request sent back to the submitter now reads **"Returned"** everywhere it's shown:
@@ -188,11 +188,23 @@ Commit: see `git log -- client/src/components/approvals/RequestPanel.tsx` (after
     Mid-Year Additions, zero opening accumulated depreciation, or an empty serial number.
   - For an update, it shows only the submitted fields.
   - The same labels are used in the bulk preview headers and the resubmit form.
+  - Values are shown the way the forms show them: dates as DD-MM-YYYY, amounts in ₹
+    (the detail table and the bulk preview).
+- Found during UAT of the above:
+  - The "Awaiting my approval" count badge showed a red "0". It's now hidden at zero.
+  - A `/tasks?tab=…` link opened while already on Tasks didn't switch tabs. It does now,
+    and clicking a tab keeps the URL in step.
 
 **Database / env vars:** none. **DevOps must do / expect:** nothing (client-only).
 
-**Verified:** client tests (152/152, including labels, field order, hidden fields, update
-rows and the "Returned" badge); UAT on personal Vercel (see below).
+**Verified**
+- Client tests: 153/153, including labels, field order, hidden fields, update rows, value
+  formatting and the "Returned" badge.
+- UAT on personal Vercel as test_editor:
+  - Awaiting my approval shows "Nothing waiting for your approval.";
+  - My requests shows #2 as "Returned" in crimson, and the status filter lists "Returned";
+  - with filters that match nothing, it shows "No requests match. Try clearing the filters.";
+  - #2's detail panel shows only the nine capitalization fields, with the form labels.
 
 ### 6. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because

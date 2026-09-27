@@ -14,7 +14,7 @@ import {
   type RequestDetail
 } from "../../api/approvals.js";
 import { ApiError } from "../../api/client.js";
-import { formatCurrency, formatDateTime } from "../../lib/format.js";
+import { formatCurrency, formatDateDDMMYYYY, formatDateTime } from "../../lib/format.js";
 import { CommentIcon, DismissIcon, ErrorIcon, PassIcon, FailIcon, ReassignIcon, SearchIcon, WithdrawIcon } from "../../lib/icons.js";
 import { Button } from "../ui/Button.js";
 import { useToast } from "../Toast.js";
@@ -67,6 +67,15 @@ const ORDER = new Map(FIELD_LABELS.map(([k], i) => [k, i]));
 /** Optional amounts left at zero read as "not used" (a capitalization's Mid-Year
  *  Additions, opening accumulated depreciation, Component 2 on a C1-only asset). */
 const OPTIONAL_ZERO = new Set(["additionsC1", "additionsC2", "accDepC1Opening", "accDepC2Opening", "c2OpeningCost", "usefulLifeC2Years"]);
+
+const AMOUNT_FIELDS = new Set(["c1OpeningCost", "c2OpeningCost", "additionsC1", "additionsC2", "accDepC1Opening", "accDepC2Opening", "saleValue"]);
+
+/** A value as the forms show it: dates DD-MM-YYYY, amounts in rupees. */
+export function displayField(key: string, value: unknown): string {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDateDDMMYYYY(value);
+  if (AMOUNT_FIELDS.has(camel(key)) && value !== null && value !== "" && Number.isFinite(Number(value))) return formatCurrency(Number(value));
+  return display(value);
+}
 
 const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
@@ -132,9 +141,9 @@ function Comparison({ before, proposed }: { before: Record<string, unknown> | nu
           {rows.map((r) => (
             <tr key={r.key} className={`border-t border-gray-100 ${r.changed ? "" : "text-gray-400"}`}>
               <td className="px-3 py-1.5 font-medium">{fieldLabel(r.key)}</td>
-              {before && <td className="px-3 py-1.5 tabular-nums">{display(r.before)}</td>}
+              {before && <td className="px-3 py-1.5 tabular-nums">{displayField(r.key, r.before)}</td>}
               <td className={`px-3 py-1.5 tabular-nums ${r.changed && before ? "font-semibold text-ink" : ""}`}>
-                {display(r.proposed)}
+                {displayField(r.key, r.proposed)}
                 {r.changed && before && <span className="sr-only"> (changed)</span>}
               </td>
             </tr>
@@ -308,8 +317,8 @@ function BulkSection({ detail }: { detail: RequestDetail }) {
                     const changed = beforeValue !== undefined && display(beforeValue) !== display(r.data[c]);
                     return (
                       <td key={c} className="whitespace-nowrap px-2 py-1">
-                        {changed && <span className="block text-gray-400 line-through">{display(beforeValue)}</span>}
-                        <span className={changed ? "font-semibold text-ink" : ""}>{display(r.data[c])}</span>
+                        {changed && <span className="block text-gray-400 line-through">{displayField(c, beforeValue)}</span>}
+                        <span className={changed ? "font-semibold text-ink" : ""}>{displayField(c, r.data[c])}</span>
                       </td>
                     );
                   })}
