@@ -36,6 +36,18 @@ html, body, #root {
   background-color: #9CA3AF;
 }
 
+/* Scrolls, but with no visible scrollbar (the sidebar nav, which shows edge fades
+   instead). Firefox via scrollbar-width, Chrome/Edge via the pseudo-element; the class
+   selector outranks the global `*` rules above. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* A newly-added filter chip (or similar small, frequently-mounted element) eases in
    instead of popping into place — 180ms, matched to the rest of the app's
    micro-interactions. Removal stays instant; an exit animation needs real mount/unmount

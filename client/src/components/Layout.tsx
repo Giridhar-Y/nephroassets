@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   createContext,
   useCallback,
@@ -286,6 +286,34 @@ export function Layout() {
   }, [logout, navigate]);
   const { showWarning, secondsRemaining, stayActive } = useIdleLogout(handleInactivityLogout);
 
+  // Sidebar menu: which edges have more items beyond them (for the fades), and keeping
+  // the current page's item in view on load/navigation (e.g. Admin at the bottom).
+  const navRef = useRef<HTMLElement>(null);
+  const [navEdges, setNavEdges] = useState({ top: false, bottom: false });
+  const location = useLocation();
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const update = () => {
+      const top = nav.scrollTop > 1;
+      const bottom = nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1;
+      setNavEdges((e) => (e.top === top && e.bottom === bottom ? e : { top, bottom }));
+    };
+    update();
+    nav.addEventListener("scroll", update, { passive: true });
+    const resize = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    resize?.observe(nav);
+    window.addEventListener("resize", update);
+    return () => {
+      nav.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      resize?.disconnect();
+    };
+  }, [collapsed, navItems.length]);
+  useEffect(() => {
+    navRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView?.({ block: "nearest" });
+  }, [location.pathname, collapsed]);
+
   return (
     <div className="flex h-full print:block print:h-auto">
       <aside
@@ -310,7 +338,13 @@ export function Layout() {
             {collapsed ? <PanelExpandIcon fontSize={18} /> : <PanelCollapseIcon fontSize={18} />}
           </button>
         </div>
-        <nav className="flex-1 space-y-1 px-3">
+        {/* Only the menu scrolls; the header above and the footer below stay put. */}
+        <div className="relative min-h-0 flex-1">
+        <nav
+          ref={navRef}
+          aria-label="Main"
+          className="no-scrollbar h-full space-y-1 overflow-y-auto overscroll-contain px-3 pb-2"
+        >
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -340,6 +374,20 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+          {/* With the scrollbar hidden, a soft white fade says there's more above/below. */}
+          <div
+            aria-hidden
+            className={`pointer-events-none absolute inset-x-0 top-0 h-6 bg-gradient-to-b from-white to-transparent transition-opacity duration-150 ${
+              navEdges.top ? "opacity-100" : "opacity-0"
+            }`}
+          />
+          <div
+            aria-hidden
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-white to-transparent transition-opacity duration-150 ${
+              navEdges.bottom ? "opacity-100" : "opacity-0"
+            }`}
+          />
+        </div>
         {/* Account management/Sign Out now lives only in the header's UserMenu avatar
             dropdown — one authoritative place instead of two. */}
         {!collapsed && (
