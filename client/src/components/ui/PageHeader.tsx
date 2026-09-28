@@ -22,7 +22,7 @@ export function PageHeader({
 }) {
   return (
     <div className={bordered ? "border-b border-gray-200 bg-white px-6 py-4" : ""}>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h1 className="flex items-center gap-2 font-heading text-base font-bold text-ink">
           <Icon fontSize={20} />
           {title}

@@ -350,7 +350,7 @@ export function ActivityLogPage() {
       <PageHeader
         icon={AuditLogIcon}
         title="Activity Log"
-        subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
+        subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, Masters and Approval Workflows change — single-item and
           bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
         actions={
           <div className="flex flex-col items-end gap-1">
@@ -511,7 +511,7 @@ export function ActivityLogPage() {
             <p className="text-xs text-gray-400">
               {hasActiveFilters
                 ? "Try widening the filters above."
-                : "Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters changes will show up here."}
+                : "Capitalization, Addition, Transfer, Disposal, Delete/Undo, Masters and Approval Workflows changes will show up here."}
             </p>
           </div>
         ) : (

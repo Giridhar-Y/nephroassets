@@ -189,6 +189,8 @@ function AssignmentEditor({
   const amountAllowed = draft.modules.length > 0 && noAmount.length === 0;
   const workflow = data.workflows.find((w) => w.id === draft.workflowId);
   const active = data.workflows.filter((w) => w.active || w.id === initial.workflowId);
+  // A server message (e.g. a conflict) describes the draft it was about; clear it once the draft changes.
+  useEffect(() => setError(null), [draft]);
 
   async function save() {
     if (draft.modules.length === 0) return setError("Pick at least one module.");
