@@ -321,11 +321,60 @@ the paisa.
   valid CSV for Power Query or a database, and filtered exports (date, category, FAR ID)
   stay small.
 
-### 7. Test tooling (developers only)
+### 7. Sidebar scrolling; Activity Log export size
+Commits: `fb0a102` (sidebar), `4b6ba74` (Activity Log export)
+
+**What changed**
+- **Sidebar:** since Tasks and Approval Workflows were added, the menu no longer fitted
+  a laptop screen: "Admin" was cut off, and the mouse wheel over the sidebar didn't scroll
+  it.
+  - Only the menu list now scrolls; the logo/header and the "NephroAssets v1.0 • FAR"
+    footer stay fixed.
+  - Scrolling over the menu never scrolls the page behind it. It works with the wheel,
+    trackpad, touch and keyboard (Tab through the items).
+  - The scrollbar is hidden (Chrome, Edge, Firefox) but scrolling still works. A soft
+    white fade shows at the bottom when more items are below, and at the top when
+    scrolled down.
+  - The current page's item is scrolled into view on load and navigation, so a page near
+    the bottom (Admin) is never highlighted but hidden. Same in the collapsed
+    (icon-only) sidebar.
+- **Activity Log export size:**
+  - Create entries list only the fields actually filled in: zero amounts and empty fields
+    are left out of the Changes layout.
+  - The export covers the **current financial year by default**. The date filters choose
+    any other range, and the button shows the range it will export.
+  - **The .xlsx never truncates.** Before this change nothing capped it: a very large
+    workbook (possible on Docker, where large exports fell back to the direct
+    download) would have passed Excel's 1,048,576-row limit, and Excel silently drops
+    those rows when it "repairs" the file. Now:
+    - the Changes sheet continues on "Changes (2)", "Changes (3)", ... (and Events on
+      "Events (2)") at Excel's row limit;
+    - a direct .xlsx over 50,000 entries is refused with a clear message: "too many for
+      an Excel workbook ... narrow the date range, or use the CSV export";
+    - without background storage (Docker), a large export is a directly streamed CSV
+      (Changes layout), not a workbook.
+
+**Database / env vars:** none. **DevOps must do / expect:** nothing.
+
+**Verified:** see this entry's UAT notes below.
+
+### 8. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
 Windows can reserve the default port. No effect on the app, the image or the deployment.
 
 ---
+
+## Known limitations
+
+- **Older Masters update entries don't say which item changed.** Until this release, a
+  Masters update (center, sub classification, status or role) logged only the fields that
+  changed, not which record they belong to. For example, "Description: Old → New" with no
+  center code. Entries written from this release on record the item (the "FAR ID /
+  Master" column in the Activity Log export). Older entries can't be recovered: that
+  information was never stored.
+- **The full Activity Log as CSV exceeds Excel's row limit.** The whole log (~220,000
+  entries) is several million Changes rows. It's a valid CSV for Power Query or a
+  database; for Excel, export a date range (the default is the current financial year).
 
 ## Release checklist (run before "push to company")
 
