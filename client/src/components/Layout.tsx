@@ -301,14 +301,19 @@ export function Layout() {
       const bottom = nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1;
       setNavEdges((e) => (e.top === top && e.bottom === bottom ? e : { top, bottom }));
     };
+    // A shorter window can push the current page's item out of view: bring it back.
+    const onResize = () => {
+      nav.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView?.({ block: "nearest" });
+      update();
+    };
     update();
     nav.addEventListener("scroll", update, { passive: true });
-    const resize = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    const resize = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
     resize?.observe(nav);
-    window.addEventListener("resize", update);
+    window.addEventListener("resize", onResize);
     return () => {
       nav.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
+      window.removeEventListener("resize", onResize);
       resize?.disconnect();
     };
   }, [navEl, collapsed, navItems.length]);
