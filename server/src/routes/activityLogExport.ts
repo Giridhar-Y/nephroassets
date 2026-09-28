@@ -152,10 +152,15 @@ export function deriveChanges(row: Pick<RawRow, "src" | "action" | "details">): 
     for (const k of keys) rows.push({ key: k, oldValue: before[k], newValue: after[k] });
   } else {
     const previous = isPlainObject(d.previous) ? d.previous : null;
+    // A create lists only the fields actually filled in: its zero amounts and empty
+    // fields (unused Mid-Year Additions, Component 2 on a C1-only asset, ...) add rows
+    // without information (and ~5 rows per capitalization across the whole log).
+    const isCreate = row.src !== "delete" && !previous;
     for (const [k, v] of Object.entries(d)) {
       if (META_KEYS.has(k)) continue;
       if (previous && k in previous) rows.push({ key: k, oldValue: previous[k], newValue: v });
       else if (row.src === "delete") rows.push({ key: k, oldValue: v, newValue: null });
+      else if (isCreate && (v === 0 || v === "0")) continue;
       else rows.push({ key: k, oldValue: null, newValue: v });
     }
     // A previous value whose field isn't restated: a disposal doesn't store its new
@@ -235,19 +240,29 @@ export interface ActivityWorkbook {
   finish(): Promise<ExcelJS.Buffer>;
 }
 
-/** Two sheets with a shared header band; rows are added one event at a time. `appUrl`
- *  (the app's origin) turns request numbers into links to the request in Tasks. */
-export function createActivityWorkbook(header: { generatedLine: string; filterLine: string; appUrl: string | null }): ActivityWorkbook {
-  const workbook = new ExcelJS.Workbook();
-  const events = workbook.addWorksheet("Events");
-  const changes = workbook.addWorksheet("Changes");
-  events.columns = [12, 18, 12, 16, 16, 24, 22, 20, 16, 40, 12, 28, 36].map((width) => ({ width }));
-  changes.columns = [12, 22, 34, 22, 22].map((width) => ({ width }));
+/** Excel's hard limit on rows per sheet. A sheet is never allowed past it (Excel would
+ *  "repair" the file by silently dropping everything beyond): the rows continue on
+ *  "Changes (2)", "Changes (3)", ... (and "Events (2)" in the unlikely event it's needed). */
+export const EXCEL_MAX_ROWS = 1_048_576;
+const HEADER_ROWS = 5;
 
-  for (const [sheet, headers, title] of [
-    [events, EVENT_HEADERS, "NephroPlus - Activity Log Export: Events"],
-    [changes, CHANGE_HEADERS, "NephroPlus - Activity Log Export: Changes"]
-  ] as const) {
+/** Two sheets with a shared header band; rows are added one event at a time. `appUrl`
+ *  (the app's origin) turns request numbers into links to the request in Tasks.
+ *  `maxRowsPerSheet` exists for tests (Excel's limit otherwise). */
+export function createActivityWorkbook(
+  header: { generatedLine: string; filterLine: string; appUrl: string | null },
+  maxRowsPerSheet: number = EXCEL_MAX_ROWS
+): ActivityWorkbook {
+  const workbook = new ExcelJS.Workbook();
+  const addSheet = (base: "Events" | "Changes", part: number) => {
+    const name = part === 1 ? base : `${base} (${part})`;
+    const sheet = workbook.addWorksheet(name);
+    const headers = base === "Events" ? EVENT_HEADERS : CHANGE_HEADERS;
+    sheet.columns = (base === "Events" ? [12, 18, 12, 16, 16, 24, 22, 20, 16, 40, 12, 28, 36] : [12, 22, 34, 22, 22]).map((width) => ({ width }));
+    writeHeaderBand(sheet, headers, `NephroPlus - Activity Log Export: ${name}`);
+    return sheet;
+  };
+  const writeHeaderBand = (sheet: ExcelJS.Worksheet, headers: readonly string[], title: string) => {
     const titleCell = sheet.getRow(1).getCell(1);
     titleCell.value = title;
     sheet.mergeCells(1, 1, 1, headers.length);
@@ -261,17 +276,26 @@ export function createActivityWorkbook(header: { generatedLine: string; filterLi
       sheet.mergeCells(rowNumber, 1, rowNumber, headers.length);
       sheet.getRow(rowNumber).getCell(1).font = { italic: true, color: { argb: "FF52525B" } };
     }
-    const headerRow = sheet.getRow(5);
+    const headerRow = sheet.getRow(HEADER_ROWS);
     headers.forEach((h, i) => (headerRow.getCell(i + 1).value = h));
     headerRow.font = { bold: true };
-    sheet.views = [{ state: "frozen", ySplit: 5 }];
-  }
-  let nextEventRow = 6;
-  let nextChangeRow = 6;
+    sheet.views = [{ state: "frozen", ySplit: HEADER_ROWS }];
+  };
+  let events = addSheet("Events", 1);
+  let changes = addSheet("Changes", 1);
+  let eventsPart = 1;
+  let changesPart = 1;
+  let nextEventRow = HEADER_ROWS + 1;
+  let nextChangeRow = HEADER_ROWS + 1;
 
   return {
     addEvent(event, eventChanges) {
+      if (nextEventRow > maxRowsPerSheet) {
+        events = addSheet("Events", ++eventsPart);
+        nextEventRow = HEADER_ROWS + 1;
+      }
       const eventRowNumber = nextEventRow++;
+      const eventsSheetName = events.name;
       const row = events.getRow(eventRowNumber);
       [
         event.eventId,
@@ -294,8 +318,12 @@ export function createActivityWorkbook(header: { generatedLine: string; filterLi
           : `#${event.requestId}`;
       }
       for (const change of eventChanges) {
+        if (nextChangeRow > maxRowsPerSheet) {
+          changes = addSheet("Changes", ++changesPart);
+          nextChangeRow = HEADER_ROWS + 1;
+        }
         const c = changes.getRow(nextChangeRow++);
-        c.getCell(1).value = { text: event.eventId, hyperlink: `#'Events'!A${eventRowNumber}` };
+        c.getCell(1).value = { text: event.eventId, hyperlink: `#'${eventsSheetName}'!A${eventRowNumber}` };
         c.getCell(2).value = event.record || null;
         c.getCell(3).value = change.field;
         for (const [col, v] of [

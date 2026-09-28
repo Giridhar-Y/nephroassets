@@ -11,7 +11,8 @@ import {
   type ActivityLogSummary,
   type FetchActivityLogParams
 } from "../api/client.js";
-import { formatDateTime } from "../lib/format.js";
+import { formatDateDDMMYYYY, formatDateTime } from "../lib/format.js";
+import { useSettings } from "../lib/SettingsContext.js";
 import { AuditLogIcon, ChevronDownIcon, EmptyIcon, ErrorIcon, RetryIcon } from "../lib/icons.js";
 import { PageHeader } from "../components/ui/PageHeader.js";
 import { ExportButton } from "../components/ui/ExportButton.js";
@@ -201,15 +202,28 @@ export function ActivityLogPage() {
   const [dateTo, setDateTo] = useState(() => searchParams.get("dateTo") ?? "");
   const [summary, setSummary] = useState<ActivityLogSummary | null>(null);
 
+  // The export covers the current financial year unless date filters are set: the whole
+  // log is ~220,000 entries (millions of Changes rows), rarely what anyone needs. Any
+  // other range is chosen with the Date From / Date To filters.
+  const { settings } = useSettings();
+  const exportUsesFyDefault = !dateFrom && !dateTo && !!settings;
   const exportParams: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo"> = {
     farId: farId || undefined,
     actor: actor || undefined,
     category: category || undefined,
-    dateFrom: dateFrom || undefined,
-    dateTo: dateTo || undefined
+    dateFrom: dateFrom || (exportUsesFyDefault ? settings!.fyStart : undefined),
+    dateTo: dateTo || (exportUsesFyDefault ? settings!.fyEnd : undefined)
   };
+  const exportRangeText =
+    exportParams.dateFrom || exportParams.dateTo
+      ? `${exportParams.dateFrom ? formatDateDDMMYYYY(exportParams.dateFrom) : "the start"} to ${exportParams.dateTo ? formatDateDDMMYYYY(exportParams.dateTo) : "today"}${exportUsesFyDefault ? " (current financial year)" : ""}`
+      : "all dates";
   const exportUrl = getActivityLogExportUrl(exportParams);
   const { exporting: exportingSync, runExport: runSyncExport } = useExport(exportUrl);
+  // No background storage (Docker without S3/R2): a large export streams as CSV directly
+  // (no time limit there, and a workbook couldn't hold millions of Changes rows anyway).
+  const { exporting: exportingCsv, runExport: runCsvExport } = useExport(getActivityLogExportUrl(exportParams, "csv"));
+  const [exportTotal, setExportTotal] = useState<number | null>(null);
   const {
     isExporting: backgroundExporting,
     startExport: startBackgroundExport,
@@ -219,29 +233,28 @@ export function ActivityLogPage() {
   >({
     createJob: createActivityLogExportJob,
     fetchJob: fetchActivityLogExportJob,
-    startingMessage: `Exporting ${(summary?.total ?? 0).toLocaleString()} activity logs in the background. We'll notify you when ready.`,
+    startingMessage: `Exporting ${(exportTotal ?? 0).toLocaleString()} activity log entries in the background. We'll notify you when it's ready.`,
     buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString()} entries).`,
-    // No background storage on this server (Docker without S3/R2): the direct .xlsx
-    // export has no time limit there.
-    fallback: () => runSyncExport()
+    fallback: () => runCsvExport()
   });
-  // Filtered count too large for the synchronous .xlsx export runs as a background job
-  // instead — same toolbar button, just a different path once the count is known, exactly
-  // Register's own overLimit/handleExportClick split (RegisterPage.tsx).
-  const overLimit = summary !== null && summary.total > ACTIVITY_LOG_EXPORT_ROW_LIMIT;
-  // Either can be running over the limit: the direct export is the fallback without background storage.
-  const exporting = backgroundExporting || exportingSync;
-  const handleExportClick = useCallback(() => {
-    if (overLimit) {
-      void startBackgroundExport(exportParams, summary?.total);
-    } else {
-      runSyncExport();
+  const exporting = backgroundExporting || exportingSync || exportingCsv;
+  const overLimit = exportTotal !== null && exportTotal > ACTIVITY_LOG_EXPORT_ROW_LIMIT;
+  // Sized for the export's own range (the page's counts are for the on-screen filters):
+  // at or under the limit it's the .xlsx workbook, above it a background CSV.
+  const handleExportClick = useCallback(async () => {
+    let total: number;
+    try {
+      const counts = await fetchActivityLogSummary(exportParams);
+      total = exportParams.category ? counts.counts[exportParams.category] : counts.total;
+    } catch {
+      total = 0; // can't size it: try the workbook, which refuses clearly if it's too big
     }
-    // exportParams is a fresh object every render (built from the current filter state
-    // above) — including it here would defeat useCallback's memoization for no benefit,
-    // since every filter it's built from is already its own dependency below.
+    setExportTotal(total);
+    if (total > ACTIVITY_LOG_EXPORT_ROW_LIMIT) void startBackgroundExport(exportParams, total);
+    else runSyncExport();
+    // exportParams is rebuilt every render from the filter state listed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overLimit, startBackgroundExport, runSyncExport, farId, actor, category, dateFrom, dateTo, summary]);
+  }, [startBackgroundExport, runSyncExport, farId, actor, category, dateFrom, dateTo, settings]);
 
   // Writes every filter back to the URL (replace, so Back doesn't step through every
   // keystroke) whenever one changes, so the current view can be shared as a direct link.
@@ -338,13 +351,17 @@ export function ActivityLogPage() {
         subtitle="Every Capitalization, Addition, Transfer, Disposal, Delete/Undo, and Masters change — single-item and
           bulk-uploaded alike — newest first. Read-only. Only covers activity recorded after this log shipped."
         actions={
-          <ExportButton
-            url={exportUrl}
-            label="Export"
-            exportingLabel={overLimit && backgroundExporting ? backgroundProgressLabel : "Exporting…"}
-            exporting={exporting}
-            onExport={handleExportClick}
-          />
+          <div className="flex flex-col items-end gap-1">
+            <ExportButton
+              url={exportUrl}
+              label="Export"
+              exportingLabel={overLimit && backgroundExporting ? backgroundProgressLabel : "Exporting…"}
+              exporting={exporting}
+              onExport={() => void handleExportClick()}
+              shortcutHint={`Exports ${exportRangeText}. Set Date From / Date To to export another range.`}
+            />
+            <p className="text-[11px] text-gray-500">Exports {exportRangeText}</p>
+          </div>
         }
       >
         <div className="mt-4 flex flex-wrap items-end gap-3">

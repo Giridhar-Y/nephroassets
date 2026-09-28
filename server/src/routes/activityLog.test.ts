@@ -10,7 +10,8 @@ import bulkTransfersRoutes from "./bulkTransfers.js";
 import bulkDisposalsRoutes from "./bulkDisposals.js";
 import mastersRoutes from "./masters.js";
 import bulkMastersRoutes from "./bulkMasters.js";
-import activityLogRoutes, { resolveFinancialYear } from "./activityLog.js";
+import activityLogRoutes, { resolveFinancialYear, setXlsxMaxEntriesForTests, XLSX_MAX_ENTRIES } from "./activityLog.js";
+import { createActivityWorkbook } from "./activityLogExport.js";
 import { getPool } from "../db/pool.js";
 import { authedInject } from "../testHelpers/authTestUtils.js";
 import { authGateHook } from "../auth/middleware.js";
@@ -550,6 +551,9 @@ describe("Activity Log", () => {
       expect(byField["Component 1 Opening Cost"]).toEqual([event[0], "ACT-TEST-1", "Component 1 Opening Cost", null, 10000]);
       expect(byField["Date Acquired"]![4]).toBe("01-01-2026");
       expect(byField["Source"]).toBeUndefined(); // bookkeeping, not a field
+      // A create lists only what was filled in: zero amounts and empty fields are left out.
+      expect(byField["Additions C1"]).toBeUndefined();
+      expect(byField["Serial No"]).toBeUndefined();
       // Amounts are number cells with 2 decimals; the Event ID links back to Events.
       const amountCell = changes.getRow(FIRST_DATA_ROW + rows.findIndex((r) => r[2] === "Component 1 Opening Cost")).getCell(5);
       expect(amountCell.numFmt).toBe("#,##0.00;(#,##0.00);0.00");
@@ -633,6 +637,31 @@ describe("Activity Log", () => {
       expect(values(events, FIRST_DATA_ROW)[4]).toBe("Capitalization");
     });
 
+    it("refuses a workbook too large for Excel with a clear message pointing to the CSV", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      await authedInject(app, { method: "POST", url: "/api/masters/centers", payload: { code: "Center-TooBig" } });
+      setXlsxMaxEntriesForTests(1);
+      try {
+        const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
+        expect(res.statusCode).toBe(413);
+        expect(res.json().code).toBe("TOO_LARGE_FOR_XLSX");
+        expect(res.json().error).toMatch(/use the CSV export/);
+      } finally {
+        setXlsxMaxEntriesForTests(XLSX_MAX_ENTRIES);
+      }
+    });
+
+    it("format=csv streams the Changes layout (any size)", async () => {
+      await authedInject(app, { method: "POST", url: "/api/assets", payload: NEW_ASSET });
+      const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export?format=csv" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      const lines = res.rawPayload.toString("utf-8").split("\r\n").filter((l) => l.length > 0);
+      expect(lines[0]!.charCodeAt(0)).toBe(0xfeff);
+      expect(lines[1]).toBe("Event ID,Date & Time (IST),User,FAR ID / Master,Module,Action,Field,Old Value,New Value,Request");
+      expect(lines.some((l) => /ACT-TEST-1,Capitalization,Capitalization Create,Component 1 Opening Cost,,10000,$/.test(l))).toBe(true);
+    });
+
     it("an empty result still returns a valid workbook with just the header band on both sheets", async () => {
       const res = await authedInject(app, { method: "GET", url: "/api/audit-log/activity/export" });
       expect(res.statusCode).toBe(200);
@@ -640,5 +669,32 @@ describe("Activity Log", () => {
       expect(events.rowCount).toBe(HEADER_ROW);
       expect(changes.rowCount).toBe(HEADER_ROW);
     });
+  });
+});
+
+describe("Activity Log workbook: never past Excel's row limit", () => {
+  it("continues on 'Changes (2)', 'Changes (3)' instead of truncating, each with its header band", async () => {
+    // A tiny limit stands in for Excel's 1,048,576: 5 header rows + 3 data rows per sheet.
+    const book = createActivityWorkbook({ generatedLine: "g", filterLine: "f", appUrl: null }, 8);
+    const event = (i: number) => ({
+      eventId: `A-${i}`, timestamp: "t", financialYear: "FY", user: "u", module: "m", action: "a", record: `R-${i}`,
+      center: "", submittedBy: "", approvedBy: "", requestId: null, reason: "", notes: ""
+    });
+    for (let i = 1; i <= 4; i++) {
+      book.addEvent(event(i), [1, 2].map((n) => ({ field: `F${n}`, oldValue: null, newValue: n, amount: false })));
+    }
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load((await book.finish()) as any);
+    expect(workbook.worksheets.map((w) => w.name).sort()).toEqual(["Changes", "Changes (2)", "Changes (3)", "Events", "Events (2)"]);
+    const dataRows = (name: string) => {
+      const sheet = workbook.getWorksheet(name)!;
+      const out: string[] = [];
+      for (let r = 6; r <= sheet.rowCount; r++) out.push(String((sheet.getRow(r).getCell(3).value ?? sheet.getRow(r).getCell(1).value) as string));
+      return out;
+    };
+    // 8 change rows in total, 3 per sheet, none lost; every sheet has its own header.
+    expect([...dataRows("Changes"), ...dataRows("Changes (2)"), ...dataRows("Changes (3)")]).toHaveLength(8);
+    expect(workbook.getWorksheet("Changes (3)")!.getRow(5).getCell(3).value).toBe("Field");
+    expect(workbook.getWorksheet("Events (2)")!.getRow(6).getCell(1).value).toBe("A-4");
   });
 });

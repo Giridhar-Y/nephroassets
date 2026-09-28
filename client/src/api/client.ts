@@ -467,9 +467,12 @@ export function fetchActivityLogSummary(
 // downloads it directly via the Content-Disposition header, this just builds the URL.
 // No cursor/limit (the export always covers every matching row, not one page).
 export function getActivityLogExportUrl(
-  params: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo"> = {}
+  params: Pick<FetchActivityLogParams, "farId" | "actor" | "category" | "dateFrom" | "dateTo"> = {},
+  /** "csv": the Changes layout, streamed, any size (the fallback without background storage). */
+  format: "xlsx" | "csv" = "xlsx"
 ): string {
   const search = new URLSearchParams();
+  if (format === "csv") search.set("format", "csv");
   if (params.farId) search.set("farId", params.farId);
   if (params.actor) search.set("actor", params.actor);
   if (params.category) search.set("category", params.category);

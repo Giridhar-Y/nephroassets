@@ -5,7 +5,9 @@ import { requirePermission } from "../auth/middleware.js";
 import { centerScopeSql } from "../auth/centerScope.js";
 import type { AuthedUser } from "../auth/middleware.js";
 import { isoToDDMMYYYY } from "./bulkParse.js";
-import { createActivityWorkbook, deriveChanges, toExportEvent } from "./activityLogExport.js";
+import { CHANGES_CSV_HEADER, changesCsvLines, createActivityWorkbook, deriveChanges, toExportEvent } from "./activityLogExport.js";
+import { csvLine } from "./assetsExport.js";
+import { PassThrough } from "node:stream";
 
 const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "edit", "delete", "masters"] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -71,8 +73,20 @@ export const activityLogExportQuerySchema = z.object({
   actor: z.string().optional(),
   dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  category: z.enum(CATEGORIES).optional()
+  category: z.enum(CATEGORIES).optional(),
+  // "csv": the Changes layout, streamed (any size; the direct fallback when there's no
+  // background-export storage). Ignored by the background job, which always writes CSV.
+  format: z.enum(["xlsx", "csv"]).optional().default("xlsx")
 });
+
+/** Above this many entries the direct .xlsx is refused with a message pointing to the
+ *  CSV: about 12 Changes rows per entry keeps a workbook well inside Excel's per-sheet
+ *  row limit (and within server memory); larger exports belong in the CSV. */
+export const XLSX_MAX_ENTRIES = 50_000;
+let xlsxMaxEntries = XLSX_MAX_ENTRIES;
+export function setXlsxMaxEntriesForTests(n: number): void {
+  xlsxMaxEntries = n;
+}
 
 // Same shape as the two above minus cursor/limit — the summary's counts must reflect
 // exactly the same filters the list/export use, just without `category` itself (see
@@ -415,6 +429,33 @@ export function buildActivityLogFilterSummaryText(q: FilterQuery): string {
 // matching that deletion itself is admin-only) — merging it in here does widen who can
 // see a delete/undo record, a deliberate, requested consequence of consolidating onto one
 // editor+ page rather than an oversight.
+/** The feed, oldest first, in keyset-paged batches (the cursor keeps microseconds). */
+async function* activityBatches(db: Awaited<ReturnType<typeof getPool>>, conditions: string[], params: unknown[]): AsyncGenerator<RawRow[]> {
+  let cursor: Cursor | null = null;
+  for (;;) {
+    const batchConditions = [...conditions];
+    const batchParams = [...params];
+    if (cursor) {
+      batchParams.push(cursor.createdAt, cursor.src, cursor.id);
+      batchConditions.push(`(c.created_at, c.src, c.id) > ($${batchParams.length - 2}::timestamptz, $${batchParams.length - 1}, $${batchParams.length})`);
+    }
+    const batchWhereClause = batchConditions.length > 0 ? `WHERE ${batchConditions.join(" AND ")}` : "";
+    batchParams.push(EXPORT_BATCH_SIZE);
+    const { rows } = await db.query<RawRow>(
+      `${COMBINED_SELECT_SQL}
+       ${batchWhereClause}
+       ORDER BY c.created_at ASC, c.src ASC, c.id ASC
+       LIMIT $${batchParams.length}`,
+      batchParams
+    );
+    if (rows.length === 0) return;
+    yield rows;
+    const last = rows[rows.length - 1]!;
+    cursor = { createdAt: last.cursor_ts, src: last.src, id: Number(last.id) };
+    if (rows.length < EXPORT_BATCH_SIZE) return;
+  }
+}
+
 export default async function activityLogRoutes(app: FastifyInstance) {
   app.get("/api/audit-log/activity", { preHandler: requirePermission("activityLog", "view") }, async (req, reply) => {
     const parsed = activityLogQuerySchema.safeParse(req.query);
@@ -521,6 +562,39 @@ export default async function activityLogRoutes(app: FastifyInstance) {
     const filterSummaryText = buildActivityLogFilterSummaryText(q);
 
     const exportDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    if (q.format === "csv") {
+      reply.header("Content-Type", "text/csv; charset=utf-8");
+      reply.header("Content-Disposition", `attachment; filename="activity-log-${exportDate}.csv"`);
+      const stream = new PassThrough();
+      reply.send(stream);
+      stream.write(String.fromCharCode(0xfeff));
+      stream.write(csvLine([`Filters applied: ${filterSummaryText}`]) + "\r\n");
+      stream.write(CHANGES_CSV_HEADER + "\r\n");
+      try {
+        for await (const rows of activityBatches(db, conditions, params)) {
+          const lines: string[] = [];
+          for (const r of rows) lines.push(...changesCsvLines(toExportEvent(r, fyStartMonth, fyStartDay), deriveChanges(r)));
+          if (lines.length) stream.write(lines.join("\r\n") + "\r\n");
+        }
+        stream.end();
+      } catch (err) {
+        app.log.error(err, "Activity log CSV export failed");
+        stream.destroy(err instanceof Error ? err : new Error("Export failed."));
+      }
+      return reply;
+    }
+
+    const { rows: countRows } = await db.query<{ n: string }>(`${COMBINED_WITH_SQL} SELECT COUNT(*) AS n ${COMBINED_JOIN_SQL} ${whereClause}`, params);
+    const entryCount = Number(countRows[0]!.n);
+    if (entryCount > xlsxMaxEntries) {
+      reply.code(413);
+      return {
+        error: `This export has ${entryCount.toLocaleString("en-IN")} entries, too many for an Excel workbook (up to ${xlsxMaxEntries.toLocaleString("en-IN")}). Narrow the date range, or use the CSV export.`,
+        code: "TOO_LARGE_FOR_XLSX"
+      };
+    }
 
     // In-memory workbook, not a streaming writer piped into the response: that
     // combination produced corrupted .xlsx files on a cold start (see git history). The
@@ -536,32 +610,8 @@ export default async function activityLogRoutes(app: FastifyInstance) {
         appUrl: req.headers.host ? `${proto}://${req.headers.host}` : null
       });
 
-      let cursor: Cursor | null = null;
-      for (;;) {
-        const batchConditions = [...conditions];
-        const batchParams = [...params];
-        if (cursor) {
-          batchParams.push(cursor.createdAt, cursor.src, cursor.id);
-          batchConditions.push(
-            `(c.created_at, c.src, c.id) > ($${batchParams.length - 2}::timestamptz, $${batchParams.length - 1}, $${batchParams.length})`
-          );
-        }
-        const batchWhereClause = batchConditions.length > 0 ? `WHERE ${batchConditions.join(" AND ")}` : "";
-        batchParams.push(EXPORT_BATCH_SIZE);
-
-        const { rows } = await db.query<RawRow>(
-          `${COMBINED_SELECT_SQL}
-           ${batchWhereClause}
-           ORDER BY c.created_at ASC, c.src ASC, c.id ASC
-           LIMIT $${batchParams.length}`,
-          batchParams
-        );
-        if (rows.length === 0) break;
+      for await (const rows of activityBatches(db, conditions, params)) {
         for (const r of rows) book.addEvent(toExportEvent(r, fyStartMonth, fyStartDay), deriveChanges(r));
-
-        const last = rows[rows.length - 1]!;
-        cursor = { createdAt: last.cursor_ts, src: last.src, id: Number(last.id) };
-        if (rows.length < EXPORT_BATCH_SIZE) break;
       }
 
       const buffer = await book.finish();
