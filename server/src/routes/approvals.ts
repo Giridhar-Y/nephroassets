@@ -29,6 +29,7 @@ import {
   describeStep,
   flowInputSchema,
   isApprovalModule,
+  labelSteps,
   listAssignments,
   listFlows,
   matchForRole,
@@ -146,20 +147,24 @@ export default async function approvalsRoutes(app: FastifyInstance) {
   }
 
   /** Workflows (with the step labels and which modules use each), assignments, settings. */
+  // Queries run one after another, never in parallel: each parallel query needs its own
+  // pooled connection, and on Vercel the database pooler's 15 session slots are often
+  // mostly held by frozen instances, so a burst of parallel checkouts fails
+  // (EMAXCONNSESSION) where one-at-a-time succeeds.
   app.get("/api/approvals/workflows", manage, async () => {
     const db = await getPool();
-    const [flows, assignments, config] = await Promise.all([
-      listFlows(db),
-      listAssignments(db),
-      db.query<{ aging_days: number }>(`SELECT aging_days FROM approval_config WHERE id = TRUE`)
-    ]);
+    const flows = await listFlows(db);
+    const assignments = await listAssignments(db);
+    const config = await db.query<{ aging_days: number }>(`SELECT aging_days FROM approval_config WHERE id = TRUE`);
+    // Every workflow's steps labelled in one pass (2 queries in total, not 2 per workflow).
+    const labelled = await labelSteps(db, flows.flatMap((f) => f.steps));
+    let offset = 0;
     return {
-      workflows: await Promise.all(
-        flows.map(async (f) => {
-          const using = assignments.filter((a) => a.workflowId === f.id);
-          return { ...f, chain: (await snapshotFlow(db, f)).steps.map(describeStep), assignmentCount: using.length, modules: [...new Set(using.flatMap((a) => a.modules))] };
-        })
-      ),
+      workflows: flows.map((f) => {
+        const using = assignments.filter((a) => a.workflowId === f.id);
+        const chain = labelled.slice(offset, (offset += f.steps.length)).map(describeStep);
+        return { ...f, chain, assignmentCount: using.length, modules: [...new Set(using.flatMap((a) => a.modules))] };
+      }),
       assignments,
       agingDays: config.rows[0]?.aging_days ?? 3
     };
@@ -265,12 +270,11 @@ export default async function approvalsRoutes(app: FastifyInstance) {
       return { error: "You don't have access to this." };
     }
     const db = await getPool();
-    const [users, roles] = await Promise.all([
-      db.query<{ id: string; display_name: string | null; username: string; role: string; status: string }>(
-        `SELECT id, display_name, username, role, status FROM users ORDER BY COALESCE(display_name, username)`
-      ),
-      db.query<{ id: string; name: string; active: boolean }>(`SELECT id, name, active FROM roles ORDER BY name`)
-    ]);
+    // One after another (see GET /api/approvals/workflows).
+    const users = await db.query<{ id: string; display_name: string | null; username: string; role: string; status: string }>(
+      `SELECT id, display_name, username, role, status FROM users ORDER BY COALESCE(display_name, username)`
+    );
+    const roles = await db.query<{ id: string; name: string; active: boolean }>(`SELECT id, name, active FROM roles ORDER BY name`);
     return {
       users: users.rows.map((u) => ({ id: Number(u.id), name: u.display_name || u.username, username: u.username, role: u.role, active: u.status === "active" })),
       roles: roles.rows.map((r) => ({ id: Number(r.id), name: r.name, active: r.active }))

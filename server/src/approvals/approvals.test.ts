@@ -682,6 +682,12 @@ describe("workflow edits and deactivation", () => {
   it("deactivating a workflow that's still assigned is blocked; once unassigned it deactivates", async () => {
     const f = await createFlow("Guarded", [step("any", ["user", fm1.id])]);
     const a = await assign({ modules: ["capitalization", "masters"], workflowId: f.id });
+    await createFlow("Unused", [step("any", ["role", roleId["finance manager"]!]), step("all", ["user", fm1.id], ["user", cfo.id])]);
+    const list = (await authedInject(app, { method: "GET", url: "/api/approvals/workflows" })).json();
+    expect(list.workflows.map((w: { name: string; chain: string[]; assignmentCount: number; modules: string[] }) => [w.name, w.chain, w.assignmentCount, w.modules])).toEqual([
+      ["Guarded", ["apr-fm1"], 1, ["capitalization", "masters"]],
+      ["Unused", ["Finance Manager", "apr-fm1 and apr-cfo (all must approve)"], 0, []]
+    ]);
     const res = await authedInject(app, { method: "POST", url: `/api/approvals/workflows/${f.id}/active`, payload: { active: false } });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatch(/still used by 1 assignment \(Capitalization, Masters\)/);
