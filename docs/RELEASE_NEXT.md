@@ -15,8 +15,9 @@ DevOps handover when the release is signed off.
 ## At a glance for DevOps
 
 - **Env vars:** no new or changed variables. `.env` stays as it is.
-- **Database:** additive only (new tables and columns, two widened CHECK constraints).
-  Applied automatically, once, on the first boot of the new image. No manual SQL.
+- **Database:** additive only (new tables and columns, three widened CHECK constraints,
+  and a one-time conversion of approval rules into workflows + assignments). Applied
+  automatically, once, on the first boot of the new image. No manual SQL.
 - **First boot:** the one-time schema update takes seconds. It clears the cached report
   figures once, and the built-in pre-warm then rebuilds them (allow up to ~15 minutes).
 - **Behaviour after deploy:** unchanged until an admin configures an approval workflow
@@ -383,6 +384,75 @@ Commits: `fb0a102`, `866ee41`, `cfe05d8` (sidebar); `4b6ba74` (Activity Log expo
 ### 8. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
 Windows can reserve the default port. No effect on the app, the image or the deployment.
+
+### 9. Approval Workflows: reusable workflows + assignments
+Commits: `26b0465` (server), `41fa17e` (client)
+
+**What changed**
+- Approval setup is no longer one list of rules per module. It is now:
+  - **Workflows** (reusable): a name, a description, active/inactive, and ordered steps.
+    Steps work exactly as before (users and/or roles, "any one" or "all must approve").
+  - **Assignments**: one or more modules, submitter roles (or "any role"), an optional
+    amount threshold, and the workflow to use.
+- **Matching:** the most specific assignment wins: an amount threshold beats a specific
+  role, which beats "any role"; between two thresholds that both apply, the higher one
+  wins. Two assignments that are equally specific for the same entry are **refused when
+  saved**, with a message naming the other assignment. No match = the change applies
+  immediately, as before.
+- **In-flight requests keep their workflow.** Each request stores the workflow (and now
+  its version) as it stood at submission; editing the workflow only affects new requests.
+- **Deactivating a workflow that is still assigned is blocked** ("still used by N
+  assignments (…). Move them to another workflow or remove them first"), so no module is
+  silently left without approval. An assignment can't use an inactive workflow.
+- **Screen:** Approval Workflows now has three tabs:
+  - **Workflows:** cards with the step chain (e.g. Finance Manager → CFO), "Used by N
+    modules" and status. Create / Edit / Duplicate / Deactivate. Create and edit are a
+    three-stage stepper (Name → Steps → Review, with a plain-English summary). Editing a
+    workflow in use says "Used by N modules. Changes apply to new requests only."
+  - **Assignments:** a table of assignments (module multi-select with "Select all asset
+    modules", roles, optional amount, workflow), plus an overview matrix (modules × roles)
+    showing which workflow applies in each cell, with amount tiers.
+  - **Test a scenario:** pick module, submitter role and amount; shows the workflow and
+    its approvers, or "No approval, applies immediately".
+  - The "Flag requests waiting longer than N days" setting moved to the page header.
+- **Activity Log:** a new **Approval Workflows** category logs every workflow create,
+  edit, deactivate/reactivate and every assignment create, edit and removal: who, when,
+  and old → new values (steps as readable text, e.g. "Finance Manager → CFO"). It is in
+  the Activity Log export too. These entries are kept out of the Masters category.
+
+**Database (automatic on first boot, `server/src/db/approvalsSchema.sql`)**
+- New tables `approval_flows` (unique name, case-insensitive) and `approval_assignments`.
+- New column `approval_config.legacy_rules_migrated` (default false).
+- `master_activity_log` action CHECK widened for the workflow/assignment actions
+  (guarded, runs once).
+- **One-time conversion** (inside the locked schema update, flagged so it runs once per
+  database): the existing per-module rules in `approval_workflows` become workflows +
+  assignments. Identical step chains become one shared workflow; assignments identical
+  but for the module are merged. Rules the old "first match" order could never reach are
+  dropped, so every entry is routed exactly as before (tested case by case).
+  - **Company database:** approvals have never been set up there, so the conversion
+    creates nothing and just sets the flag.
+  - **Forward-only and non-destructive:** `approval_workflows` is left untouched (no
+    longer read or written), so an older build still boots against the upgraded database.
+
+**Env vars:** none.
+
+**DevOps must do / expect:** nothing. First boot adds the tables and runs the conversion
+in well under a second. Behaviour is unchanged until an admin sets up workflows.
+
+**Verified**
+- Server tests: 1078/1078. New tests: matching precedence (including the real submission
+  path agreeing with the scenario tester), the conflict block (on create, on edit, "any
+  role" vs "any role", thresholds on modules without amounts), a tie that bypassed the
+  check being refused at submission rather than guessed, the migration (merging, dropped
+  unreachable rules, a 105-case grid of module × role × amount matching the old
+  first-match result exactly, a second boot doing nothing, an empty table), snapshot
+  stability when a workflow is edited mid-request (old request finishes on version 1,
+  the next one gets version 2), the deactivation block, unique names, and the Activity
+  Log entries with before → after.
+- Client tests: 157/157 (summaries, matching and overview-matrix cells).
+- Client and server builds pass.
+- UAT on personal Vercel: pending (see the update below once done).
 
 ---
 
