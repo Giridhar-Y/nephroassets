@@ -288,11 +288,13 @@ export function Layout() {
 
   // Sidebar menu: which edges have more items beyond them (for the fades), and keeping
   // the current page's item in view on load/navigation (e.g. Admin at the bottom).
-  const navRef = useRef<HTMLElement>(null);
+  // A callback ref (state), not useRef: the listeners must follow whichever <nav> element
+  // is actually mounted; a ref read once in an effect kept listening to a replaced one.
+  const [navEl, setNavEl] = useState<HTMLElement | null>(null);
   const [navEdges, setNavEdges] = useState({ top: false, bottom: false });
   const location = useLocation();
   useEffect(() => {
-    const nav = navRef.current;
+    const nav = navEl;
     if (!nav) return;
     const update = () => {
       const top = nav.scrollTop > 1;
@@ -309,10 +311,10 @@ export function Layout() {
       window.removeEventListener("resize", update);
       resize?.disconnect();
     };
-  }, [collapsed, navItems.length]);
+  }, [navEl, collapsed, navItems.length]);
   useEffect(() => {
-    navRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView?.({ block: "nearest" });
-  }, [location.pathname, collapsed]);
+    navEl?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView?.({ block: "nearest" });
+  }, [navEl, location.pathname, collapsed]);
 
   return (
     <div className="flex h-full print:block print:h-auto">
@@ -341,7 +343,7 @@ export function Layout() {
         {/* Only the menu scrolls; the header above and the footer below stay put. */}
         <div className="relative min-h-0 flex-1">
         <nav
-          ref={navRef}
+          ref={setNavEl}
           aria-label="Main"
           className="no-scrollbar h-full space-y-1 overflow-y-auto overscroll-contain px-3 pb-2"
         >
