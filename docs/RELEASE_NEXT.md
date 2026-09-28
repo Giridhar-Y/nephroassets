@@ -504,6 +504,58 @@ in well under a second. Behaviour is unchanged until an admin sets up workflows.
   ₹10,00,000 or more. While it's there, those four modules need approval on personal;
   remove the two assignments to switch approvals off again.
 
+### 10. Indian number grouping for every amount
+Commit: `96f218b`
+
+**What changed**
+- Every rupee amount on screen now uses Indian grouping: **₹10,00,000**, ₹8,10,66,831,
+  and negatives as (₹12,34,567). Before this, amounts showed Western grouping
+  (₹1,000,000) everywhere: the Register, Dashboard, reports, Approval Workflows (overview
+  matrix, assignment summaries, Test a scenario), the Tasks request panel and forms.
+  - Cause: the app's shared formatter used Intl's "accounting" currency style (for the
+    parentheses on negatives), and the ICU locale data behind Chrome and Node gives that
+    style Western grouping for en-IN. The standard style has lakh/crore grouping. The
+    formatter now uses the standard style and adds the parentheses itself. Output is
+    otherwise unchanged (same rounding, same parentheses, same paise in the approval panel).
+  - It went unnoticed because the tests compared the formatter's output with itself. A
+    new test pins the exact text (₹10,00,000, (₹12,34,567), ₹22,63,256.50).
+- Audit Reconciliation's check messages ("…doesn't match Closing cost by ₹…", "Capped at
+  Gross Block: ₹…") printed amounts with no grouping at all (₹10000.00). They now read
+  ₹10,000.00.
+- Counts in the export toasts (Register, Register Summary, Activity Log) and in the
+  Register export's row-limit messages use Indian grouping (2,19,329) instead of the
+  browser's or server's own locale.
+- Exports are unchanged: amounts in CSV/.xlsx are plain numbers (Excel formats them).
+
+**Database:** none. Audit Reconciliation's cached results are keyed afresh
+(`audit-reconciliation-v2:`), so figures cached before the deploy, which carry the old
+message text, are recomputed rather than shown. Old rows expire on their own.
+
+**Env vars:** none. **DevOps must do / expect:** nothing. After the deploy the first
+Audit Reconciliation view of each date is computed once (on Docker, directly).
+
+**Verified:** client tests 160/160 (new formatter tests), server tests 1088/1088.
+
+### 11. Database pooler safety check (developers only)
+Commit: `2146312`
+
+A new server test fails if code ever uses a Postgres feature that only works on a single
+database session: session advisory locks, session `SET`, `LISTEN`/`NOTIFY`, temporary
+tables, cursors or named prepared statements. The app uses none today (checked by
+hand as well: the schema and approval-config locks are `pg_advisory_xact_lock` inside a
+transaction, the pre-warm's `SET LOCAL` is inside a transaction, and the export,
+pre-warm and bulk-apply "locks" are single-statement row leases). So it works both
+through a transaction-mode pooler and on a direct Postgres connection (Docker).
+
+**Database / env vars:** none. **DevOps must do / expect:** nothing.
+
+**Personal-Vercel configuration note (not part of the company deployment):** the
+`EMAXCONNSESSION` 500s seen during UAT show personal Vercel's `DATABASE_URL` is on
+Supabase's **session** pooler (port 5432 on the `pooler.supabase.com` host), limited to
+15 connections in total. The transaction pooler (port 6543 on the same host) is the
+intended setting for serverless and needs no code change. Docker connects to its own
+Postgres directly and is unaffected.
+
 ---
 
 ## Known limitations
