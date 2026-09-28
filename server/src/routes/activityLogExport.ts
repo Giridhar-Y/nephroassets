@@ -50,7 +50,12 @@ const FIELD_LABELS: Record<string, string> = {
   active: "Active",
   grants: "Permissions",
   added: "Permissions added",
-  removed: "Permissions removed"
+  removed: "Permissions removed",
+  steps: "Approval steps",
+  modules: "Modules",
+  submitterRoles: "Submitted by",
+  amountThreshold: "Amount threshold",
+  workflow: "Workflow"
 };
 const FIELD_ORDER = new Map(Object.keys(FIELD_LABELS).map((k, i) => [k, i]));
 

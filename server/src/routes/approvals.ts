@@ -24,14 +24,20 @@ import { finalizeBulk, startBulkResubmit } from "../approvals/intercept.js";
 import {
   APPROVAL_MODULE_KEYS,
   APPROVAL_MODULES,
+  assignmentInputSchema,
+  deleteAssignment,
   describeStep,
+  flowInputSchema,
   isApprovalModule,
-  listRules,
-  matchRule,
-  moduleRulesSchema,
-  replaceModuleRules,
+  listAssignments,
+  listFlows,
+  matchForRole,
+  matchWorkflow,
   roleIdForName,
-  snapshotRule
+  saveAssignment,
+  saveFlow,
+  setFlowActive,
+  snapshotFlow
 } from "../approvals/workflows.js";
 
 // Approval workflows HTTP API. Who may APPROVE is never a permission check here — it's
@@ -132,30 +138,113 @@ export default async function approvalsRoutes(app: FastifyInstance) {
 
   // --- Configuration ------------------------------------------------------------------
 
-  app.get("/api/approvals/workflows", { preHandler: requirePermission("approvals", "manageWorkflows") }, async () => {
+  const manage = { preHandler: requirePermission("approvals", "manageWorkflows") };
+  const idOf = (req: FastifyRequest) => Number((req.params as { id: string }).id);
+  function invalid(reply: FastifyReply, error: z.ZodError) {
+    reply.code(400);
+    return { error: error.issues[0]?.message ?? "Invalid input.", details: error.flatten() };
+  }
+
+  /** Workflows (with the step labels and which modules use each), assignments, settings. */
+  app.get("/api/approvals/workflows", manage, async () => {
     const db = await getPool();
-    const [rules, config] = await Promise.all([listRules(db), db.query<{ aging_days: number }>(`SELECT aging_days FROM approval_config WHERE id = TRUE`)]);
-    return { rules, agingDays: config.rows[0]?.aging_days ?? 3 };
+    const [flows, assignments, config] = await Promise.all([
+      listFlows(db),
+      listAssignments(db),
+      db.query<{ aging_days: number }>(`SELECT aging_days FROM approval_config WHERE id = TRUE`)
+    ]);
+    return {
+      workflows: await Promise.all(
+        flows.map(async (f) => {
+          const using = assignments.filter((a) => a.workflowId === f.id);
+          return { ...f, chain: (await snapshotFlow(db, f)).steps.map(describeStep), assignmentCount: using.length, modules: [...new Set(using.flatMap((a) => a.modules))] };
+        })
+      ),
+      assignments,
+      agingDays: config.rows[0]?.aging_days ?? 3
+    };
   });
 
-  app.put("/api/approvals/workflows/:module", { preHandler: requirePermission("approvals", "manageWorkflows") }, async (req, reply) => {
-    const { module } = req.params as { module: string };
-    if (!isApprovalModule(module)) {
-      reply.code(404);
-      return { error: "Unknown module." };
+  app.post("/api/approvals/workflows", manage, async (req, reply) => {
+    const parsed = flowInputSchema.safeParse(req.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    try {
+      return await saveFlow(await getPool(), null, parsed.data, req.user!.id);
+    } catch (err) {
+      return send(reply, err);
     }
-    const parsed = moduleRulesSchema.safeParse(req.body);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: parsed.error.issues[0]?.message ?? "Invalid workflow.", details: parsed.error.flatten() };
+  });
+
+  app.put("/api/approvals/workflows/:id", manage, async (req, reply) => {
+    const parsed = flowInputSchema.safeParse(req.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    try {
+      return await saveFlow(await getPool(), idOf(req), parsed.data, req.user!.id);
+    } catch (err) {
+      return send(reply, err);
     }
+  });
+
+  app.post("/api/approvals/workflows/:id/active", manage, async (req, reply) => {
+    const parsed = z.object({ active: z.boolean() }).safeParse(req.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    try {
+      return await setFlowActive(await getPool(), idOf(req), parsed.data.active, req.user!.id);
+    } catch (err) {
+      return send(reply, err);
+    }
+  });
+
+  app.post("/api/approvals/assignments", manage, async (req, reply) => {
+    const parsed = assignmentInputSchema.safeParse(req.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    try {
+      return await saveAssignment(await getPool(), null, parsed.data, req.user!.id);
+    } catch (err) {
+      return send(reply, err);
+    }
+  });
+
+  app.put("/api/approvals/assignments/:id", manage, async (req, reply) => {
+    const parsed = assignmentInputSchema.safeParse(req.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    try {
+      return await saveAssignment(await getPool(), idOf(req), parsed.data, req.user!.id);
+    } catch (err) {
+      return send(reply, err);
+    }
+  });
+
+  app.delete("/api/approvals/assignments/:id", manage, async (req, reply) => {
+    try {
+      await deleteAssignment(await getPool(), idOf(req), req.user!.id);
+      return { ok: true };
+    } catch (err) {
+      return send(reply, err);
+    }
+  });
+
+  /** "Test a scenario": which workflow an entry in this module, by this role (omitted =
+   *  a role no assignment names), at this amount would go through. */
+  app.get("/api/approvals/test", manage, async (req, reply) => {
+    const parsed = z
+      .object({ module: z.string().refine(isApprovalModule, "Unknown module."), roleId: z.coerce.number().int().positive().optional(), amount: z.coerce.number().optional() })
+      .safeParse(req.query);
+    if (!parsed.success) return invalid(reply, parsed.error);
     const db = await getPool();
-    const error = await replaceModuleRules(db, module, parsed.data.rules, req.user!.id);
-    if (error) {
-      reply.code(400);
-      return { error };
+    try {
+      const match = await matchWorkflow(db, parsed.data.module as keyof typeof APPROVAL_MODULES, parsed.data.roleId ?? null, parsed.data.amount ?? null);
+      if (!match) return { applies: false };
+      const snapshot = await snapshotFlow(db, match.flow);
+      return {
+        applies: true,
+        workflow: { id: match.flow.id, name: match.flow.name },
+        assignmentId: match.assignment.id,
+        steps: snapshot.steps.map((s) => ({ rule: s.rule, label: describeStep(s), assignees: s.assignees }))
+      };
+    } catch (err) {
+      return send(reply, err);
     }
-    return { rules: await listRules(db, module) };
   });
 
   app.put("/api/approvals/config", { preHandler: requirePermission("approvals", "manageWorkflows") }, async (req, reply) => {
@@ -197,9 +286,14 @@ export default async function approvalsRoutes(app: FastifyInstance) {
       return { error: "Unknown module." };
     }
     const db = await getPool();
-    const rule = await matchRule(db, parsed.data.module, req.user!.role, parsed.data.amount ?? null);
-    if (!rule) return { applies: false };
-    const snapshot = await snapshotRule(db, rule);
+    let match;
+    try {
+      match = await matchForRole(db, parsed.data.module, req.user!.role, parsed.data.amount ?? null);
+    } catch (err) {
+      return send(reply, err);
+    }
+    if (!match) return { applies: false };
+    const snapshot = await snapshotFlow(db, match.flow);
     return { applies: true, nextReviewers: describeStep(snapshot.steps[0]!), steps: snapshot.steps.map(describeStep) };
   });
 

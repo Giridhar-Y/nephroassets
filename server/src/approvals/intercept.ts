@@ -12,7 +12,7 @@ import {
   stepRecipients,
   type RequestRow
 } from "./engine.js";
-import { APPROVAL_MODULES, matchRule, snapshotRule, type ApprovalModule } from "./workflows.js";
+import { APPROVAL_MODULES, matchForRole, roleMayNeedApproval, snapshotFlow, type ApprovalModule } from "./workflows.js";
 
 // Called by each write route AFTER its own validation and just before it would write.
 // Returns null when the route should go ahead and write (no workflow applies to this
@@ -76,8 +76,8 @@ export async function submitIfWorkflow(req: FastifyRequest, reply: FastifyReply,
   const resubmitId = Number(req.headers["x-approval-resubmit"]);
   if (resubmitId) return resubmit(db, reply, resubmitId, user.id, spec, payload, farIds, centers);
 
-  const rule = await matchRule(db, spec.module, user.role, spec.amount ?? null);
-  if (!rule) return null;
+  const match = await matchForRole(db, spec.module, user.role, spec.amount ?? null);
+  if (!match) return null;
 
   // One open request per asset: two pending changes to the same asset (a disposal and
   // an edit, say) would each have been reviewed against a state the other is about to
@@ -94,7 +94,7 @@ export async function submitIfWorkflow(req: FastifyRequest, reply: FastifyReply,
     }
   }
 
-  const snapshot = await snapshotRule(db, rule);
+  const snapshot = await snapshotFlow(db, match.flow);
   const client = await db.connect();
   try {
     await client.query("BEGIN");
@@ -177,15 +177,6 @@ export interface BulkRowSpec {
   data: Record<string, unknown>;
 }
 
-async function roleHasAnyRule(db: pg.Pool, module: ApprovalModule, role: string): Promise<boolean> {
-  const { rows } = await db.query<{ n: string }>(
-    `SELECT COUNT(*) AS n FROM approval_workflows w JOIN roles r ON r.id = ANY(w.initiator_role_ids)
-     WHERE w.module = $1 AND LOWER(r.name) = LOWER($2)`,
-    [module, role]
-  );
-  return Number(rows[0]!.n) > 0;
-}
-
 export async function captureBulkChunkIfWorkflow(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -208,7 +199,7 @@ export async function captureBulkChunkIfWorkflow(
       ).rows[0]
     : undefined;
   if (!draft) {
-    if (!(await roleHasAnyRule(db, spec.module, user.role))) return null;
+    if (!(await roleMayNeedApproval(db, spec.module, user.role))) return null;
     const { rows } = await db.query<RequestRow>(
       `INSERT INTO change_requests (module, kind, summary, payload, status, maker_id, batch_token)
        VALUES ($1, 'bulk', $2, $3, 'draft', $4, $5) RETURNING *`,
@@ -322,8 +313,8 @@ export async function finalizeBulk(db: pg.Pool, user: { id: number; role: string
     const resubmitted = (await loadActions(client, Number(draft.id))).length > 0;
     let snapshot = draft.workflow_snapshot;
     if (!resubmitted) {
-      const rule = await matchRule(client, draft.module, (await client.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [user.id])).rows[0]!.role, amount);
-      snapshot = rule ? await snapshotRule(client, rule) : null;
+      const match = await matchForRole(client, draft.module, (await client.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [user.id])).rows[0]!.role, amount);
+      snapshot = match ? await snapshotFlow(client, match.flow) : null;
     }
     // A capture's centers/FAR IDs can be large; kept for scoping (approvers need access
     // to every center the file touches) and the asset-history "pending" strip.

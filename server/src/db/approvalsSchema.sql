@@ -141,3 +141,54 @@ END $$;
 -- the Activity Log can show every approver (step, who, when, comment), not only the maker.
 ALTER TABLE asset_activity_log ADD COLUMN IF NOT EXISTS approval_request_id BIGINT;
 ALTER TABLE master_activity_log ADD COLUMN IF NOT EXISTS approval_request_id BIGINT;
+
+-- Reusable workflows + assignments (replaces the per-module rules above). A workflow is
+-- a named, ordered chain of steps; an assignment says which modules and submitter roles
+-- use it, optionally only at or above an amount. The most specific assignment wins
+-- (workflows.ts's matchAssignment). approval_workflows above is the LEGACY rule table:
+-- converted once into these (migrateLegacyRules, flag below), then never read or
+-- written again. It's kept so an older build still boots against this database.
+CREATE TABLE IF NOT EXISTS approval_flows (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  -- Same shape as approval_workflows.steps.
+  steps        JSONB NOT NULL,
+  -- Bumped on every edit; a request's snapshot records the version it started with.
+  version      INTEGER NOT NULL DEFAULT 1,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by   BIGINT REFERENCES users(id),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_flows_name ON approval_flows (LOWER(name));
+
+CREATE TABLE IF NOT EXISTS approval_assignments (
+  id           BIGSERIAL PRIMARY KEY,
+  modules      TEXT[] NOT NULL,
+  -- Empty = any role.
+  role_ids     BIGINT[] NOT NULL DEFAULT '{}',
+  min_amount   NUMERIC,
+  workflow_id  BIGINT NOT NULL REFERENCES approval_flows(id),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by   BIGINT REFERENCES users(id),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE approval_config ADD COLUMN IF NOT EXISTS legacy_rules_migrated BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Workflow/assignment changes are logged in master_activity_log (Activity Log category
+-- "Approval Workflows"). Widens the action CHECK once, guarded on its own definition.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'master_activity_log_action_check' AND pg_get_constraintdef(oid) LIKE '%approval_assignment_delete%'
+  ) THEN
+    ALTER TABLE master_activity_log DROP CONSTRAINT IF EXISTS master_activity_log_action_check;
+    ALTER TABLE master_activity_log ADD CONSTRAINT master_activity_log_action_check
+      CHECK (action IN ('center_create', 'center_update', 'sub_classification_create', 'sub_classification_update', 'status_create', 'status_update', 'role_create', 'role_update',
+                        'approval_workflow_create', 'approval_workflow_update', 'approval_workflow_deactivate', 'approval_workflow_activate',
+                        'approval_assignment_create', 'approval_assignment_update', 'approval_assignment_delete'));
+  END IF;
+END $$;

@@ -9,7 +9,7 @@ import { CHANGES_CSV_HEADER, changesCsvLines, createActivityWorkbook, deriveChan
 import { csvLine } from "./assetsExport.js";
 import { PassThrough } from "node:stream";
 
-const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "edit", "delete", "masters"] as const;
+const CATEGORIES = ["capitalization", "addition", "transfer", "disposal", "edit", "delete", "masters", "approvals"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Record<Category, string> = {
@@ -19,7 +19,8 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   disposal: "Disposal",
   edit: "Asset Edit",
   delete: "Delete",
-  masters: "Masters"
+  masters: "Masters",
+  approvals: "Approval Workflows"
 };
 
 // Which single asset_activity_log action each of the four "create" categories maps to
@@ -54,8 +55,20 @@ const MASTERS_ACTION_LABELS: Record<string, string> = {
   sub_classification_create: "Sub Classification Created",
   sub_classification_update: "Sub Classification Updated",
   status_create: "Status Created",
-  status_update: "Status Updated"
+  status_update: "Status Updated",
+  role_create: "Role Created",
+  role_update: "Role Updated",
+  approval_workflow_create: "Workflow Created",
+  approval_workflow_update: "Workflow Edited",
+  approval_workflow_deactivate: "Workflow Deactivated",
+  approval_workflow_activate: "Workflow Reactivated",
+  approval_assignment_create: "Assignment Created",
+  approval_assignment_update: "Assignment Edited",
+  approval_assignment_delete: "Assignment Removed"
 };
+// Approval Workflows configuration is logged in master_activity_log too (it isn't
+// asset-scoped either), under its own category.
+const isApprovalConfigAction = (action: string) => action.startsWith("approval_");
 
 const activityLogQuerySchema = z.object({
   farId: z.string().optional(),
@@ -202,9 +215,12 @@ export function buildActivityLogConditions(q: FilterQuery, user: Pick<AuthedUser
     conditions.push(`u.username ILIKE $${params.length}`);
   }
   if (q.category) {
-    if (q.category === "delete" || q.category === "masters") {
-      params.push(q.category === "delete" ? "delete" : "masters");
+    if (q.category === "delete") {
+      params.push("delete");
       conditions.push(`c.src = $${params.length}`);
+    } else if (q.category === "masters" || q.category === "approvals") {
+      params.push("masters");
+      conditions.push(`c.src = $${params.length} AND c.action ${q.category === "approvals" ? "" : "NOT "}LIKE 'approval%'`);
     } else {
       params.push("activity");
       conditions.push(`c.src = $${params.length}`);
@@ -270,7 +286,7 @@ export function shapeRow(r: RawRow): ShapedItem {
     category = "delete";
     details = { type: DELETE_ACTION_LABELS[r.action] ?? r.action, reason: r.reason, ...r.details };
   } else if (r.src === "masters") {
-    category = "masters";
+    category = isApprovalConfigAction(r.action) ? "approvals" : "masters";
     details = { type: MASTERS_ACTION_LABELS[r.action] ?? r.action, ...r.details };
   } else {
     category = CATEGORY_BY_CREATE_ACTION[r.action] ?? "capitalization";
@@ -529,11 +545,12 @@ export default async function activityLogRoutes(app: FastifyInstance) {
       disposal: 0,
       edit: 0,
       delete: 0,
-      masters: 0
+      masters: 0,
+      approvals: 0
     };
     for (const row of rows) {
       const category: Category =
-        row.src === "delete" ? "delete" : row.src === "masters" ? "masters" : (CATEGORY_BY_CREATE_ACTION[row.action] ?? "capitalization");
+        row.src === "delete" ? "delete" : row.src === "masters" ? (isApprovalConfigAction(row.action) ? "approvals" : "masters") : (CATEGORY_BY_CREATE_ACTION[row.action] ?? "capitalization");
       counts[category] += Number(row.count);
     }
     return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };

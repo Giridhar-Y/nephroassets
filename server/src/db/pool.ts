@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { backfillUserPermissions, grantApprovalPermissionsOnce, seedBuiltInRoles } from "../auth/permissions.js";
+import { convertLegacyRules, migrateLegacyRules } from "../approvals/workflows.js";
 
 // Return DATE columns as raw "YYYY-MM-DD" strings instead of pg's default JS Date
 // (which applies local-timezone conversion and can shift the day). The calc engine
@@ -148,6 +149,8 @@ function schemaFingerprint(): string {
     .update(readFileSync(path.resolve(import.meta.dirname, "calcFunction.sql"), "utf-8"))
     .update(readFileSync(path.resolve(import.meta.dirname, "approvalsSchema.sql"), "utf-8"))
     .update(grantApprovalPermissionsOnce.toString())
+    .update(migrateLegacyRules.toString())
+    .update(convertLegacyRules.toString())
     .digest("hex");
 }
 
@@ -607,4 +610,6 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
   await seedBuiltInRoles(db);
   await backfillUserPermissions(db);
   await grantApprovalPermissionsOnce(db);
+  // Per-module approval rules -> reusable workflows + assignments, once per database.
+  await migrateLegacyRules(db);
 }

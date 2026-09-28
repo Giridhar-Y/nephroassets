@@ -9,7 +9,14 @@ export type MasterActivityAction =
   | "status_create"
   | "status_update"
   | "role_create"
-  | "role_update";
+  | "role_update"
+  | "approval_workflow_create"
+  | "approval_workflow_update"
+  | "approval_workflow_deactivate"
+  | "approval_workflow_activate"
+  | "approval_assignment_create"
+  | "approval_assignment_update"
+  | "approval_assignment_delete";
 
 /** Writes one row to master_activity_log — a Centers/Sub Classifications/Statuses
  *  create/rename/deactivate/reactivate. See schema.sql's table comment for what
