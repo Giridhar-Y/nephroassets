@@ -1,9 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalStatusBadge } from "./ApprovalStatusBadge.js";
-import { ruleSummary } from "../../pages/WorkflowsPage.js";
+import { assignmentSummary, matrixCell, pickAssignment } from "../../lib/approvalWorkflows.js";
 import { approvalMessage, approvalSummary } from "../../lib/useApprovalPreview.js";
-import type { Directory } from "../../api/approvals.js";
+import type { ApprovalModule, Assignment, Directory, ModuleInfo } from "../../api/approvals.js";
 import { formatCurrency } from "../../lib/format.js";
 
 afterEach(cleanup);
@@ -17,30 +17,67 @@ const DIR: Directory = {
   users: [{ id: 10, name: "CFO Priya", username: "priya", role: "admin", active: true }]
 };
 
-describe("workflow builder summary", () => {
+const MODULES: ModuleInfo[] = [
+  { key: "capitalization", label: "Capitalization", hasAmount: true },
+  { key: "additions", label: "Additions", hasAmount: true }
+];
+
+describe("assignment summary", () => {
   it("reads as plain English, matching Finance's example", () => {
     expect(
-      ruleSummary(
-        { name: "", initiatorRoleIds: [1], minAmount: null, steps: [{ rule: "any", assignees: [{ type: "role", id: 2 }] }, { rule: "any", assignees: [{ type: "user", id: 10 }] }] },
-        "Capitalization",
+      assignmentSummary(
+        { roleIds: [1], minAmount: null, modules: ["capitalization"] },
+        [{ rule: "any", assignees: [{ type: "role", id: 2 }] }, { rule: "any", assignees: [{ type: "user", id: 10 }] }],
+        MODULES,
         DIR
       )
     ).toBe("When an Editor submits a Capitalization: Finance Manager → CFO Priya");
   });
 
-  it("includes the threshold, several initiator roles, and the any/all rule for multi-approver steps", () => {
+  it("includes the threshold, several modules and roles, and the any/all rule for multi-approver steps", () => {
     expect(
-      ruleSummary(
-        {
-          name: "",
-          initiatorRoleIds: [1, 3],
-          minAmount: 1000000,
-          steps: [{ rule: "all", assignees: [{ type: "role", id: 2 }, { type: "user", id: 10 }] }]
-        },
-        "Additions",
+      assignmentSummary(
+        { roleIds: [1, 3], minAmount: 1000000, modules: ["capitalization", "additions"] },
+        [{ rule: "all", assignees: [{ type: "role", id: 2 }, { type: "user", id: 10 }] }],
+        MODULES,
         DIR
       )
-    ).toBe(`When an Editor or Admin submits an Additions of ${formatCurrency(1000000)} or more: Finance Manager and CFO Priya (all must approve)`);
+    ).toBe(`When an Editor or Admin submits Capitalization or Additions of ${formatCurrency(1000000)} or more: Finance Manager and CFO Priya (all must approve)`);
+    expect(assignmentSummary({ roleIds: [], minAmount: null, modules: ["additions"] }, [{ rule: "any", assignees: [{ type: "role", id: 2 }] }], MODULES, DIR)).toBe(
+      "When anyone submits an Additions: Finance Manager"
+    );
+  });
+});
+
+describe("assignment matching (overview matrix)", () => {
+  const A = (id: number, workflowId: number, roleIds: number[], minAmount: number | null, modules: ApprovalModule[] = ["capitalization"]): Assignment => ({
+    id,
+    workflowId,
+    roleIds,
+    minAmount,
+    modules,
+    updatedAt: ""
+  });
+  const list = [A(1, 100, [], null), A(2, 200, [1], null), A(3, 300, [1], 100000), A(4, 400, [], 1000000)];
+
+  it("threshold > specific role > any role, higher threshold first", () => {
+    expect(pickAssignment(list, "capitalization", 1, 5)).toMatchObject({ workflowId: 200 });
+    expect(pickAssignment(list, "capitalization", 2, 5)).toMatchObject({ workflowId: 100 });
+    expect(pickAssignment(list, "capitalization", 1, 200000)).toMatchObject({ workflowId: 300 });
+    expect(pickAssignment(list, "capitalization", 1, 2000000)).toMatchObject({ workflowId: 400 });
+    expect(pickAssignment(list, "additions", 1, 2000000)).toBeNull();
+    expect(pickAssignment([A(1, 1, [1], null), A(2, 2, [1, 2], null)], "capitalization", 1, null)).toBe("conflict");
+  });
+
+  it("a matrix cell shows the default plus each amount tier that applies to that role", () => {
+    expect(matrixCell(list, "capitalization", 1)).toEqual({
+      base: 200,
+      tiers: [
+        { minAmount: 100000, workflowId: 300 },
+        { minAmount: 1000000, workflowId: 400 }
+      ]
+    });
+    expect(matrixCell(list, "capitalization", null)).toEqual({ base: 100, tiers: [{ minAmount: 1000000, workflowId: 400 }] });
   });
 });
 

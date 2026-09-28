@@ -40,7 +40,8 @@ const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   disposal: "Disposal",
   edit: "Asset Edit",
   delete: "Delete",
-  masters: "Masters"
+  masters: "Masters",
+  approvals: "Approval Workflows"
 };
 
 // Each of the four asset-lifecycle categories gets its own color pulled from the
@@ -57,7 +58,8 @@ const CATEGORY_BADGE_CLASS: Record<ActivityCategory, string> = {
   disposal: "bg-brand-rose/30 text-ink",
   edit: "bg-brand-deepBlue/10 text-ink",
   delete: "bg-accent-light text-accent-hover",
-  masters: "bg-gray-100 text-gray-700"
+  masters: "bg-gray-100 text-gray-700",
+  approvals: "bg-brand-skyDeep/10 text-ink"
 };
 
 function CategoryBadge({ category }: { category: ActivityCategory }) {

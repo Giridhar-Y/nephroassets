@@ -68,5 +68,7 @@ export {
   ArrowRightRegular as StepArrowIcon,
   CommentRegular as CommentIcon,
   PersonSwapRegular as ReassignIcon,
-  ArrowUndoRegular as WithdrawIcon
+  ArrowUndoRegular as WithdrawIcon,
+  CopyRegular as DuplicateIcon,
+  BeakerRegular as ScenarioIcon
 } from "@fluentui/react-icons";

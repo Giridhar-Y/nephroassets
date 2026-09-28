@@ -30,18 +30,39 @@ export interface WorkflowStep {
   rule: "any" | "all";
   assignees: Assignee[];
 }
-export interface WorkflowRule {
-  id?: number;
+/** A reusable workflow: a named chain of approval steps. */
+export interface WorkflowInput {
   name: string;
-  initiatorRoleIds: number[];
-  minAmount: number | null;
+  description: string;
   steps: WorkflowStep[];
 }
-export interface WorkflowRuleRow extends WorkflowRule {
+export interface Workflow extends WorkflowInput {
   id: number;
-  module: ApprovalModule;
-  position: number;
+  active: boolean;
+  version: number;
   updatedAt: string;
+  /** Plain-English label per step ("Finance Manager", "A and B (all must approve)"). */
+  chain: string[];
+  assignmentCount: number;
+  /** The modules its assignments cover. */
+  modules: ApprovalModule[];
+}
+/** Which modules and submitter roles use a workflow. roleIds empty = any role. */
+export interface AssignmentInput {
+  modules: ApprovalModule[];
+  roleIds: number[];
+  minAmount: number | null;
+  workflowId: number;
+}
+export interface Assignment extends AssignmentInput {
+  id: number;
+  updatedAt: string;
+}
+export interface ScenarioResult {
+  applies: boolean;
+  workflow?: { id: number; name: string };
+  assignmentId?: number;
+  steps?: Array<{ rule: "any" | "all"; label: string; assignees: Array<Assignee & { label: string }> }>;
 }
 
 export interface Directory {
@@ -126,9 +147,20 @@ export function isPendingApproval(value: unknown): value is { pendingApproval: P
 }
 
 export const fetchApprovalModules = () => request<ModuleInfo[]>("/api/approvals/modules");
-export const fetchWorkflows = () => request<{ rules: WorkflowRuleRow[]; agingDays: number }>("/api/approvals/workflows");
-export const saveModuleRules = (module: ApprovalModule, rules: WorkflowRule[]) =>
-  request<{ rules: WorkflowRuleRow[] }>(`/api/approvals/workflows/${module}`, { method: "PUT", body: JSON.stringify({ rules }) });
+export const fetchWorkflows = () => request<{ workflows: Workflow[]; assignments: Assignment[]; agingDays: number }>("/api/approvals/workflows");
+export const saveWorkflow = (id: number | null, body: WorkflowInput) =>
+  request<Workflow>(id ? `/api/approvals/workflows/${id}` : "/api/approvals/workflows", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
+export const setWorkflowActive = (id: number, active: boolean) =>
+  request<Workflow>(`/api/approvals/workflows/${id}/active`, { method: "POST", body: JSON.stringify({ active }) });
+export const saveAssignment = (id: number | null, body: AssignmentInput) =>
+  request<Assignment>(id ? `/api/approvals/assignments/${id}` : "/api/approvals/assignments", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
+export const deleteAssignment = (id: number) => request<{ ok: boolean }>(`/api/approvals/assignments/${id}`, { method: "DELETE" });
+export const testScenario = (module: ApprovalModule, roleId: number | null, amount: number | null) => {
+  const p = new URLSearchParams({ module });
+  if (roleId !== null) p.set("roleId", String(roleId));
+  if (amount !== null && Number.isFinite(amount)) p.set("amount", String(amount));
+  return request<ScenarioResult>(`/api/approvals/test?${p}`);
+};
 export const saveAgingDays = (agingDays: number) =>
   request<{ agingDays: number }>("/api/approvals/config", { method: "PUT", body: JSON.stringify({ agingDays }) });
 export const fetchDirectory = () => request<Directory>("/api/approvals/directory");
