@@ -386,7 +386,7 @@ Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`,
 Windows can reserve the default port. No effect on the app, the image or the deployment.
 
 ### 9. Approval Workflows: reusable workflows + assignments
-Commits: `26b0465` (server), `41fa17e` (client)
+Commits: `26b0465` (server), `41fa17e` (client), `ba6e104` and `c6c2385` (fixes from UAT)
 
 **What changed**
 - Approval setup is no longer one list of rules per module. It is now:
@@ -451,8 +451,58 @@ in well under a second. Behaviour is unchanged until an admin sets up workflows.
   the next one gets version 2), the deactivation block, unique names, and the Activity
   Log entries with before → after.
 - Client tests: 157/157 (summaries, matching and overview-matrix cells).
-- Client and server builds pass.
-- UAT on personal Vercel: pending (see the update below once done).
+- Client and server builds pass. Docker boot check green on `97dc023`, `ba6e104` and
+  `c6c2385` (first boot runs the conversion; second boot skips it).
+- UAT on personal Vercel (2026-09-28, as Krupal), all through the screen:
+  - First boot converted the personal database's rules: it had none, so nothing was
+    created and the flag was set.
+  - Created **"Standard finance review"** (test_fm → Krupal) with the stepper; the Review
+    stage read "Each request goes to test_fm → Krupal, in that order."
+  - **Duplicate** prefilled "Copy of Standard finance review"; renamed it
+    **"High-value review"** and added a third step (Center Manager role).
+  - Assigned Standard finance review to **Capitalization, Additions, Disposals and
+    Transfers** (any role). While picking modules, the amount field disabled itself with
+    "Transfers has no amount."
+  - Adding High-value review for Capitalization at any amount was **refused**: "Conflicts
+    with the assignment that uses "Standard finance review" (Capitalization, submitted by
+    any role, at any amount). Both are equally specific…". With a ₹10,00,000 threshold it
+    saved.
+  - The overview matrix shows Standard finance review in every role's column for the four
+    modules, with "≥ ₹1,000,000: High-value review" under Capitalization, and "No
+    approval" for the other six modules.
+  - Test a scenario: Capitalization by an editor → Standard finance review (2 steps); at
+    ₹15,00,000 → High-value review (3 steps); Masters → "No approval, applies
+    immediately". The Capitalization form's own preview agrees (₹50,000: test_fm → Krupal;
+    ₹15,00,000: test_fm → Krupal → Center Manager; Edit Asset and Masters: none).
+  - Cards: "Used by 4 modules" / "Used by 1 module". **Deactivate** on Standard finance
+    review was refused ("still used by 1 assignment (Capitalization, Transfers, Additions,
+    Disposals)…") and it stayed Active. **Edit** showed "Used by 4 modules. Changes apply
+    to new requests only."
+  - Activity Log → Approval Workflows (5, then 6): two workflows created, two assignments
+    created, one description edit shown as old (struck through) → new. The refused
+    conflict and deactivation wrote nothing. The CSV export has the same entries, one line
+    per field ("Approval steps: test_fm → Krupal", "Amount threshold: ₹10,00,000 or
+    more").
+- Fixed during UAT:
+  - `ba6e104`: on a narrow window the page header's actions (here the aging setting)
+    squeezed the title onto two lines; they now wrap below it (every page). The Activity
+    Log's description now names the new category. An assignment's conflict message clears
+    as soon as the form is changed.
+  - `c6c2385`: right after the UAT deploys, the page failed to load with a 500
+    (`EMAXCONNSESSION`: the Supabase session pooler's 15 connections were all taken, most
+    likely by instances from the earlier deploys; it cleared within about 20 minutes). The workflows list was making a burst of parallel
+    queries (two per workflow); it now runs its queries one at a time and labels every
+    workflow in one pass. Server tests: 1078/1078.
+  - **Not an issue for the company deployment:** Docker connects to its own Postgres
+    directly, with no Supabase pooler. On personal Vercel, a page that fires several calls
+    at once can still get a 500 for a few minutes after a deploy, until the old instances'
+    connections are released (seen before, on 2026-09-26). The lasting fix there is
+    Supabase's transaction-mode pooler (port 6543) in `DATABASE_URL`: a personal-Vercel
+    setting, not part of this release.
+- The test setup is still on personal: "Standard finance review" on Capitalization,
+  Additions, Disposals and Transfers, plus "High-value review" for Capitalization at
+  ₹10,00,000 or more. While it's there, those four modules need approval on personal;
+  remove the two assignments to switch approvals off again.
 
 ---
 
