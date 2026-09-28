@@ -899,7 +899,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
     if (rowCount > EXPORT_ROW_LIMIT) {
       reply.code(400);
       return {
-        error: `This export would include ${rowCount.toLocaleString()} rows, more than this deployment can reliably generate in one request right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString()}). Narrow your filters — by Center, Sub Classification, Status, or Date Acquired range — and try again with a smaller result set.`
+        error: `This export would include ${rowCount.toLocaleString("en-IN")} rows, more than this deployment can reliably generate in one request right now (limit: ${EXPORT_ROW_LIMIT.toLocaleString("en-IN")}). Narrow your filters — by Center, Sub Classification, Status, or Date Acquired range — and try again with a smaller result set.`
       };
     }
 
@@ -928,7 +928,7 @@ export default async function assetsExportRoutes(app: FastifyInstance) {
       if (rowCount > XLSX_EXPORT_ROW_LIMIT) {
         reply.code(400);
         return {
-          error: `This export would include ${rowCount.toLocaleString()} rows — the styled Excel format supports up to ${XLSX_EXPORT_ROW_LIMIT.toLocaleString()}. Narrow your filters, or use the regular Export button, which switches to a background CSV export automatically above this size.`
+          error: `This export would include ${rowCount.toLocaleString("en-IN")} rows — the styled Excel format supports up to ${XLSX_EXPORT_ROW_LIMIT.toLocaleString("en-IN")}. Narrow your filters, or use the regular Export button, which switches to a background CSV export automatically above this size.`
         };
       }
       const buffer = await buildXlsxExport(db, { whereClause, params, computedConditions, computedWhereClause, exportColumns, asAt, fy, ctx });

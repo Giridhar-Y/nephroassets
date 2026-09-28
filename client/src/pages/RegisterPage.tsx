@@ -188,7 +188,7 @@ export function RegisterPage() {
     createJob: createExportJob,
     fetchJob: fetchExportJob,
     startingMessage: "Large export started in the background — you'll get a notification when it's ready.",
-    buildCompletedMessage: (job) => `Register export ready (${job.processedRows.toLocaleString()} rows).`,
+    buildCompletedMessage: (job) => `Register export ready (${job.processedRows.toLocaleString("en-IN")} rows).`,
     // No background storage on this server (Docker without S3/R2): the direct export
     // has no time limit there.
     fallback: () => runRegisterExport()

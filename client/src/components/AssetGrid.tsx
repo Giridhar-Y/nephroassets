@@ -576,8 +576,8 @@ export function AssetGrid({
                       const col = slot.col;
                       const pinnedOffset = pinnedLeft.get(col.id);
                       const rendered = col.render(item);
-                      // Accounting-style negatives (formatCurrency's currencySign:
-                      // "accounting") already show as "(₹1,234)" — colour those Crimson,
+                      // Accounting-style negatives (formatCurrency's parentheses)
+                      // already show as "(₹1,234)" — colour those Crimson,
                       // the brand's one red, wherever a right-aligned figure happens to be
                       // negative. Cheap to detect from the formatted text alone; no need
                       // to know which columns can even go negative.

@@ -114,10 +114,13 @@ type ReconciliationRow = {
 // names which clamp and by how much, so a reviewer sees why this row's figures don't
 // match the naive roll-forward instead of an unexplained gap — the dep check above
 // already accounts for it in the pass/fail itself, this is purely explanatory.
+/** "₹1,23,456.78": Indian grouping, 2 decimals, for the check messages. */
+const rupees2 = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 function buildCapAdjustmentMessage(cappedSum: number, flooredSum: number): string | null {
   const parts: string[] = [];
-  if (cappedSum > EPSILON) parts.push(`Capped at Gross Block: ₹${cappedSum.toFixed(2)}`);
-  if (flooredSum > EPSILON) parts.push(`Floored at Zero: ₹${flooredSum.toFixed(2)}`);
+  if (cappedSum > EPSILON) parts.push(`Capped at Gross Block: ${rupees2(cappedSum)}`);
+  if (flooredSum > EPSILON) parts.push(`Floored at Zero: ${rupees2(flooredSum)}`);
   return parts.length > 0 ? parts.join("; ") : null;
 }
 
@@ -160,7 +163,7 @@ function buildComponentFigures(r: ReconciliationRow) {
     costCheckDelta,
     costCheckMessage: costCheckPass
       ? "Opening + Additions − Deletions matches Closing cost."
-      : `Opening + Additions − Deletions doesn't match Closing cost by ₹${Math.abs(costCheckDelta).toFixed(2)}.`,
+      : `Opening + Additions − Deletions doesn't match Closing cost by ${rupees2(Math.abs(costCheckDelta))}.`,
     accDepOpeningSum,
     periodDepSum,
     accDepRemovedSum,
@@ -172,14 +175,14 @@ function buildComponentFigures(r: ReconciliationRow) {
     depCheckDelta,
     depCheckMessage: depCheckPass
       ? "Opening Acc Dep + Period Depreciation − Acc Dep Removed matches Closing Acc Dep."
-      : `Opening Acc Dep + Period Depreciation − Acc Dep Removed doesn't match Closing Acc Dep by ₹${Math.abs(depCheckDelta).toFixed(2)}.`,
+      : `Opening Acc Dep + Period Depreciation − Acc Dep Removed doesn't match Closing Acc Dep by ${rupees2(Math.abs(depCheckDelta))}.`,
     nbvOpeningSum,
     nbvClosingSum,
     nbvCheckPass,
     nbvCheckDelta,
     nbvCheckMessage: nbvCheckPass
       ? "Closing Gross Block − Closing Acc Dep matches Closing NBV."
-      : `Closing Gross Block − Closing Acc Dep doesn't match Closing NBV by ₹${Math.abs(nbvCheckDelta).toFixed(2)}.`
+      : `Closing Gross Block − Closing Acc Dep doesn't match Closing NBV by ${rupees2(Math.abs(nbvCheckDelta))}.`
   };
 }
 

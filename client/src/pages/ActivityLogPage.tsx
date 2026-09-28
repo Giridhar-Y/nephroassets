@@ -235,8 +235,8 @@ export function ActivityLogPage() {
   >({
     createJob: createActivityLogExportJob,
     fetchJob: fetchActivityLogExportJob,
-    startingMessage: `Exporting ${(exportTotal ?? 0).toLocaleString()} activity log entries in the background. We'll notify you when it's ready.`,
-    buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString()} entries).`,
+    startingMessage: `Exporting ${(exportTotal ?? 0).toLocaleString("en-IN")} activity log entries in the background. We'll notify you when it's ready.`,
+    buildCompletedMessage: (job) => `Activity Log export ready (${job.processedRows.toLocaleString("en-IN")} entries).`,
     fallback: () => runCsvExport()
   });
   const exporting = backgroundExporting || exportingSync || exportingCsv;

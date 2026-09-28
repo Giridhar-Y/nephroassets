@@ -4,10 +4,8 @@ import { DashboardPage } from "./DashboardPage.js";
 import type { DashboardFastSummary, DashboardTotals, DashboardTrend } from "../api/client.js";
 import { formatCurrency, formatCurrencyCompact, formatDateTime } from "../lib/format.js";
 
-// Expected currency text always comes from the app's own formatCurrency, never
-// hand-typed — Intl's actual digit grouping for large values isn't the plain
-// lakh/crore grouping you'd get by eye (currencySign: "accounting" changes it), so a
-// hand-typed expectation would be guessing at ICU behavior instead of testing against it.
+// Expected currency text comes from the app's own formatCurrency, so these tests follow
+// its output; lib/format.test.ts pins that output itself (lakh/crore grouping).
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

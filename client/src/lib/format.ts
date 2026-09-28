@@ -1,16 +1,18 @@
-// currencySign: "accounting" — the one built-in Intl option for exactly this: a negative
-// value renders in parentheses, "(₹1,000)", instead of a leading minus. Every other rule
-// (grouping, precision) is untouched, so every existing positive-value call site is
-// unaffected — this only changes how a negative one is signed.
-const currencyFormatter = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  currencySign: "accounting",
-  maximumFractionDigits: 0
-});
+// Indian grouping (₹10,00,000) with accounting-style negatives, "(₹1,000)". Intl's own
+// currencySign: "accounting" can't be used for this: ICU's en-IN *accounting* pattern
+// has Western grouping ("₹1,000,000" in Chrome and Node alike), while the standard
+// pattern has lakh/crore grouping. So the magnitude is formatted with the standard
+// pattern and the parentheses are added here.
+const currencyFormatter = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+
+/** A value that rounds to zero is shown unsigned ("₹0", not "(₹0)"). */
+function accounting(formatter: Intl.NumberFormat, value: number): string {
+  const magnitude = formatter.format(Math.abs(value));
+  return value < 0 && magnitude !== formatter.format(0) ? `(${magnitude})` : magnitude;
+}
 
 export function formatCurrency(value: number): string {
-  return currencyFormatter.format(value);
+  return accounting(currencyFormatter, value);
 }
 
 // Paise precision, for places that show an entered figure exactly as submitted (the
@@ -19,13 +21,12 @@ export function formatCurrency(value: number): string {
 const preciseCurrencyFormatter = new Intl.NumberFormat("en-IN", {
   style: "currency",
   currency: "INR",
-  currencySign: "accounting",
   minimumFractionDigits: 2,
   maximumFractionDigits: 6
 });
 
 export function formatCurrencyPrecise(value: number): string {
-  return preciseCurrencyFormatter.format(value);
+  return accounting(preciseCurrencyFormatter, value);
 }
 
 /** True when a formatCurrency (or similarly accounting-signed) string represents a

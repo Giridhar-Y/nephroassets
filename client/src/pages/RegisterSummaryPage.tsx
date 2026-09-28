@@ -116,7 +116,7 @@ export function RegisterSummaryPage() {
     createJob: createRegisterSummaryExportJob,
     fetchJob: fetchRegisterSummaryExportJob,
     startingMessage: "Register Summary export started in the background. We'll notify you when it's ready.",
-    buildCompletedMessage: (job) => `Register Summary export ready (${job.processedRows.toLocaleString()} assets summarised).`,
+    buildCompletedMessage: (job) => `Register Summary export ready (${job.processedRows.toLocaleString("en-IN")} assets summarised).`,
     // No background storage on this server (Docker without S3/R2): the direct export
     // has no time limit there.
     fallback: () => runDirectExport()

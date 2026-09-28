@@ -4,7 +4,6 @@ import { ApprovalStatusBadge } from "./ApprovalStatusBadge.js";
 import { assignmentSummary, matrixCell, pickAssignment } from "../../lib/approvalWorkflows.js";
 import { approvalMessage, approvalSummary } from "../../lib/useApprovalPreview.js";
 import type { ApprovalModule, Assignment, Directory, ModuleInfo } from "../../api/approvals.js";
-import { formatCurrency } from "../../lib/format.js";
 
 afterEach(cleanup);
 
@@ -42,7 +41,7 @@ describe("assignment summary", () => {
         MODULES,
         DIR
       )
-    ).toBe(`When an Editor or Admin submits Capitalization or Additions of ${formatCurrency(1000000)} or more: Finance Manager and CFO Priya (all must approve)`);
+    ).toBe(`When an Editor or Admin submits Capitalization or Additions of ₹10,00,000 or more: Finance Manager and CFO Priya (all must approve)`);
     expect(assignmentSummary({ roleIds: [], minAmount: null, modules: ["additions"] }, [{ rule: "any", assignees: [{ type: "role", id: 2 }] }], MODULES, DIR)).toBe(
       "When anyone submits an Additions: Finance Manager"
     );

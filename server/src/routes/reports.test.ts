@@ -473,7 +473,7 @@ describe("Audit Reconciliation report", () => {
     // explicitly rather than leaving an unexplained gap — the mechanism doing its job.
     expect(malformed.c1.depCheckPass).toBe(true);
     expect(malformed.c1.depCheckDelta).toBeCloseTo(0, 6);
-    expect(malformed.c1.capAdjustmentMessage).toBe("Capped at Gross Block: ₹10000.00");
+    expect(malformed.c1.capAdjustmentMessage).toBe("Capped at Gross Block: ₹10,000.00");
   });
 
   it("does not flag a disposal that is legitimately scheduled after AS_AT", async () => {
@@ -683,7 +683,7 @@ describe("Audit Reconciliation report", () => {
       if (row.getCell(1).value === "Test-Cap-Scenario-Malformed") {
         found = true;
         const cell = row.getCell(8);
-        expect(cell.note).toBe("Capped at Gross Block: ₹10000.00");
+        expect(cell.note).toBe("Capped at Gross Block: ₹10,000.00");
       }
     });
     expect(found).toBe(true);

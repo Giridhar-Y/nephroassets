@@ -122,7 +122,9 @@ export function auditReconciliationCacheKey(parts: {
   centerScope: Set<string> | null;
 }): string {
   const scopeKey = parts.centerScope === null ? null : [...parts.centerScope].sort();
-  return `audit-reconciliation:${JSON.stringify({
+  // "v2": the payload's check messages changed format (Indian-grouped amounts), so rows
+  // cached before that are never served; they expire on their own TTL.
+  return `audit-reconciliation-v2:${JSON.stringify({
     asAt: parts.asAt,
     fyStart: parts.fyStart,
     fyEnd: parts.fyEnd,

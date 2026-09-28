@@ -498,7 +498,7 @@ describe("Register Export: GET /api/assets/export", () => {
         expect(res.statusCode).toBe(400);
         expect(res.headers["content-type"]).not.toContain("text/csv"); // a real JSON error, not a file
         const body = res.json();
-        expect(body.error).toContain(`${(EXPORT_ROW_LIMIT + 1).toLocaleString()} rows`);
+        expect(body.error).toContain(`${(EXPORT_ROW_LIMIT + 1).toLocaleString("en-IN")} rows`);
         expect(body.error).toMatch(/narrow your filters/i);
       });
     });
@@ -836,7 +836,7 @@ describe("Register Export: GET /api/assets/export?format=xlsx (styled, two-tier 
         expect(res.statusCode).toBe(400);
         expect(res.headers["content-type"]).not.toContain("spreadsheetml");
         const body = res.json();
-        expect(body.error).toContain(`${(XLSX_EXPORT_ROW_LIMIT + 1).toLocaleString()} rows`);
+        expect(body.error).toContain(`${(XLSX_EXPORT_ROW_LIMIT + 1).toLocaleString("en-IN")} rows`);
         expect(body.error).toMatch(/background/i);
       });
     });

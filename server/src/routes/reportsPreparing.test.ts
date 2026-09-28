@@ -164,7 +164,7 @@ describe("requestPrewarm dispatch throttling", () => {
     const { rows } = await db.query<{ cache_key: string }>(`SELECT cache_key FROM report_totals_cache WHERE cache_key LIKE $1`, [
       `%"asAt":"${other.asAt}"%`
     ]);
-    expect(rows.map((r) => r.cache_key.split(":")[0])).toEqual(["audit-reconciliation"]);
+    expect(rows.map((r) => r.cache_key.split(":")[0])).toEqual(["audit-reconciliation-v2"]);
   });
 });
 
@@ -266,7 +266,7 @@ describe("custom Days-in-FY: one canonical resolution (review 2026-09-24)", () =
     const implicit = await authedInject(app, { method: "GET", url: `/api/reports/audit-reconciliation?asAt=${HISTORICAL}` });
     expect(explicit.statusCode).toBe(200);
     expect(implicit.json()).toEqual(explicit.json()); // the second was a cache hit on the first's row
-    const { rows } = await db.query<{ cache_key: string }>(`SELECT cache_key FROM report_totals_cache WHERE cache_key LIKE 'audit-reconciliation:%'`);
+    const { rows } = await db.query<{ cache_key: string }>(`SELECT cache_key FROM report_totals_cache WHERE cache_key LIKE 'audit-reconciliation-v2:%'`);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.cache_key).toContain('"daysInFy":360');
   });
@@ -361,7 +361,7 @@ describe("month-end pre-warming", () => {
     await prewarmDashboardCaches(db, { now });
 
     const may = await rowsFor("2026-05-31");
-    expect(may.map((r) => r.cache_key.split(":")[0]).sort()).toEqual(["audit-reconciliation", "dashboard-totals", "dashboard-trend"]);
+    expect(may.map((r) => r.cache_key.split(":")[0]).sort()).toEqual(["audit-reconciliation-v2", "dashboard-totals", "dashboard-trend"]);
     expect(may.every((r) => Number(r.hours) === 168)).toBe(true);
 
     await prewarmDashboardCaches(db, { now });
