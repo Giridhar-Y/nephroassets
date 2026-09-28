@@ -322,7 +322,7 @@ the paisa.
   stay small.
 
 ### 7. Sidebar scrolling; Activity Log export size
-Commits: `fb0a102` (sidebar), `4b6ba74` (Activity Log export)
+Commits: `fb0a102`, `866ee41`, `cfe05d8` (sidebar); `4b6ba74` (Activity Log export)
 
 **What changed**
 - **Sidebar:** since Tasks and Approval Workflows were added, the menu no longer fitted
@@ -356,7 +356,29 @@ Commits: `fb0a102` (sidebar), `4b6ba74` (Activity Log export)
 
 **Database / env vars:** none. **DevOps must do / expect:** nothing.
 
-**Verified:** see this entry's UAT notes below.
+**Verified**
+- Server tests: 1066/1066, including zeros left out of creates, the 413 refusal, the
+  streamed CSV, and sheets splitting into "Changes (2)"/"Changes (3)"/"Events (2)" with
+  no row lost. Client tests: 155/155.
+- UAT on personal Vercel (2026-09-28), sidebar measured in the browser:
+  - **1366×700 (laptop):** the menu (613px) overflows its 591px area; on the Admin page
+    it scrolled itself so Admin is fully visible. The scrollbar is 0px wide and
+    `overscroll-behavior` is `contain`. A real mouse wheel over the sidebar scrolled the
+    menu (22 → 0 → 22) while the page behind stayed at 0. The fades read correctly:
+    top off and bottom on at the top, top on and bottom off at the bottom. Tab focus on
+    the last item keeps it in view, and the footer stays fixed.
+  - **Collapsed, 1366×500:** the rail scrolls, and the highlighted Admin icon stays
+    visible after shrinking the window (a gap found during UAT: resizing didn't re-show
+    the active item; fixed in `cfe05d8`).
+  - **1920×1080:** everything fits, no fades, footer visible.
+- UAT, Activity Log export:
+  - The button shows "Exports 01-04-2026 to 31-03-2027 (current financial year)".
+  - A capitalization's Changes rows are its 9 filled-in fields (zeros gone).
+  - The whole financial year as .xlsx returns 413: "This export has 2,20,087 entries,
+    too many for an Excel workbook (up to 50,000). Narrow the date range, or use the CSV
+    export."
+  - The full-log CSV went from 3.96M lines / 480 MB to **2.21M lines / 276 MB**, still
+    with exactly 220,087 events.
 
 ### 8. Test tooling (developers only)
 Commit: `ec1ca4f`. The test Postgres port can be overridden with `TEST_PG_PORT`, because
@@ -372,9 +394,11 @@ Windows can reserve the default port. No effect on the app, the image or the dep
   center code. Entries written from this release on record the item (the "FAR ID /
   Master" column in the Activity Log export). Older entries can't be recovered: that
   information was never stored.
-- **The full Activity Log as CSV exceeds Excel's row limit.** The whole log (~220,000
-  entries) is several million Changes rows. It's a valid CSV for Power Query or a
-  database; for Excel, export a date range (the default is the current financial year).
+- **The full Activity Log as CSV exceeds Excel's row limit.** The whole log (220,087
+  entries today) is 2.21 million Changes rows, about twice Excel's 1,048,576-row limit.
+  It's a valid CSV for Power Query or a database; for Excel, export a date range (the
+  default is the current financial year). The .xlsx never truncates: it's refused above
+  50,000 entries, and its sheets continue on "Changes (2)" and so on at Excel's limit.
 
 ## Release checklist (run before "push to company")
 
