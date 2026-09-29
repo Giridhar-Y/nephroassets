@@ -556,6 +556,28 @@ Supabase's **session** pooler (port 5432 on the `pooler.supabase.com` host), lim
 intended setting for serverless and needs no code change. Docker connects to its own
 Postgres directly and is unaffected.
 
+Switched on personal on 2026-09-29, with lessons worth keeping:
+- Use Supabase's **shared** pooler string (Connect → Transaction pooler with **"Use IPv4
+  connection" on**: user `postgres.<project-ref>`, host `…pooler.supabase.com`, port
+  6543). The string shown with that switch off is the dedicated pooler on
+  `db.<ref>.supabase.co`, which has no IPv4 address: Vercel failed with `ENOTFOUND` and
+  GitHub Actions with `ENETUNREACH`, taking every route down until it was corrected.
+- `DATABASE_URL` lives in two places for personal: Vercel (the app) and the GitHub
+  Actions secret (the dashboard pre-warm job). A database password reset must be applied
+  to both; a stale copy failed the pre-warm from 28-09 21:23 IST and later all Vercel
+  logins (`password authentication failed`).
+- Personal Vercel was also missing `GITHUB_DISPATCH_REPO`, so a cold Dashboard date never
+  triggered the pre-warm on demand ("Pre-warm dispatch skipped"); it is now set to
+  `Giridhar-Y/nephroassets`.
+- Verified after the switch: 40 parallel page-load requests all 200 in 1.3 s (the burst
+  that used to fail with `EMAXCONNSESSION`); a manual pre-warm run passed (12 min 39 s)
+  and today's Dashboard, trend and Audit Reconciliation then answered from cache in
+  130–156 ms; Tasks and Approval Workflows load; a full Register background export
+  (219,329 rows, 46.6 MB CSV on R2) completed in about 20 s; a 3-row bulk capitalization
+  file went capture → finalize → background apply in 2.5 s. The test assets
+  (UAT-POOL-01..03) were soft-deleted with a reason and the temporary assignment removed.
+  No errors in the deployment's logs.
+
 ---
 
 ## Known limitations
