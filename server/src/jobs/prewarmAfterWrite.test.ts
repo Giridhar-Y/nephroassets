@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPool } from "../db/pool.js";
 import { invalidateReportTotalsCache } from "../db/reportTotalsCache.js";
-import { dispatchAfterWrite } from "./prewarmRequests.js";
+import { dispatchAfterWrite, requestPrewarm } from "./prewarmRequests.js";
+import { requireFySettings } from "../routes/reports.js";
 import { kickPrewarmAfterWrite, resetPrewarmPassStateForTests, runPrewarmPass } from "./dashboardPrewarm.js";
 
 // Re-warming after a write clears the report cache: on Vercel a GitHub workflow dispatch
@@ -18,7 +19,9 @@ function deferred() {
 }
 
 beforeEach(async () => {
-  await (await getPool()).query(`DELETE FROM report_prewarm_dispatch`);
+  const db = await getPool();
+  await db.query(`DELETE FROM report_prewarm_dispatch`);
+  await db.query(`DELETE FROM report_prewarm_requests`);
   vi.stubEnv("GITHUB_DISPATCH_TOKEN", "test-token");
   vi.stubEnv("GITHUB_DISPATCH_REPO", "owner/repo");
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
@@ -109,5 +112,54 @@ describe("long-running server: one pass at a time", () => {
     gate.resolve();
     await running;
     expect(kickPrewarmAfterWrite(db, t0 + 1, pass)).toBe(true);
+  });
+});
+
+describe("Vercel: a viewer arriving right after a write doesn't start a second run", () => {
+  const todayIst = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  /** What a viewer's cold load does (routes/reports.ts's preparing()). */
+  async function coldLoad(asAt: string) {
+    const db = await getPool();
+    const fy = (await requireFySettings(db, { asAt }))!;
+    await requestPrewarm(db, { asAt: fy.asAt, fyStart: fy.fyStart, fyEnd: fy.fyEnd });
+  }
+
+  beforeEach(async () => {
+    vi.stubEnv("VERCEL", "1");
+    const year = Number(todayIst.slice(0, 4));
+    const fyStartYear = Number(todayIst.slice(5, 7)) >= 4 ? year : year - 1;
+    await (await getPool()).query(
+      `INSERT INTO settings (id, as_at, fy_start, fy_end, days_in_fy) VALUES (TRUE, $1, $2, $3, 365)
+       ON CONFLICT (id) DO UPDATE SET as_at = EXCLUDED.as_at, fy_start = EXCLUDED.fy_start, fy_end = EXCLUDED.fy_end`,
+      [todayIst, `${fyStartYear}-04-01`, `${fyStartYear + 1}-03-31`]
+    );
+  });
+
+  it("edit + viewer opening today: one run; a date nobody asked for still dispatches as before", async () => {
+    await invalidateReportTotalsCache(await getPool()); // the edit
+    expect(dispatches()).toBe(1);
+    await coldLoad(todayIst); // the viewer, moments later
+    expect(dispatches()).toBe(1);
+    await coldLoad(`${Number(todayIst.slice(0, 4)) - (Number(todayIst.slice(5, 7)) >= 4 ? 0 : 1)}-06-15`); // an unrequested date
+    expect(dispatches()).toBe(2);
+  });
+
+  it("if the write's dispatch failed, a viewer's cold load still starts the run", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("nope", { status: 500 })));
+    await invalidateReportTotalsCache(await getPool());
+    expect((await (await getPool()).query(`SELECT COUNT(*)::int AS n FROM report_prewarm_requests`)).rows[0].n).toBe(0);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    await coldLoad(todayIst);
+    expect(dispatches()).toBe(1);
+  });
+
+  it("a write held back by the throttle doesn't re-mark dates, so a viewer after the 10 minutes can dispatch", async () => {
+    const db = await getPool();
+    await invalidateReportTotalsCache(db);
+    await db.query(`UPDATE report_prewarm_requests SET requested_at = NOW() - INTERVAL '11 minutes'`);
+    await invalidateReportTotalsCache(db); // throttled: no dispatch, no re-mark
+    expect(dispatches()).toBe(1);
+    await coldLoad(todayIst);
+    expect(dispatches()).toBe(2);
   });
 });

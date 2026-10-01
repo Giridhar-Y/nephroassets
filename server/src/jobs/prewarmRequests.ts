@@ -98,7 +98,8 @@ export async function failPrewarmRequest(db: pg.Pool, req: PrewarmRequest, error
  *  next viewer finds today warm instead of "Preparing". At most one start per COOLDOWN
  *  across every serverless instance (the report_prewarm_dispatch row), so a bulk upload's
  *  many chunk writes start one run, not dozens. The run itself warms today and yesterday
- *  first and month-ends last (dashboardPrewarm.ts). Returns whether it dispatched. */
+ *  first and month-ends last (dashboardPrewarm.ts). Returns whether GitHub accepted a
+ *  dispatch. */
 export async function dispatchAfterWrite(db: pg.Pool): Promise<boolean> {
   const { rowCount } = await db.query(
     `INSERT INTO report_prewarm_dispatch (id, last_dispatch_at) VALUES (TRUE, NOW())
@@ -106,20 +107,34 @@ export async function dispatchAfterWrite(db: pg.Pool): Promise<boolean> {
        WHERE report_prewarm_dispatch.last_dispatch_at < NOW() - INTERVAL '${COOLDOWN}'`
   );
   if (!rowCount) return false;
-  await dispatchPrewarmWorkflow();
-  return true;
+  return dispatchPrewarmWorkflow();
+}
+
+/** Marks dates as just requested, as a viewer's cold load would (requestPrewarm), but
+ *  without dispatching: used once a write's run has been dispatched, for the dates that
+ *  run warms first. A viewer who then finds one of them cold hits requestPrewarm's
+ *  per-date cooldown instead of starting a second run. A row a worker is holding keeps
+ *  its lease (last_attempt_at untouched). */
+export async function markPrewarmRequested(db: pg.Pool, reqs: PrewarmRequest[]): Promise<void> {
+  for (const r of reqs) {
+    await db.query(
+      `INSERT INTO report_prewarm_requests (as_at, fy_start, fy_end) VALUES ($1, $2, $3)
+       ON CONFLICT (as_at, fy_start, fy_end) DO UPDATE SET requested_at = NOW()`,
+      [r.asAt, r.fyStart, r.fyEnd]
+    );
+  }
 }
 
 /** POST .../actions/workflows/dashboard-prewarm.yml/dispatches. Needs
  *  GITHUB_DISPATCH_TOKEN (fine-grained PAT, this repo only, Actions: read & write) and
  *  GITHUB_DISPATCH_REPO ("owner/name"); GITHUB_DISPATCH_REF defaults to master. Missing
  *  config just logs — the request row is still served by the next scheduled run. */
-export async function dispatchPrewarmWorkflow(): Promise<void> {
+export async function dispatchPrewarmWorkflow(): Promise<boolean> {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   const repo = process.env.GITHUB_DISPATCH_REPO;
   if (!token || !repo) {
     console.warn("Pre-warm dispatch skipped: GITHUB_DISPATCH_TOKEN / GITHUB_DISPATCH_REPO not set.");
-    return;
+    return false;
   }
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/dashboard-prewarm.yml/dispatches`, {
@@ -133,7 +148,9 @@ export async function dispatchPrewarmWorkflow(): Promise<void> {
       signal: AbortSignal.timeout(5000)
     });
     if (!res.ok) console.error(`Pre-warm dispatch failed: ${res.status} ${await res.text().catch(() => "")}`);
+    return res.ok;
   } catch (err) {
     console.error("Pre-warm dispatch failed:", err);
+    return false;
   }
 }
