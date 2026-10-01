@@ -579,7 +579,7 @@ Switched on personal on 2026-09-29, with lessons worth keeping:
   No errors in the deployment's logs.
 
 ### 12. Logo no longer clipped
-Commit: see below.
+Commit: `7eccbc9`
 
 **What changed**
 - The NephroPlus butterfly's right wing tip was cut off: the drawing ran about one unit
