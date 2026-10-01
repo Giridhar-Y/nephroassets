@@ -660,6 +660,39 @@ already does.
     queues behind the first and finds almost everything cached, so it's short and
     harmless.
 
+### 14. One re-warm run per edit, even when someone opens the Dashboard straight away
+Commit: `18092f3`
+
+**What changed** (Vercel only; Docker has no dispatch and is unaffected)
+- After an edit starts a re-warm run (entry 13), the dates that run warms first (today,
+  the stored "Figures as of" date, yesterday) are marked as already requested. A viewer
+  who opens the Dashboard before the run finishes now waits for that run instead of
+  starting a second one; seen live on 2026-10-01 as two runs for one edit.
+- A date nobody has requested (for example a mid-year date) still starts its own run
+  exactly as before.
+- Dates are only marked when GitHub accepted the edit's dispatch. If that dispatch failed,
+  or was held back by the 10-minute throttle, a viewer's cold load still starts a run,
+  so nothing waits for the schedule.
+
+**Database / env vars:** none. No schema change, so this deploy doesn't clear the
+cached figures. **DevOps must do / expect:** nothing.
+
+**Verified:** server tests 1098/1098, including: an edit plus a viewer opening today
+starts one run while an unrequested date still dispatches; a failed edit dispatch marks
+nothing, so a viewer still starts the run; a write held back by the throttle doesn't
+re-mark dates. Server build passes. Not re-tested live, since that needs test writes on
+personal.
+
+**GitHub Actions minutes (personal UAT only, not the company deployment):** the
+personal repository is public, so standard GitHub-hosted runners cost nothing. Measured:
+about 10 s of setup per run; a run with nothing stale bills about 2–3 min, a new day
+about 3–5 min, and a full pass after an edit 12–15 min (an edit clears the month-ends
+too). Estimated per month: light UAT about 1,150 min, moderate about 1,750, heavy (an edit
+burst every half hour all day) about 5,000. If the repository were made private, GitHub
+Free's 2,000 min/month would be exceeded under heavy use. The cheapest option would be
+for edit- and cold-date-triggered runs to skip month-ends, leaving those to the
+scheduled runs (not implemented).
+
 ---
 
 ## Known limitations
