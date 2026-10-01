@@ -578,6 +578,27 @@ Switched on personal on 2026-09-29, with lessons worth keeping:
   (UAT-POOL-01..03) were soft-deleted with a reason and the temporary assignment removed.
   No errors in the deployment's logs.
 
+### 12. Logo no longer clipped
+Commit: see below.
+
+**What changed**
+- The NephroPlus butterfly's right wing tip was cut off: the drawing ran about one unit
+  past the SVG's visible area. Fixed in the browser-tab icon (`client/public/favicon.svg`,
+  now a centred square with a small margin) and the in-app header/sidebar symbol
+  (`client/src/assets/brand/logo_symbol.svg`). Only the viewBox changed; the artwork,
+  colours and proportions are identical.
+- The installed-app and home-screen icons (`client/public/icons/*.png`: 32, 180, 192,
+  512 and the 512 maskable) were made from the clipped symbol; regenerated from the fixed
+  one at the same sizes, white background and fill.
+
+**Database / env vars:** none. **DevOps must do / expect:** nothing (client assets only).
+Browsers cache tab icons, so a hard refresh may be needed to see the new one; an
+installed app may keep its old icon until reinstalled.
+
+**Verified:** the SVGs opened directly show the whole butterfly with even margins; in
+the 512 px PNG the right wing tip is a 20 px curve (the old flat cut was 65 px); client
+build passes.
+
 ---
 
 ## Known limitations
