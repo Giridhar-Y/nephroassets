@@ -599,6 +599,51 @@ installed app may keep its old icon until reinstalled.
 the 512 px PNG the right wing tip is a 20 px curve (the old flat cut was 65 px); client
 build passes.
 
+### 13. Dashboard re-warms itself after edits
+Commit: `42cf50a`
+
+**What changed**
+- Every write that changes report figures (asset create/edit/delete, additions,
+  disposals, transfers, bulk uploads, Masters renames, FY Settings) clears the whole
+  report cache, as before. **It now also starts re-warming straight away**, so the next
+  viewer usually finds today ready instead of "Preparing figures":
+  - **Docker (company):** the built-in 10-minute timer stays the main mechanism. A write
+    also starts a pass immediately, at most once per 10 minutes. A pass never starts
+    while another is running (the timer's or a write's); a skipped kick is covered by the
+    next tick.
+  - **Vercel (personal UAT):** a write starts the GitHub pre-warm job, at most once per
+    10 minutes across all serverless instances (a one-row database throttle), so a bulk
+    upload's many chunk writes start one run, not dozens.
+  - Either way the pass warms today and yesterday first, then any dates users are
+    waiting on, and month-ends last (unchanged order).
+- The Dashboard's "Preparing figures" now keeps checking for **15 minutes** (was 10)
+  before it asks the user to Refresh, so a full pass after a cache-wide clear (about 13
+  minutes) can finish first.
+- A failed re-warm start never fails the write; it's logged and the schedule/timer
+  catches up.
+
+**Database (automatic on first boot)**
+- New one-row table `report_prewarm_dispatch` (when a write last started a re-warm).
+- The schema fingerprint changes, so the first boot clears the cached report figures
+  once (as on every schema change); on Docker the built-in pre-warm rebuilds them.
+
+**Env vars:** none new. On Vercel the existing `GITHUB_DISPATCH_TOKEN` /
+`GITHUB_DISPATCH_REPO` are used; Docker needs neither.
+
+**DevOps must do / expect:** nothing. After deploy, an edit is followed by a short burst
+of database work (one pre-warm pass, at most every 10 minutes) — the same work the timer
+already does.
+
+**Verified**
+- Server tests 1095/1095, including new ones: the first write dispatches and later ones
+  within 10 minutes don't, then it dispatches again after 10 minutes; 8 simultaneous
+  writes start exactly one run; two cache clears on Vercel start one run; a failed
+  dispatch never fails the write; a second pass is refused while one runs (and a pass
+  that throws frees the guard); a write kicks a pass only where the timer runs, at most
+  once per 10 minutes, never alongside a running pass, without using up the throttle
+  when skipped. Client tests 160/160 (15-minute give-up). Both builds pass.
+- Live end-to-end on personal is pending the GitHub dispatch token fix (403 today).
+
 ---
 
 ## Known limitations
