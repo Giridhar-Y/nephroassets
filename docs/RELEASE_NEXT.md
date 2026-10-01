@@ -642,7 +642,23 @@ already does.
   that throws frees the guard); a write kicks a pass only where the timer runs, at most
   once per 10 minutes, never alongside a running pass, without using up the throttle
   when skipped. Client tests 160/160 (15-minute give-up). Both builds pass.
-- Live end-to-end on personal is pending the GitHub dispatch token fix (403 today).
+- Live end-to-end on personal Vercel (2026-10-01), after a new fine-grained token
+  (owner Giridhar-Y, this repo only, Actions: read & write) replaced the old one, which
+  was scoped to a different owner and got 403 on every dispatch:
+  - **Cold date:** opening 15-06-2026 answered "preparing" and dispatched a run 2 s later
+    (no 403); the date was warm about 4 minutes after it was first opened.
+  - **Edit:** an Edit Asset change (CI0001 serial number, reverted straight away)
+    dispatched a run within a second. Today was warm again **97 s** after the revert
+    (trend 147 s, Audit Reconciliation 173 s).
+  - **Throttle:** a second edit + revert 3.5 minutes later dispatched nothing.
+  - **Re-checked after the test writes:** today and yesterday (totals, trend, Audit
+    Reconciliation) all cached with times after the last write; today's totals 3 min
+    16 s after it. CI0001's serial number is back to empty; the four Asset Edit entries
+    are in the Activity Log. No dispatch failures or errors in the deployment's logs.
+  - Seen in passing: a viewer opening a cold Dashboard right after an edit can start a
+    second run through the separate cold-date path (its own per-date throttle). It
+    queues behind the first and finds almost everything cached, so it's short and
+    harmless.
 
 ---
 
