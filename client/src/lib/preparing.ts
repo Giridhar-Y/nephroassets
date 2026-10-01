@@ -9,9 +9,10 @@ export interface ReportPreparing {
 }
 
 export const PREPARING_POLL_MS = 15_000;
-/** The job normally takes 2-4 min (runner start-up + the scan); past this, stop polling
- *  and say so rather than spin forever. */
-export const PREPARING_GIVE_UP_MS = 10 * 60_000;
+/** Today's figures normally take 2-4 min (runner start-up + the scan), but a pass after a
+ *  cache-wide clear can take ~13 min; past this, stop polling and say so rather than
+ *  spin forever. */
+export const PREPARING_GIVE_UP_MS = 15 * 60_000;
 
 export function isPreparing(value: unknown): value is ReportPreparing {
   return typeof value === "object" && value !== null && (value as { status?: unknown }).status === "preparing";
@@ -31,7 +32,7 @@ export async function fetchUntilReady<T>(
     if (!isPreparing(res)) return res;
     onPreparing();
     if (Date.now() - started >= PREPARING_GIVE_UP_MS) {
-      throw new Error("These figures are still being prepared after 10 minutes. Try Refresh again in a few minutes.");
+      throw new Error(`These figures are still being prepared after ${PREPARING_GIVE_UP_MS / 60_000} minutes. Try Refresh again in a few minutes.`);
     }
     await new Promise((resolve) => setTimeout(resolve, PREPARING_POLL_MS));
     if (!isCurrent()) return undefined;

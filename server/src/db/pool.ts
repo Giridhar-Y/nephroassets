@@ -598,6 +598,12 @@ async function applySchemaLocked(db: pg.PoolClient): Promise<void> {
     );
     INSERT INTO report_cache_revision (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
 
+    -- See schema.sql's own report_prewarm_dispatch comment.
+    CREATE TABLE IF NOT EXISTS report_prewarm_dispatch (
+      id                BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+      last_dispatch_at  TIMESTAMPTZ NOT NULL
+    );
+
     -- See schema.sql's own idx_assets_calc_status comment.
     CREATE INDEX IF NOT EXISTS idx_assets_calc_status ON assets (status, date_acquired, date_of_disposal);
   `);

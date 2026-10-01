@@ -39,11 +39,11 @@ describe("fetchUntilReady", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("gives up with a clear message after 10 minutes instead of polling forever", async () => {
+  it("gives up with a clear message after 15 minutes instead of polling forever", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockResolvedValue(PREPARING);
     const result = fetchUntilReady(fetcher, { onPreparing: () => {}, isCurrent: () => true });
-    const assertion = expect(result).rejects.toThrow(/still being prepared after 10 minutes/);
+    const assertion = expect(result).rejects.toThrow(/still being prepared after 15 minutes/);
     await vi.advanceTimersByTimeAsync(PREPARING_GIVE_UP_MS + PREPARING_POLL_MS);
     await assertion;
     expect(fetcher.mock.calls.length).toBe(PREPARING_GIVE_UP_MS / PREPARING_POLL_MS + 1);

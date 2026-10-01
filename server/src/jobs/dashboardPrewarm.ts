@@ -233,3 +233,53 @@ async function warmAuditReconciliation(
     await setCachedReportTotals(db, reconKey, recon, version, ttl);
   }
 }
+
+// --- The long-running process's own pre-warm (Docker/Render/local, server/src/index.ts) --
+// A 10-minute timer is the main mechanism. A write that clears the cache also kicks a
+// pass (at most once per 10 minutes) so today is warm again without waiting for the next
+// tick. Both go through runPrewarmPass, which never starts a second pass while one is
+// running. Vercel never starts the timer (a serverless instance doesn't live long enough),
+// so there the kick is a no-op and the GitHub workflow does the work.
+
+const PASS_INTERVAL_MS = 10 * 60_000;
+let passRunning = false;
+let timerStarted = false;
+let lastKickAt = -Infinity;
+
+/** Runs one pre-warm pass unless one is already running (returns false then). Errors are
+ *  logged and swallowed: a failed pass only means the next request pays the cold cost. */
+export async function runPrewarmPass(db: pg.Pool, pass: (db: pg.Pool) => Promise<void> = prewarmDashboardCaches): Promise<boolean> {
+  if (passRunning) return false;
+  passRunning = true;
+  try {
+    await pass(db);
+  } catch (err) {
+    console.error("Dashboard pre-warm pass failed:", err);
+  } finally {
+    passRunning = false;
+  }
+  return true;
+}
+
+export function startPrewarmTimer(getDb: () => Promise<pg.Pool>): void {
+  timerStarted = true;
+  const tick = () => void getDb().then((db) => runPrewarmPass(db));
+  tick();
+  setInterval(tick, PASS_INTERVAL_MS);
+}
+
+/** After a write cleared the cache: start a pass now, unless this process has no timer
+ *  (Vercel, tests), a pass is already running (it or the next tick covers it), or one was
+ *  kicked in the last 10 minutes. Returns whether it started one. Doesn't wait for it. */
+export function kickPrewarmAfterWrite(db: pg.Pool, now = Date.now(), pass?: (db: pg.Pool) => Promise<void>): boolean {
+  if (!timerStarted || passRunning || now - lastKickAt < PASS_INTERVAL_MS) return false;
+  lastKickAt = now;
+  void runPrewarmPass(db, pass);
+  return true;
+}
+
+export function resetPrewarmPassStateForTests(opts: { timerStarted?: boolean } = {}): void {
+  passRunning = false;
+  timerStarted = opts.timerStarted ?? false;
+  lastKickAt = -Infinity;
+}

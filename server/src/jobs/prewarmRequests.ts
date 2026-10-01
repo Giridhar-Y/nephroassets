@@ -94,6 +94,22 @@ export async function failPrewarmRequest(db: pg.Pool, req: PrewarmRequest, error
   }
 }
 
+/** After a write cleared the report cache (Vercel): start the pre-warm workflow so the
+ *  next viewer finds today warm instead of "Preparing". At most one start per COOLDOWN
+ *  across every serverless instance (the report_prewarm_dispatch row), so a bulk upload's
+ *  many chunk writes start one run, not dozens. The run itself warms today and yesterday
+ *  first and month-ends last (dashboardPrewarm.ts). Returns whether it dispatched. */
+export async function dispatchAfterWrite(db: pg.Pool): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `INSERT INTO report_prewarm_dispatch (id, last_dispatch_at) VALUES (TRUE, NOW())
+     ON CONFLICT (id) DO UPDATE SET last_dispatch_at = NOW()
+       WHERE report_prewarm_dispatch.last_dispatch_at < NOW() - INTERVAL '${COOLDOWN}'`
+  );
+  if (!rowCount) return false;
+  await dispatchPrewarmWorkflow();
+  return true;
+}
+
 /** POST .../actions/workflows/dashboard-prewarm.yml/dispatches. Needs
  *  GITHUB_DISPATCH_TOKEN (fine-grained PAT, this repo only, Actions: read & write) and
  *  GITHUB_DISPATCH_REPO ("owner/name"); GITHUB_DISPATCH_REF defaults to master. Missing

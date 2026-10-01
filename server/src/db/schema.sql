@@ -510,6 +510,14 @@ CREATE TABLE report_cache_revision (
 );
 INSERT INTO report_cache_revision (id) VALUES (TRUE);
 
+-- When a write last started a re-warm (jobs/prewarmRequests.ts's dispatchAfterWrite):
+-- one row, so every serverless instance shares the "at most one start per 10 minutes"
+-- throttle.
+CREATE TABLE report_prewarm_dispatch (
+  id                BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+  last_dispatch_at  TIMESTAMPTZ NOT NULL
+);
+
 -- Indexes for the filter/search/sort patterns required at 2,50,000+ rows: center
 -- (location/effective location), sub classification, status, FAR ID, date acquired.
 CREATE INDEX idx_assets_location ON assets (location);

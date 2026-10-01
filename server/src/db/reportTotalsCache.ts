@@ -205,6 +205,9 @@ export async function setCachedReportTotals(
  *  removes that just-published row too, and any publish that starts afterwards sees the
  *  new revision and skips.
  *
+ *  Then starts re-warming (jobs/prewarmAfterWrite.ts), so the next viewer isn't left on
+ *  "Preparing" until a schedule fires.
+ *
  *  Never throws — the write it follows has already committed, so failing the response
  *  would just invite the user to repeat a write that worked. It logs loudly instead: a
  *  failed invalidation means reports can be stale for up to the cache TTL. */
@@ -214,19 +217,25 @@ export async function invalidateReportTotalsCache(db: pg.Pool): Promise<boolean>
     return null;
   });
   if (!client) return false;
+  let cleared = false;
   try {
     await client.query("BEGIN");
     await client.query(`UPDATE report_cache_revision SET revision = revision + 1 WHERE id = TRUE`);
     await client.query(`DELETE FROM report_totals_cache`);
     await client.query("COMMIT");
-    return true;
+    cleared = true;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("[report cache] INVALIDATION FAILED — reports may be stale until TTL expiry:", err);
-    return false;
   } finally {
     client.release();
   }
+  if (cleared) {
+    await import("../jobs/prewarmAfterWrite.js")
+      .then((m) => m.reWarmAfterWrite(db))
+      .catch((err: unknown) => console.error("[report cache] Re-warm after write failed to start:", err));
+  }
+  return cleared;
 }
 
 /** Test-only reset — same purpose as db/reportCache.ts's clearReportCacheForTests, just

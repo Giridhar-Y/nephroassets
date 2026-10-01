@@ -2,7 +2,7 @@ import "./localDevSecret.js"; // must stay first — see that file's comment
 import { buildApp } from "./app.js";
 import { applySchema, getPool } from "./db/pool.js";
 import { seed, seedMasters } from "./db/seed.js";
-import { prewarmDashboardCaches } from "./jobs/dashboardPrewarm.js";
+import { startPrewarmTimer } from "./jobs/dashboardPrewarm.js";
 
 const app = await buildApp();
 
@@ -30,23 +30,6 @@ await app.listen({ port, host: "0.0.0.0" });
 // 10 minutes: this deployment's own scheduler, not subject to the GitHub Actions
 // scheduling unreliability that motivated raising the cache TTL to 6 hours (see
 // db/reportTotalsCache.ts) — a long-running process's setInterval fires exactly when
-// it says it will. In-flight guard
-// (`running`) so a slow pre-warm pass can't overlap with the next tick; errors are
-// logged and swallowed, same as every other best-effort cache-maintenance call in
-// this app (see assets.ts's bustReportTotalsCache) — a failed pre-warm just means the
-// next real request pays the cold cost once, not that the process should crash.
-const PREWARM_INTERVAL_MS = 10 * 60 * 1000;
-let prewarmRunning = false;
-async function runPrewarm(): Promise<void> {
-  if (prewarmRunning) return;
-  prewarmRunning = true;
-  try {
-    await prewarmDashboardCaches(await getPool());
-  } catch (err) {
-    console.error("Dashboard pre-warm pass failed:", err);
-  } finally {
-    prewarmRunning = false;
-  }
-}
-void runPrewarm();
-setInterval(runPrewarm, PREWARM_INTERVAL_MS);
+// it says it will. A write that clears the cache also kicks a pass; runPrewarmPass's
+// in-flight guard means a slow pass never overlaps another (see dashboardPrewarm.ts).
+startPrewarmTimer(getPool);
